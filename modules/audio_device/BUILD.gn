@@ -575,6 +575,20 @@ if (rtc_use_speech_audio_devices) {
     if (is_linux) {
       libs += [ "pthread" ]
     }
+    if (is_ios) {
+      # Platform TTS is Objective-C. Compile it here so std::string matches
+      # the libc++ WebRTC uses; the prebuilt whillats.framework does not.
+      sources += [
+        "//modules/third_party/whillats/src/whillats_synth.mm",
+        "//modules/third_party/whillats/src/whillats_ios.mm",
+      ]
+      frameworks = [
+        "AVFoundation.framework",
+        "AudioToolbox.framework",
+        "CoreAudio.framework",
+        "Foundation.framework",
+      ]
+    }
   }
 }
 

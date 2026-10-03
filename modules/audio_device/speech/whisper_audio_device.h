@@ -170,6 +170,7 @@ class WhisperAudioDevice : public SpeechAudioDevice {
   WhillatsSetResponseCallback _whisperCallback;
   WhillatsSetLanguageCallback _languageCallback;
   WhillatsSetResponseCallback _llamaResponseCallback;
+  WhillatsSetTranscriptCallback _transcriptCallback;
   
   // Protects concurrent access to _whisper_transcriber across the playout
   // thread and control thread (StartPlayout / StopPlayout).
@@ -183,9 +184,21 @@ class WhisperAudioDevice : public SpeechAudioDevice {
   std::condition_variable _queueCondition;
 
  public:
-  char _llamaPendingBuf[4096];
-  std::atomic<size_t> _llamaPendingLen{0};
+  // Llama streams one sentence per callback; a single-producer/single-consumer
+  // ring keeps sentences that arrive while earlier ones are still being spoken.
+  // Written with C-only operations by the Llama callback thread (head) and
+  // drained by the recording thread (tail).
+  static constexpr uint32_t kLlamaPendingSlots = 16;
+  static constexpr size_t kLlamaPendingBytes = 1024;
+  char _llamaPending[kLlamaPendingSlots][kLlamaPendingBytes];
+  std::atomic<uint32_t> _llamaPendingHead{0};
+  std::atomic<uint32_t> _llamaPendingTail{0};
+  std::atomic<bool> _llamaDropPending{false};
+  // Bumped by the transcript callback whenever Whisper hears words (interim or
+  // final); barge-in triggers on recognised speech rather than raw energy.
+  std::atomic<uint32_t> _heardSpeech{0};
  private:
+  void drainLlamaPending();
   
   std::vector<uint16_t> _ttsBuffer;  // Instance member to hold TTS audio
   size_t _ttsIndex = 0;  // Instance member to track buffer index
@@ -193,17 +206,15 @@ class WhisperAudioDevice : public SpeechAudioDevice {
   std::mutex audio_buffer_mutex;
   std::condition_variable buffer_cv;
 
-  // Barge-in detection: track when TTS is actively playing and detect
-  // remote speech energy to interrupt LLaMa mid-response.
+  // Barge-in: interrupt LLaMa/TTS when Whisper recognises remote speech while
+  // TTS is playing. Word-confirmed triggering ignores noise and echo bursts,
+  // so the guards can be much shorter than with an energy threshold.
   std::atomic<bool> _isSpeaking{false};
   std::atomic<int64_t> _lastInterruptMillis{0};
   std::atomic<int64_t> _ttsStartedMillis{0};
-  static constexpr int64_t kInterruptCooldownMs = 5000;   // min gap between interrupts
-  static constexpr int64_t kMinTTSPlayMs = 3000;          // let TTS play at least this long before barge-in
-  static constexpr float kSpeechEnergyThreshold = 0.05f;  // RMS threshold for barge-in (conservative)
-  static constexpr int kEnergyWindowFrames = 10;          // number of 10ms frames to average
-  float _recentEnergy[kEnergyWindowFrames] = {0};
-  int _energyIdx = 0;
+  uint32_t _heardSpeechSeen = 0;
+  static constexpr int64_t kInterruptCooldownMs = 2000;   // min gap between interrupts
+  static constexpr int64_t kMinTTSPlayMs = 800;           // let TTS play at least this long before barge-in
 };
 
 }  // namespace webrtc

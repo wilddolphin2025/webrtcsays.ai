@@ -85,14 +85,26 @@ void llamaResponseCallback(bool success, const char* response, void* user_data) 
   WhisperAudioDevice* audio_device = static_cast<WhisperAudioDevice*>(user_data);
   if (!audio_device || !success || !response) return;
 
-  size_t len = strnlen(response, 4095);
+  size_t len = strnlen(response, WhisperAudioDevice::kLlamaPendingBytes - 1);
   if (len == 0) return;
 
   // Pure C operations only - no C++ objects, no RTC_LOG, no std::string.
   // This callback runs on the libstdc++ Llama thread; any libc++ usage crashes.
-  memcpy(audio_device->_llamaPendingBuf, response, len);
-  audio_device->_llamaPendingBuf[len] = '\0';
-  audio_device->_llamaPendingLen.store(len, std::memory_order_release);
+  uint32_t head = audio_device->_llamaPendingHead.load(std::memory_order_relaxed);
+  uint32_t tail = audio_device->_llamaPendingTail.load(std::memory_order_acquire);
+  if (head - tail >= WhisperAudioDevice::kLlamaPendingSlots) return;  // full: drop
+  char* slot = audio_device->_llamaPending[head % WhisperAudioDevice::kLlamaPendingSlots];
+  memcpy(slot, response, len);
+  slot[len] = '\0';
+  audio_device->_llamaPendingHead.store(head + 1, std::memory_order_release);
+}
+
+void transcriptCallback(const char* text, bool is_final, const char* language, void* user_data) {
+  // C-only for the same reason as llamaResponseCallback. Finals still reach the
+  // LLM through whisperResponseCallback; here we only note that words were heard.
+  WhisperAudioDevice* audio_device = static_cast<WhisperAudioDevice*>(user_data);
+  if (audio_device && text && text[0])
+    audio_device->_heardSpeech.fetch_add(1, std::memory_order_relaxed);
 }
 
 WhisperAudioDevice::WhisperAudioDevice(
@@ -101,7 +113,8 @@ WhisperAudioDevice::WhisperAudioDevice(
       _ttsCallback(ttsAudioCallback, this),
       _whisperCallback(whisperResponseCallback, this),
       _languageCallback(languageResponseCallback, this),
-      _llamaResponseCallback(llamaResponseCallback, this)
+      _llamaResponseCallback(llamaResponseCallback, this),
+      _transcriptCallback(transcriptCallback, this)
 {
 }
 
@@ -354,8 +367,8 @@ void WhisperAudioDevice::interruptLlama() {
     _llama_device->stop();
   }
 
-  // 2. Clear pending LLaMa response
-  _llamaPendingLen.store(0, std::memory_order_release);
+  // 2. Drop pending LLaMa sentences (the recording thread owns the ring tail)
+  _llamaDropPending.store(true, std::memory_order_release);
 
   // 3. Clear TTS text queue
   {
@@ -374,6 +387,21 @@ void WhisperAudioDevice::interruptLlama() {
   // 5. Restart LLaMa so it can accept new requests
   if (_llama_device) {
     _llama_device->start();
+  }
+}
+
+void WhisperAudioDevice::drainLlamaPending() {
+  uint32_t head = _llamaPendingHead.load(std::memory_order_acquire);
+  uint32_t tail = _llamaPendingTail.load(std::memory_order_relaxed);
+  if (_llamaDropPending.exchange(false, std::memory_order_acq_rel)) {
+    _llamaPendingTail.store(head, std::memory_order_release);
+    return;
+  }
+  for (; tail != head; ++tail) {
+    std::string resp(_llamaPending[tail % kLlamaPendingSlots]);
+    _llamaPendingTail.store(tail + 1, std::memory_order_release);
+    RTC_LOG(LS_INFO) << "Llama response: " << resp;
+    speakText(resp);
   }
 }
 
@@ -428,15 +456,8 @@ bool WhisperAudioDevice::RecThreadProcess() {
       }
     }
 
+    drainLlamaPending();
     if (_ttsBuffer.empty()) {
-      // Drain pending Llama response (written by C-only callback on Llama thread)
-      size_t plen = _llamaPendingLen.load(std::memory_order_acquire);
-      if (plen > 0) {
-        std::string resp(_llamaPendingBuf, plen);
-        _llamaPendingLen.store(0, std::memory_order_release);
-        RTC_LOG(LS_INFO) << "Llama response (" << plen << " bytes): " << resp;
-        speakText(resp);
-      }
 
       // Only process new text when current audio is finished
       bool shouldSynthesize = false;
@@ -552,6 +573,7 @@ int32_t WhisperAudioDevice::InitPlayout() {
   {
     std::lock_guard<std::mutex> tlock(_transcriber_mutex);
     _whisper_transcriber = SpeechAudioDeviceFactory::CreateWhillatsTranscriber(_whisperCallback, _languageCallback);
+    if (_whisper_transcriber) _whisper_transcriber->setTranscriptCallback(_transcriptCallback);
     if (_whisper_transcriber && _whisper_transcriber->start()) {
       _whisper_enabled = true;
       RTC_LOG(LS_INFO) << "Whisper enabled, model: " << SpeechAudioDeviceFactory::GetWhisperModelFilename() << "...";
@@ -658,6 +680,8 @@ int32_t WhisperAudioDevice::StopPlayout() {
     std::lock_guard<std::mutex> tlock(_transcriber_mutex);
     if (_whisper_transcriber) {
         _whisper_transcriber->setCallback({nullptr, nullptr});
+        _whisper_transcriber->setLanguageCallback({nullptr, nullptr});
+        _whisper_transcriber->setTranscriptCallback({nullptr, nullptr});
         _whisper_transcriber->stop();
         _whisper_transcriber = nullptr;
     }
@@ -716,36 +740,17 @@ bool WhisperAudioDevice::PlayThreadProcess() {
     }
     #endif // defined(PLAY_WAV_ON_PLAY)
 
-    // Barge-in detection: compute RMS energy of incoming remote audio
+    // Barge-in: Whisper recognised remote speech while TTS is playing.
     {
-      const int16_t* samples = reinterpret_cast<const int16_t*>(_playoutBuffer);
-      size_t n = _playoutFramesLeft;
-      float energy = 0.0f;
-      for (size_t i = 0; i < n; i++) {
-        float s = samples[i] / 32768.0f;
-        energy += s * s;
-      }
-      energy = std::sqrt(energy / n);
-
-      // Rolling average of recent energy
-      _recentEnergy[_energyIdx] = energy;
-      _energyIdx = (_energyIdx + 1) % kEnergyWindowFrames;
-
-      float avgEnergy = 0.0f;
-      for (int i = 0; i < kEnergyWindowFrames; i++) {
-        avgEnergy += _recentEnergy[i];
-      }
-      avgEnergy /= kEnergyWindowFrames;
-
-      // If TTS is playing and remote speech energy exceeds threshold, interrupt
-      if (_isSpeaking.load(std::memory_order_relaxed) &&
-          avgEnergy > kSpeechEnergyThreshold) {
+      const uint32_t heard = _heardSpeech.load(std::memory_order_relaxed);
+      if (heard != _heardSpeechSeen) {
+        _heardSpeechSeen = heard;
         int64_t sinceLastInterrupt = currentTime - _lastInterruptMillis.load(std::memory_order_relaxed);
         int64_t ttsPlayDuration = currentTime - _ttsStartedMillis.load(std::memory_order_relaxed);
-        if (sinceLastInterrupt > kInterruptCooldownMs &&
-            ttsPlayDuration > kMinTTSPlayMs) {
-          RTC_LOG(LS_INFO) << "Barge-in detected (energy=" << avgEnergy
-                           << ", tts_played=" << ttsPlayDuration << "ms), interrupting LLaMa/TTS";
+        if (_isSpeaking.load(std::memory_order_relaxed) &&
+            sinceLastInterrupt > kInterruptCooldownMs && ttsPlayDuration > kMinTTSPlayMs) {
+          RTC_LOG(LS_INFO) << "Barge-in: remote speech recognised after " << ttsPlayDuration
+                           << " ms of TTS, interrupting LLaMa/TTS";
           _lastInterruptMillis.store(currentTime, std::memory_order_relaxed);
           mutex_.Unlock();
           interruptLlama();

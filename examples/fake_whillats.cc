@@ -57,4 +57,4 @@ WhillatsLlama::~WhillatsLlama() {}
 
 bool WhillatsLlama::start() { return false; }
 void WhillatsLlama::stop() {}
-void WhillatsLlama::askLlama(const char*) {}
+void WhillatsLlama::askLlama(const char*, const char*) {}

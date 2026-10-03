@@ -75,10 +75,10 @@ void whisperResponseCallback(bool success, const char* response, void* user_data
 void languageResponseCallback(bool success, const char* language, void* user_data) {
   WhisperAudioDevice* audio_device = static_cast<WhisperAudioDevice*>(user_data);
   if (!audio_device) return;
-  RTC_LOG(LS_INFO) << "Language response via callback: " << language;
-  if (success && language) {
-    SpeechAudioDeviceFactory::SetLanguage(std::string(language));
-  }
+  // Only note the detection: overwriting the transcriber's "auto" setting
+  // would freeze auto-detect on the first utterance's language.
+  if (success && language && *language)
+    SpeechAudioDeviceFactory::NoteDetectedLanguage(language);
 }
 
 void llamaResponseCallback(bool success, const char* response, void* user_data) {
@@ -191,8 +191,10 @@ void WhisperAudioDevice::speakText(const std::string& text) {
 // Method to ask llama 
 void WhisperAudioDevice::askLlama(const std::string& text) {
   if(_llama_enabled) {
-    RTC_LOG(LS_INFO) << "Asking llama: " << text;
-    SpeechAudioDeviceFactory::llama()->askLlama(text.c_str()); // send to llama text queue
+    // The language callback fires before each final, so this is the utterance's language.
+    std::string lang = SpeechAudioDeviceFactory::GetLanguage();
+    RTC_LOG(LS_INFO) << "Asking llama [" << lang << "]: " << text;
+    SpeechAudioDeviceFactory::llama()->askLlama(text.c_str(), lang.c_str());
   }  
 }
 

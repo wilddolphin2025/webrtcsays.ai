@@ -14,6 +14,8 @@
 #define AUDIO_DEVICE_SPEECH_AUDIO_DEVICE_FACTORY_H_
 
 #include <stdint.h>
+#include <string.h>
+#include <atomic>
 #include <memory>
 #include <queue>
 #include "absl/synchronization/mutex.h"
@@ -51,15 +53,24 @@ class SpeechAudioDeviceFactory {
   static const std::string& GetWavFilename() { return _wavFilename; }
   static const std::string& GetYuvFilename() { return _yuvFilename; }
   static YUVData& GetYuvData() { return _yuvData; }
-  static std::string GetLanguage() { 
+  // Language of the last utterance when Whisper auto-detects, else the configured one.
+  static std::string GetLanguage() {
+    uint64_t packed = _detectedLanguage.load(std::memory_order_relaxed);
+    if (packed) { char code[9] = {}; memcpy(code, &packed, 8); return code; }
     return _whisperDevice ? _whisperDevice->getLanguage() : "en"; }
+  // C-only: called from the transcriber thread.
+  static void NoteDetectedLanguage(const char* code) {
+    uint64_t packed = 0;
+    memcpy(&packed, code, strnlen(code, 8));
+    _detectedLanguage.store(packed, std::memory_order_relaxed); }
   static void NotifyText(const std::string& text, const std::string& language);
   static void SpeakText(const std::string& text, const std::string& language);
   static void AskLlama(const std::string& text, const std::string& language);
 
   static void SetWhisperEnabled(bool enabled) { _whisperEnabled = enabled; }
   static void SetLlamaEnabled(bool enabled) { _llamaEnabled = enabled; }
-  static void SetLanguage(const std::string& language) { 
+  static void SetLanguage(const std::string& language) {
+    _detectedLanguage.store(0, std::memory_order_relaxed);
     if(_whisperDevice) _whisperDevice->setLanguage(language.c_str()); }
 
   static WhillatsTTS* tts() { return _ttsDevice.get(); }
@@ -87,6 +98,7 @@ class SpeechAudioDeviceFactory {
 
   friend class WhisperAudioDevice;
  private:
+  static inline std::atomic<uint64_t> _detectedLanguage{0};
   static std::unique_ptr<TaskQueueFactory> _taskQueueFactory;
 
   enum : uint32_t { MAX_FILENAME_LEN = 512 };

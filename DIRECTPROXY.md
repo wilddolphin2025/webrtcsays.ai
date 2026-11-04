@@ -50,6 +50,39 @@ Optional/legacy side messages still recognized by protocol family:
 - `ADDRESS:<id>:ip:port`
 - `WHISPER[xx]<text>`
 - `LLAMA[xx]<text>`
+- `FACE:<base64 image>` — replace the talking-face avatar
+
+## Ending a Call
+
+Either side may hang up at any time; the rules are symmetric.
+
+| Situation | Sender | Receiver |
+|-----------|--------|----------|
+| Hang up an established call | `BYE` | replies `200 OK`, tears down |
+| Abort during setup | `CANCEL` | replies `BYE` (legacy ack), tears down |
+| Hangup acknowledged | — | sender closes the TCP connection on `200 OK`/`BYE`, or after `--hangup_ack_timeout_ms` (2 s) |
+
+Teardown also starts without any message when:
+
+- the signaling TCP connection closes or resets (the peer process died);
+- TCP keepalive gives up (peer vanished without FIN: 15 s idle + 3 × 5 s probes);
+- the PeerConnection reports `failed`, or stays `disconnected` longer than
+  `--media_grace_ms` (10 s) — a frozen laptop or lost network;
+- media is not connected within `--call_setup_timeout_ms` (45 s) of `INVITE`.
+
+`directcall` handles `SIGTERM`, `SIGINT` and `SIGHUP` the same way: it sends
+`BYE` to the active peer, waits for the acknowledgement, joins its threads and
+exits within 10 s. A second signal exits immediately. `systemctl stop` therefore
+hangs calls up cleanly instead of leaving the remote side to time out.
+
+The WebSocket bridge pings the browser every 15 s and drops it after 45 s of
+silence. When the browser side goes away for any reason it sends `BYE` to
+`directcall` on the browser's behalf; when `directcall` closes, the browser gets
+a WebSocket close frame (1000, or 1001 during shutdown).
+
+`scripts/ci/test_direct_shutdown.sh` and `scripts/ci/test_ws_bridge.py` exercise
+these paths end to end on loopback.
+
 
 ## Browser Call Flow (Expected Sequence)
 

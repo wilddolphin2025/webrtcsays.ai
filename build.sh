@@ -128,6 +128,11 @@ solutions = [
     "name": "src",
     "url": "$ORIGIN_URL",
     "custom_deps": {},
+    "custom_vars": {
+      "checkout_instrumented_libraries": False,
+      "checkout_android": False,
+      "checkout_ios": $( [ "${1:-}" = "ios" ] && echo True || echo False ),
+    },
     "deps_file": "DEPS",
   },
 ]
@@ -182,21 +187,27 @@ if ! command -v vpython3 >/dev/null 2>&1; then
 fi
 
 
-# Check if src directory exists and is initialized properly
-if [ -d "src" ] && [ -d "src/build" ] && [ -f "src/.git/HEAD" ] && [ -f "src/build/dotfile_settings.gni" ]; then
-    echo "Skipping gclient sync as src directory already exists and appears properly initialized."
-else
-    echo "Running gclient sync to initialize or fix src directory..."
-    # Force a clean sync if dotfile_settings.gni is missing
-    if [ -d "src" ] && [ ! -f "src/build/dotfile_settings.gni" ]; then
-        echo "Missing critical build files, forcing clean gclient sync..."
-        rm -rf src
-    fi
+# First run: let gclient clone src/. Then check out the requested ref *before*
+# the real sync so that ref's DEPS decides the toolchain, sysroot and
+# third_party revisions (syncing first left M134 build files under an M156 tree).
+if [ ! -e "src/.git" ]; then
+    echo "Cloning src/ ..."
     gclient sync --nohooks --no-history --shallow
-    if [ ! -d "src/build" ] || [ ! -f "src/build/dotfile_settings.gni" ]; then
-        echo "ERROR: src/build directory missing or dotfile_settings.gni missing after gclient sync. Check your DEPS file or sync process."
-        exit 1
-    fi
+fi
+echo "Checking out $SRC_GIT_REF in src/ ..."
+git -C src fetch --depth=1 origin "$SRC_GIT_REF" ||
+    { echo "ERROR: cannot fetch $SRC_GIT_REF"; exit 1; }
+git -C src checkout -B "$SRC_GIT_REF" FETCH_HEAD 2>/dev/null ||
+    git -C src checkout --detach FETCH_HEAD
+# whillats follows the commit pinned by src/, including its engines.
+git -C src submodule update --init --recursive --depth=1 modules/third_party/whillats
+
+echo "Syncing dependencies for $(git -C src rev-parse --short HEAD) ..."
+gclient sync -D --force --no-history --shallow -j "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+if [ ! -f "src/build/dotfile_settings.gni" ] ||
+   ! grep -q expand_directory_allowlist src/build/dotfile_settings.gni; then
+    echo "ERROR: src/build does not match src/DEPS after gclient sync."
+    exit 1
 fi
 
 # After sync, drop previous Chromium ninja output under src/ (often tens of GB). gn/ninja
@@ -221,9 +232,6 @@ cp .vpython3 src/ || { echo "WARNING: .vpython3 not found in root, build may fai
 # Navigate to src directory
 cd src
 
-git fetch origin
-git checkout "$SRC_GIT_REF"
-
 # Detect platform architecture for sysroot
 ARCH=$(uname -m)
 case "$ARCH" in
@@ -239,12 +247,6 @@ case "$ARCH" in
         ;;
 esac
 
-if [ -n "$SYSROOT_ARCH" ] && [ -f build/linux/sysroot_scripts/install-sysroot.py ]; then
-    echo "Installing sysroot for architecture: $SYSROOT_ARCH"
-    python3 build/linux/sysroot_scripts/install-sysroot.py --arch=$SYSROOT_ARCH
-else
-    echo "Sysroot install script not found or not required for this architecture. Skipping sysroot installation."
-fi
 
 # For ARM64 Linux, use system Clang and ensure required packages are installed
 if [[ "$OSTYPE" != "darwin"* ]] && ([ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]); then
@@ -297,9 +299,6 @@ if [[ "$OSTYPE" != "darwin"* ]] && ([ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm6
         fi
         cd -
     fi
-    # Skip update.py
-else
-    python3 tools/clang/scripts/update.py
 fi
 
 # For macOS, set deployment target and handle ARM64 if applicable
@@ -328,21 +327,17 @@ build_whillats() {
     fi
     echo "[build-whillats] Current root .gitmodules contents:"
     cat "$REPO_ROOT/.gitmodules"
-    # Only update/init submodule if whillats dir does not exist or is empty
-    if [ ! -d "$WHILLATS_DIR" ] || [ -z "$(ls -A "$WHILLATS_DIR" 2>/dev/null)" ]; then
-        echo "Initializing parent submodule: modules/third_party/whillats"
-        git submodule update --init modules/third_party/whillats
-    fi
-    
-    # Checkout the same branch as the parent repo in the submodule
-    echo "[build-whillats] Checking out ref $SRC_GIT_REF in whillats submodule"
-    pushd "$WHILLATS_DIR"
-    if git fetch origin "$SRC_GIT_REF" 2>/dev/null; then
-        git checkout "$SRC_GIT_REF" 2>/dev/null || echo "[build-whillats] WARNING: Ref $SRC_GIT_REF not found in whillats, using current HEAD"
+    # Use the whillats commit pinned by src/ (and its pinned engines);
+    # WHILLATS_REF=<branch|tag> overrides it for experiments.
+    if [ -n "${WHILLATS_REF:-}" ]; then
+        echo "[build-whillats] WHILLATS_REF=$WHILLATS_REF overrides the pinned commit"
+        git -C "$WHILLATS_DIR" fetch --depth=1 origin "$WHILLATS_REF" &&
+            git -C "$WHILLATS_DIR" checkout --detach FETCH_HEAD &&
+            git -C "$WHILLATS_DIR" submodule update --init --recursive --depth=1
     else
-        echo "[build-whillats] WARNING: Could not fetch $SRC_GIT_REF from whillats remote, using current HEAD"
+        git submodule update --init --recursive --depth=1 modules/third_party/whillats
     fi
-    popd
+    echo "[build-whillats] whillats at $(git -C "$WHILLATS_DIR" describe --tags --always)"
 
     if [ ! -d "$WHILLATS_DIR" ]; then
         echo "ERROR: $WHILLATS_DIR directory not found."
@@ -479,9 +474,13 @@ build_whillats() {
 
     echo "[build-whillats] Configuring CMake ($CMAKE_BUILD_TYPE) with GPU flags: $GPU_FLAGS"
     # No --fresh: requires CMake 3.24+; build/ is removed above so configure is always clean.
-    timeout 600 cmake -S . -B build -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE $GPU_FLAGS || {
+    # Production TTS: Piper, plus Pocket TTS for personalized voices.
+    # WHILLATS_TTS_FLAGS="-DWHILLATS_STYLETTS2=ON" etc. picks other engines.
+    TTS_FLAGS="${WHILLATS_TTS_FLAGS:--DWHILLATS_PIPER=ON -DWHILLATS_POCKET_TTS=ON}"
+    echo "[build-whillats] TTS flags: $TTS_FLAGS"
+    timeout 1200 cmake -S . -B build -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE $GPU_FLAGS $TTS_FLAGS || {
         echo "[build-whillats] CMake configuration failed. Retrying with verbose output..."
-        cmake -S . -B build -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE $GPU_FLAGS -DCMAKE_VERBOSE_MAKEFILE=ON
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE $GPU_FLAGS $TTS_FLAGS -DCMAKE_VERBOSE_MAKEFILE=ON
     }
     echo "[build-whillats] Building with $PARALLEL_JOBS parallel jobs..."
     cmake --build build --parallel $PARALLEL_JOBS
@@ -509,7 +508,7 @@ if [ $# -ge 1 ]; then
     else
         echo "Usage: $0 [-b REF | --branch REF | --branch=REF] [build_type] [options]"
         echo ""
-        echo "src/ checkout (whillats uses the same ref):"
+        echo "src/ checkout (whillats follows the commit pinned by src/; WHILLATS_REF overrides):"
         echo "  -b REF, --branch REF   Branch, tag, or commit for src (outer repo unchanged)"
         echo "  --branch=REF           Same as --branch"
         echo "  Env SRC_BRANCH=REF     Same if no -b/--branch on the command line"
@@ -729,7 +728,7 @@ elif [ "$BUILD_TYPE" = "debug" ]; then
     echo "Debug build completed."
 else
     echo "Building WebRTC project (release, whillats: $ENABLE_WHILLATS)..."
-    (cd $SRC_DIR && gn gen out/release --args="is_debug=false rtc_include_opus=true rtc_enable_symbol_export=true rtc_build_examples=true rtc_use_speech_audio_devices=$ENABLE_WHILLATS $EXTRA_ARGS")
+    (cd $SRC_DIR && gn gen out/release --args="is_debug=false symbol_level=0 rtc_include_opus=true rtc_enable_symbol_export=true rtc_build_examples=true rtc_use_speech_audio_devices=$ENABLE_WHILLATS $EXTRA_ARGS")
     (cd $SRC_DIR && ninja -C out/$BUILD_TYPE directcall)
     echo "Release build completed."
 fi

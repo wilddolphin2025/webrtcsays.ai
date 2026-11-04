@@ -81,6 +81,8 @@ jobs:
           SERVICE_NAME: ${{ inputs.service_name }}
           SSH_KEY_PATH: ~/.ssh/id_wd2025
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          TURN_USER: ${{ secrets.TURN_USER }}
+          TURN_PASS: ${{ secrets.TURN_PASS }}
           WHILLATS_BRANCH: ${{ inputs.whillats_branch }}
           SKIP_COTURN: "true"
         run: |

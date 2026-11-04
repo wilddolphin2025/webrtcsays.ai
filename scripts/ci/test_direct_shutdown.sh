@@ -13,6 +13,11 @@ PORT=${PORT:-3466}
 LOG=${LOG:-/tmp/direct_shutdown}
 export DIRECT_LOG_LEVEL=${DIRECT_LOG_LEVEL:-info}
 mkdir -p "$LOG"
+if [ ! -f "$CERT" ] || [ ! -f "$KEY" ]; then
+  CERT=$LOG/cert.pem KEY=$LOG/key.pem
+  openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=directcall-test" \
+    -keyout "$KEY" -out "$CERT" 2>/dev/null
+fi
 COMMON=(--encryption --webrtc_cert_path="$CERT" --webrtc_key_path="$KEY"
         --no-whisper --no-llama --no-video --no-websocket_signaling
         --media_grace_ms=3000)

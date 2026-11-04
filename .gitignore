@@ -76,3 +76,8 @@
 /.vscode
 !webrtc/*
 rust-project.json
+
+# Secrets: generated locally (build.sh) or provided by the environment.
+*.pem
+.env
+.env.*

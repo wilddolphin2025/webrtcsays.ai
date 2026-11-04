@@ -21,6 +21,10 @@
 
 set -euo pipefail
 
+# Credentials come from the environment; nothing secret lives in this repo.
+: "${TURN_USER:?export TURN_USER (coturn user)}"
+: "${TURN_PASS:?export TURN_PASS (coturn password)}"
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -357,8 +361,8 @@ cat > "$DEPLOY_DIR/config.talkingface4.json" << 'CONFIG'
   "webrtc_key_path":  "$DEPLOY_DIR/key.pem",
   "webrtc_speech_initial_playout_wav": "",
   "turns": [
-    ["turn:turn.wilddolphin.us:3478?transport=udp", "webrtcsays.ai", "wilddolphin"],
-    ["turn:turn.wilddolphin.us:5349?transport=tcp", "webrtcsays.ai", "wilddolphin"]
+    ["turn:turn.wilddolphin.us:3478?transport=udp", "${TURN_USER}", "${TURN_PASS}"],
+    ["turn:turn.wilddolphin.us:5349?transport=tcp", "${TURN_USER}", "${TURN_PASS}"]
   ],
   "talking_face": "$DEPLOY_DIR/RobotPhoneLogo.jpeg",
   "whisper_threads": 4,

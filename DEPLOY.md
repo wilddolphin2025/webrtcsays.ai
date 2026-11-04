@@ -99,8 +99,8 @@ TURN relay: coturn on 217.77.3.65 (ports 3478, 5349)
   "llama_threads": 8,
   "tts_threads": 4,
   "turns": [
-    ["turn:217.77.3.65:3478?transport=udp", "webrtcsays.ai", "wilddolphin"],
-    ["turn:217.77.3.65:5349?transport=tcp", "webrtcsays.ai", "wilddolphin"]
+    ["turn:217.77.3.65:3478?transport=udp", "<turn-username>", "<turn-password>"],
+    ["turn:217.77.3.65:5349?transport=tcp", "<turn-username>", "<turn-password>"]
   ],
   "talking_face": "/opt/directcall/RobotPhoneLogo.jpeg"
 }

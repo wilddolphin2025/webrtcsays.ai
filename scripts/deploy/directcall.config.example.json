@@ -19,13 +19,13 @@
   "turns": [
     [
       "turn:217.77.3.65:3478?transport=udp",
-      "webrtcsays.ai",
-      "wilddolphin"
+      "<turn-username>",
+      "<turn-password>"
     ],
     [
       "turn:217.77.3.65:5349?transport=tcp",
-      "webrtcsays.ai",
-      "wilddolphin"
+      "<turn-username>",
+      "<turn-password>"
     ]
   ],
   "talking_face": "/opt/directcall/RobotPhoneLogo.jpeg",

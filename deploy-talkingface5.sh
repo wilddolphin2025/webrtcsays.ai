@@ -14,6 +14,10 @@
 
 set -euo pipefail
 
+# Credentials come from the environment; nothing secret lives in this repo.
+: "${TURN_USER:?export TURN_USER (coturn user)}"
+: "${TURN_PASS:?export TURN_PASS (coturn password)}"
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -274,8 +278,8 @@ cat > "$DEPLOY_DIR/config.talkingface5.json" << 'CONFIG'
   "webrtc_key_path":  "$DEPLOY_DIR/key.pem",
   "webrtc_speech_initial_playout_wav": "",
   "turns": [
-    ["turn:turn.wilddolphin.us:3478?transport=udp", "webrtcsays.ai", "wilddolphin"],
-    ["turn:turn.wilddolphin.us:5349?transport=tcp", "webrtcsays.ai", "wilddolphin"]
+    ["turn:turn.wilddolphin.us:3478?transport=udp", "${TURN_USER}", "${TURN_PASS}"],
+    ["turn:turn.wilddolphin.us:5349?transport=tcp", "${TURN_USER}", "${TURN_PASS}"]
   ],
   "talking_face": "$DEPLOY_DIR/RobotPhoneLogo.jpeg",
   "whisper_threads": 4,
@@ -330,10 +334,16 @@ EOF
 # ---------------------------------------------------------------------------
 echo "  Deploying demo.html to www.wilddolphin.us..."
 DEMO_SRC="$(dirname "$0")/src/modules/third_party/whillats/demo.html"
-if [ -f "$DEMO_SRC" ]; then
-    curl -s --ftp-create-dirs -T "$DEMO_SRC" \
+if [ -z "${FTP_USER:-}" ] || [ -z "${FTP_PASS:-}" ]; then
+    echo "  Skipping demo.html upload: set FTP_USER and FTP_PASS"
+elif [ -f "$DEMO_SRC" ]; then
+    # The page ships TURN credentials to browsers; fill them in at upload time.
+    DEMO_OUT="$(mktemp)"
+    sed -e "s|__TURN_USER__|${TURN_USER}|g" -e "s|__TURN_PASS__|${TURN_PASS}|g" "$DEMO_SRC" > "$DEMO_OUT"
+    curl -s --ftp-create-dirs -T "$DEMO_OUT" \
         "ftp://www.wilddolphin.us/www/demo.html" \
-        --user "wilddolphin:WildAt2026!" && echo "  demo.html uploaded to FTP"
+        --user "${FTP_USER}:${FTP_PASS}" && echo "  demo.html uploaded to FTP"
+    rm -f "$DEMO_OUT"
 else
     echo "  WARNING: demo.html not found at $DEMO_SRC"
 fi

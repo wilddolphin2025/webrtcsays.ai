@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Credentials come from the environment; nothing secret lives in this repo.
+: "${TURN_USER:?export TURN_USER (coturn user)}"
+: "${TURN_PASS:?export TURN_PASS (coturn password)}"
+
 # === Configurable defaults ===
 DEPLOY_HOST="${DEPLOY_HOST:-217.77.3.65}"
 DEPLOY_USER="${DEPLOY_USER:-root}"
@@ -127,8 +131,8 @@ else
   \"webrtc_key_path\": \"/opt/directcall/key.pem\",
   \"webrtc_speech_initial_playout_wav\": \"\",
   \"turns\": [
-    [\"turn:turn.wilddolphin.us:3478?transport=udp\", \"webrtcsays.ai\", \"wilddolphin\"],
-    [\"turn:turn.wilddolphin.us:5349?transport=tcp\", \"webrtcsays.ai\", \"wilddolphin\"]
+    [\"turn:turn.wilddolphin.us:3478?transport=udp\", \"${TURN_USER}\", \"${TURN_PASS}\"],
+    [\"turn:turn.wilddolphin.us:5349?transport=tcp\", \"${TURN_USER}\", \"${TURN_PASS}\"]
   ],
   \"talking_face\": \"/opt/directcall/RobotPhoneLogo.jpeg\",
   \"whisper_threads\": 4,
@@ -161,7 +165,7 @@ max-port=65535
 verbose
 fingerprint
 lt-cred-mech
-user=webrtcsays.ai:wilddolphin
+user=${TURN_USER}:${TURN_PASS}
 realm=wilddolphin.us
 server-name=wilddolphin.us
 no-multicast-peers

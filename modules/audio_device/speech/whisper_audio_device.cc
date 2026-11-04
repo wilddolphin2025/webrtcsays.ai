@@ -25,7 +25,7 @@
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/thread.h"
-#include "system_wrappers/include/sleep.h"
+#include "rtc_base/thread.h"
 #include "rtc_base/string_utils.h"
 #include "api/task_queue/default_task_queue_factory.h"
 
@@ -212,8 +212,8 @@ int32_t WhisperAudioDevice::RecordingDeviceName(uint16_t index,
   const char* kName = "whisper_recording_device";
   const char* kGuid = "358f8c4d-9605-4d23-bf0a-17d346fafc6f";
   if (index < 1) {
-    rtc::strcpyn(name, kAdmMaxDeviceNameSize, kName);
-    rtc::strcpyn(guid, kAdmMaxGuidSize, kGuid);
+    webrtc::strcpyn(name, kAdmMaxDeviceNameSize, kName);
+    webrtc::strcpyn(guid, kAdmMaxGuidSize, kGuid);
     return 0;
   }
   return -1;
@@ -295,13 +295,13 @@ int32_t WhisperAudioDevice::StartRecording() {
   else
     speakText("Whisper speech synthesis ready to chat");
 
-  _ptrThreadRec = rtc::PlatformThread::SpawnJoinable(
+  _ptrThreadRec = webrtc::PlatformThread::SpawnJoinable(
       [this] {
         while (RecThreadProcess()) {
         }
       },
       "whisper_audio_module_capture_thread",
-      rtc::ThreadAttributes().SetPriority(rtc::ThreadPriority::kRealtime));
+      webrtc::ThreadAttributes().SetPriority(webrtc::ThreadPriority::kRealtime));
 
   RTC_LOG(LS_INFO) << "Started Whisper recording";
 
@@ -357,7 +357,7 @@ void WhisperAudioDevice::SetTTSBuffer(const uint16_t* buffer, size_t buffer_size
     _ttsBuffer.reserve(new_size);
     _ttsBuffer.insert(_ttsBuffer.end(), buffer, buffer + buffer_size);
     if (!_isSpeaking.exchange(true, std::memory_order_relaxed)) {
-      _ttsStartedMillis.store(rtc::TimeMillis(), std::memory_order_relaxed);
+      _ttsStartedMillis.store(webrtc::TimeMillis(), std::memory_order_relaxed);
     }
 
     RTC_LOG(LS_INFO) << "[PLAY] TTS buffer updated, new size: " << _ttsBuffer.size();
@@ -411,7 +411,7 @@ bool WhisperAudioDevice::RecThreadProcess() {
   if (!_recording) {
     return false;
   }
-  int64_t currentTime = rtc::TimeMillis();
+  int64_t currentTime = webrtc::TimeMillis();
   mutex_.Lock();
 
   // Check if it's time to process another 10ms chunk
@@ -504,10 +504,10 @@ bool WhisperAudioDevice::RecThreadProcess() {
     _lastCallRecordMillis = currentTime;
   } else {
     // Pacing for the next 10ms chunk
-    int64_t sleepTime = 10 - (rtc::TimeMillis() - currentTime);
+    int64_t sleepTime = 10 - (webrtc::TimeMillis() - currentTime);
     if (sleepTime > 0) {
       mutex_.Unlock();
-      SleepMs(sleepTime);
+      webrtc::Thread::SleepMs(sleepTime);
       mutex_.Lock();
     }
   }
@@ -540,8 +540,8 @@ int32_t WhisperAudioDevice::PlayoutDeviceName(uint16_t index,
   const char* kName = "whisper_playout_device";
   const char* kGuid = "951ba178-fbd1-47d1-96be-965b17d56d5b";
   if (index < 1) {
-    rtc::strcpyn(name, kAdmMaxDeviceNameSize, kName);
-    rtc::strcpyn(guid, kAdmMaxGuidSize, kGuid);
+    webrtc::strcpyn(name, kAdmMaxDeviceNameSize, kName);
+    webrtc::strcpyn(guid, kAdmMaxGuidSize, kGuid);
     return 0;
   }
   return -1;
@@ -642,13 +642,13 @@ int32_t WhisperAudioDevice::StartPlayout() {
   #endif // defined(PLAY_WAV_ON_PLAY)
 
   // "PLAYOUT"
-  _ptrThreadPlay = rtc::PlatformThread::SpawnJoinable(
+  _ptrThreadPlay = webrtc::PlatformThread::SpawnJoinable(
       [this] {
         while (PlayThreadProcess()) {
         }
       },
       "webrtc_audio_module_play_thread",
-      rtc::ThreadAttributes().SetPriority(rtc::ThreadPriority::kRealtime));
+      webrtc::ThreadAttributes().SetPriority(webrtc::ThreadPriority::kRealtime));
 
   RTC_LOG(LS_INFO) << "Started playout...";
   return 0;
@@ -716,7 +716,7 @@ bool WhisperAudioDevice::PlayThreadProcess() {
     return false;
   }
 
-  int64_t currentTime = rtc::TimeMillis();
+  int64_t currentTime = webrtc::TimeMillis();
   mutex_.Lock();
 
   if (_lastCallPlayoutMillis == 0 ||
@@ -775,9 +775,9 @@ bool WhisperAudioDevice::PlayThreadProcess() {
   _playoutFramesLeft = 0;
   mutex_.Unlock();
 
-  int64_t deltaTimeMillis = rtc::TimeMillis() - currentTime;
+  int64_t deltaTimeMillis = webrtc::TimeMillis() - currentTime;
   if (deltaTimeMillis < 10) {
-    SleepMs(10 - deltaTimeMillis);
+    webrtc::Thread::SleepMs(10 - deltaTimeMillis);
   }
 
   return true;

@@ -43,9 +43,9 @@
 
 // Helper sink that forwards captured frames to a FakeVideoTrackSource so that
 // the source can be used as a regular WebRTC VideoTrackSourceInterface.
-class CameraFrameSink : public rtc::VideoSinkInterface<webrtc::VideoFrame> {
+class CameraFrameSink : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
  public:
-  explicit CameraFrameSink(const rtc::scoped_refptr<webrtc::FakeVideoTrackSource>& src)
+  explicit CameraFrameSink(const webrtc::scoped_refptr<webrtc::FakeVideoTrackSource>& src)
       : src_(src) {}
 
   void OnFrame(const webrtc::VideoFrame& frame) override {
@@ -55,7 +55,7 @@ class CameraFrameSink : public rtc::VideoSinkInterface<webrtc::VideoFrame> {
   }
 
  private:
-  rtc::scoped_refptr<webrtc::FakeVideoTrackSource> src_;
+  webrtc::scoped_refptr<webrtc::FakeVideoTrackSource> src_;
 };
 
 // helper to trim whitespace
@@ -129,7 +129,7 @@ class DirectPeer; // forward declaration
 #if defined(WEBRTC_SPEECH_DEVICES)
 class TalkingFaceRenderer {
  public:
-  TalkingFaceRenderer(rtc::scoped_refptr<webrtc::FakeVideoTrackSource> src,
+  TalkingFaceRenderer(webrtc::scoped_refptr<webrtc::FakeVideoTrackSource> src,
                       TalkingFace* face, int fps = 30)
       : src_(src), face_(face), interval_ms_(1000 / fps), running_(false) {}
 
@@ -139,7 +139,7 @@ class TalkingFaceRenderer {
     if (running_) return;
     running_ = true;
     thread_ = std::thread([this]() {
-      rtc::scoped_refptr<webrtc::I420Buffer> last_i420;
+      webrtc::scoped_refptr<webrtc::I420Buffer> last_i420;
       while (running_) {
         YUVData yuv;
         if (face_->renderFrame(yuv)) {
@@ -163,7 +163,7 @@ class TalkingFaceRenderer {
           webrtc::VideoFrame frame =
               webrtc::VideoFrame::Builder()
                   .set_video_frame_buffer(last_i420)
-                  .set_timestamp_us(rtc::TimeMicros())
+                  .set_timestamp_us(webrtc::TimeMicros())
                   .build();
           src_->InjectFrame(frame);
         }
@@ -178,14 +178,19 @@ class TalkingFaceRenderer {
   }
 
  private:
-  rtc::scoped_refptr<webrtc::FakeVideoTrackSource> src_;
+  webrtc::scoped_refptr<webrtc::FakeVideoTrackSource> src_;
   TalkingFace* face_;
   int interval_ms_;
   std::atomic<bool> running_;
   std::thread thread_;
 };
 
-rtc::scoped_refptr<webrtc::VideoTrackSourceInterface>
+// One avatar per process: the callee serves a single call at a time.
+static std::unique_ptr<TalkingFaceRenderer> s_talking_face_renderer;
+
+void StopTalkingFaceRenderer();
+
+webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface>
 CreateTalkingFaceVideoSource(DirectPeer* owner) {
   using namespace webrtc;
 
@@ -194,21 +199,26 @@ CreateTalkingFaceVideoSource(DirectPeer* owner) {
 
   face->setOutputSize(640, 480);
 
-  static TalkingFaceRenderer* s_renderer = nullptr;  // NOLINT
-  if (s_renderer) { s_renderer->Stop(); delete s_renderer; }
+  StopTalkingFaceRenderer();
 
   auto track_source = FakeVideoTrackSource::Create(false);
   track_source->SetState(MediaSourceInterface::kLive);
 
-  s_renderer = new TalkingFaceRenderer(track_source, face, 24);
-  s_renderer->Start();
+  s_talking_face_renderer = std::make_unique<TalkingFaceRenderer>(track_source, face, 24);
+  s_talking_face_renderer->Start();
 
   RTC_LOG(LS_INFO) << "TalkingFace video source created (640x480@24fps)";
   return track_source;
 }
 #endif  // defined(WEBRTC_SPEECH_DEVICES)
 
-rtc::scoped_refptr<webrtc::VideoTrackSourceInterface>
+void StopTalkingFaceRenderer() {
+#if defined(WEBRTC_SPEECH_DEVICES)
+  s_talking_face_renderer.reset();
+#endif
+}
+
+webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface>
 CreateCameraVideoSource(DirectPeer* owner, const Options& opts) {
   using namespace webrtc;
 
@@ -259,9 +269,9 @@ CreateCameraVideoSource(DirectPeer* owner, const Options& opts) {
 
   // Build the FakeVideoTrackSource on the owner's signaling thread so its
   // internal thread checker is satisfied.
-  rtc::scoped_refptr<FakeVideoTrackSource> track_source;
+  webrtc::scoped_refptr<FakeVideoTrackSource> track_source;
   if (owner && owner->signaling_thread()) {
-      if (rtc::Thread::Current() == owner->signaling_thread()) {
+      if (webrtc::Thread::Current() == owner->signaling_thread()) {
           track_source = FakeVideoTrackSource::Create(false);
           track_source->SetState(webrtc::MediaSourceInterface::kLive);
       } else {
@@ -291,7 +301,7 @@ CreateCameraVideoSource(DirectPeer* owner, const Options& opts) {
 
   // Create sink to forward frames.
   std::unique_ptr<CameraFrameSink> sink = std::make_unique<CameraFrameSink>(track_source);
-  capturer->AddOrUpdateSink(sink.get(), rtc::VideoSinkWants());
+  capturer->AddOrUpdateSink(sink.get(), webrtc::VideoSinkWants());
 
   if (owner) {
     owner->capturers().push_back(std::move(capturer));
@@ -314,52 +324,107 @@ DirectPeer::DirectPeer(
 }
 
 DirectPeer::~DirectPeer() {
-  // Shutdown should have been called, but as a safety net:
-  if (peer_connection_) {
-      ShutdownInternal(); // Ensure cleanup happens
-  }
+  Cleanup();
 }
 
 void DirectPeer::ShutdownInternal() {
-    RTC_LOG(LS_INFO) << "Shutting down peer connection (DirectPeer::ShutdownInternal)";
-    RTC_LOG(LS_INFO) << "Current peer connection state before shutdown: " << (peer_connection_ ? "Active" : "Inactive");
+    auto release = [this] {
+        StopTalkingFaceRenderer();
+        RunOn(signaling_thread(), [this] {
+            audio_track_ = nullptr;
+            video_source_ = nullptr;
+            pending_ice_candidates_.clear();
+        });
+        ReleaseCallResources();
+        media_connected_ = false;
+        RTC_LOG(LS_INFO) << "Call media released";
+    };
+    // Signaling and network threads must not block on the teardown (it calls
+    // back into both); main or a foreign thread can.
+    auto* current = webrtc::Thread::Current();
+    if (main_thread() && current != main_thread() && IsOwnedThread(current)) {
+        main_thread()->PostTask(std::move(release));
+    } else {
+        release();
+    }
+}
 
-    // Clear pointer now so "busy" checks immediately reflect idle state.
-    auto pc_to_close = std::move(peer_connection_);
+void DirectPeer::BeginCall() {
+    const uint64_t gen = ++call_generation_;
+    in_call_ = true;
+    media_connected_ = false;
+    pc_state_ = webrtc::PeerConnectionInterface::PeerConnectionState::kNew;
+    if (opts_.call_setup_timeout_ms > 0 && main_thread()) {
+        main_thread()->PostDelayedTask(
+            [this, gen] {
+                if (gen == call_generation_ && in_call_ && !media_connected_) {
+                    EndCall("setup timeout", /*notify_remote=*/true);
+                }
+            },
+            webrtc::TimeDelta::Millis(opts_.call_setup_timeout_ms));
+    }
+}
 
-    signaling_thread()->PostTask([this, pc = std::move(pc_to_close)]() mutable {
-        //RTC_DCHECK_RUN_ON(signaling_thread());
-        // Release tracks first so their destructors can safely invoke into WebRTC threads
-        audio_track_ = nullptr;
-        video_track_ = nullptr;
-        video_source_ = nullptr;
-        RTC_LOG(LS_INFO) << "Media tracks and sources released on signaling thread.";
-        // Now close the PeerConnection, after tracks are released
-        if (pc) {
-            pc->Close();
-            RTC_LOG(LS_INFO) << "Peer connection closed on signaling thread.";
-            pc = nullptr;
-        } else {
-            RTC_LOG(LS_INFO) << "No active peer connection to close.";
-        }
-        // Defer factory destruction to main thread (non-blocking)
+void DirectPeer::EndCall(const char* reason, bool notify_remote) {
+    if (!in_call_.exchange(false)) {
+        return;
+    }
+    ++call_generation_;
+    RTC_LOG(LS_INFO) << "Ending call (" << reason << "), notify_remote="
+                     << notify_remote;
+    if (notify_remote) {
+        SendMessage(Msg::kBye);
+    }
+    // Teardown and the role-specific follow-up run in order on main.
+    main_thread()->PostTask([this, notify_remote] {
+        ShutdownInternal();
+        OnCallEnded(notify_remote);
     });
+}
 
-    // Factory reset can happen asynchronously; no blocking ops needed.
-    main_thread()->PostTask([this]() { peer_connection_factory_ = nullptr; });
+void DirectPeer::OnCallEnded(bool /*notified_remote*/) {
+    connection_closed_event_.Set();
+}
 
-    RTC_LOG(LS_INFO) << "Peer connection and factory closed and released on signaling thread. Peer connection factory preserved for reconnection.";
+void DirectPeer::OnConnectionChange(
+    webrtc::PeerConnectionInterface::PeerConnectionState new_state) {
+    using State = webrtc::PeerConnectionInterface::PeerConnectionState;
+    pc_state_ = new_state;
+    RTC_LOG(LS_INFO) << "PeerConnectionState -> "
+                     << webrtc::PeerConnectionInterface::AsString(new_state);
+    switch (new_state) {
+        case State::kConnected:
+            media_connected_ = true;
+            break;
+        case State::kFailed:
+            // ICE gave up (consent expired or no candidate pair works).
+            EndCall("media failed", /*notify_remote=*/true);
+            break;
+        case State::kDisconnected: {
+            // Often transient (Wi-Fi roam, NAT rebinding); give ICE a chance.
+            const uint64_t gen = call_generation_;
+            if (opts_.media_grace_ms > 0 && main_thread()) {
+                main_thread()->PostDelayedTask(
+                    [this, gen] {
+                        if (gen == call_generation_ &&
+                            pc_state_ == State::kDisconnected) {
+                            EndCall("media disconnected", /*notify_remote=*/true);
+                        }
+                    },
+                    webrtc::TimeDelta::Millis(opts_.media_grace_ms));
+            }
+            break;
+        }
+        default:
+            break;
+    }
 }
 
 void DirectPeer::Start() {
 
   // Reset the closed event before starting a new connection attempt
   ResetConnectionClosedEvent();
-  
-  // Removed the 30-second timeout watchdog – some networks may legitimately
-  // need longer to finish ICE checks or STUN/TURN negotiations.  The session
-  // will now stay in the "checking" state until the peer-connection itself
-  // reports success or failure.
+  BeginCall();
 
   signaling_thread()->PostTask([this]() {
 
@@ -378,7 +443,7 @@ void DirectPeer::Start() {
     }
 
     if (is_caller()) {
-        cricket::AudioOptions audio_options;
+        webrtc::AudioOptions audio_options;
         if (opts_.llama) {
             audio_options.echo_cancellation = false;
             audio_options.auto_gain_control = false;
@@ -405,7 +470,7 @@ void DirectPeer::Start() {
         // Create a video track source for the caller.
         if (opts_.video) {
             // Reuse existing live source if present.
-            rtc::scoped_refptr<webrtc::VideoTrackSourceInterface> existing_source = video_source_;
+            webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> existing_source = video_source_;
             if (existing_source && existing_source->state() == webrtc::MediaSourceInterface::kLive) {
                 RTC_LOG(LS_INFO) << "Existing video source is already live – keeping it.";
             } else {
@@ -416,12 +481,12 @@ void DirectPeer::Start() {
                 // Fallback to synthetic if camera unavailable or unspecified.
                 if (!video_source_) {
                     RTC_LOG(LS_INFO) << "Falling back to EchoVideoTrackSource";
-                    if (rtc::Thread::Current() == signaling_thread()) {
-                        auto src = rtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
+                    if (webrtc::Thread::Current() == signaling_thread()) {
+                        auto src = webrtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
                         video_source_ = src;
                     } else {
                         signaling_thread()->BlockingCall([this]() {
-                            auto src = rtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
+                            auto src = webrtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
                             video_source_ = src;
                         });
                     }
@@ -434,20 +499,18 @@ void DirectPeer::Start() {
         webrtc::PeerConnectionInterface::RTCOfferAnswerOptions offer_options;
 
         // Store observer in a member variable to keep it alive
-        create_session_observer_ = rtc::make_ref_counted<LambdaCreateSessionDescriptionObserver>(
+        create_session_observer_ = webrtc::make_ref_counted<LambdaCreateSessionDescriptionObserver>(
             [this](std::unique_ptr<webrtc::SessionDescriptionInterface> desc) {
                 std::string sdp;
                 desc->ToString(&sdp);
                 
                 // Store observer in a member variable to keep it alive
-                set_local_description_observer_ = rtc::make_ref_counted<LambdaSetLocalDescriptionObserver>(
+                set_local_description_observer_ = webrtc::make_ref_counted<LambdaSetLocalDescriptionObserver>(
                     [this, sdp](webrtc::RTCError error) {
                         if (!error.ok()) {
                             RTC_LOG(LS_ERROR) << "Failed to set local description: " 
                                               << error.message();
-                            signaling_thread()->PostTask([this]() {
-                                SendMessage(std::string("BYE"));
-                            });
+                            EndCall("set local description failed", true);
                             return;
                         }
                         RTC_LOG(LS_INFO) << "Local description set successfully";
@@ -467,11 +530,12 @@ void DirectPeer::Start() {
 
 }
 
-#include "rtc_base/third_party/base64/base64.h"
+#include "rtc_base/base64.h"
 
-void DirectPeer::HandleMessage(rtc::AsyncPacketSocket* socket,
+
+void DirectPeer::HandleMessage(webrtc::AsyncPacketSocket* socket,
                              const std::string& message,
-                             const rtc::SocketAddress& remote_addr) {
+                             const webrtc::SocketAddress& remote_addr) {
 
    if (message.rfind(Msg::kInvite, 0) == 0) {
         // Default agent capability
@@ -530,7 +594,8 @@ void DirectPeer::HandleMessage(rtc::AsyncPacketSocket* socket,
       // Decode base64 and set image
       std::string decoded;
 #if defined(WEBRTC_SPEECH_DEVICES)
-      if (rtc::Base64::DecodeFromArray(payload.data(), payload.size(), rtc::Base64::DO_STRICT, &decoded, nullptr)) {
+      if (auto decoded_or = webrtc::Base64Decode(payload)) {
+          decoded = std::move(*decoded_or);
           webrtc::SpeechAudioDeviceFactory::SetTalkingFaceImageFromMemory(
               reinterpret_cast<const uint8_t*>(decoded.data()), decoded.size(), 0, 0);
       } else {
@@ -579,7 +644,7 @@ void DirectPeer::OnIceCandidate(const webrtc::IceCandidateInterface* candidate) 
                      << " mlineindex: " << mline_index;
     
     // Only send ICE candidates after local description is set
-    if (!peer_connection_->local_description()) {
+    if (!peer_connection_ || !peer_connection_->local_description()) {
         RTC_LOG(LS_INFO) << "Queuing ICE candidate until local description is set";
         pending_ice_candidates_.push_back({mline_index, sdp});
         return;
@@ -731,7 +796,7 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
         }
         fprintf(stderr, "[peer] SDP parsed ok, calling SetRemoteDescription\n");
 
-        auto observer = rtc::make_ref_counted<LambdaSetRemoteDescriptionObserver>(
+        auto observer = webrtc::make_ref_counted<LambdaSetRemoteDescriptionObserver>(
             [this](webrtc::RTCError error) {
                 fprintf(stderr, "[peer] SetRemoteDescription callback ok=%d\n", error.ok() ? 1 : 0);
                 if (!error.ok()) {
@@ -741,10 +806,16 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                     return;
                 }
                 RTC_LOG(LS_INFO) << "Remote description set successfully";
+                if (!peer_connection()) {
+                    return;  // Call ended while the description was applied.
+                }
                 // Attempt to process any ICE candidates that arrived early.
                 DrainPendingIceCandidates();
                 auto transceivers = peer_connection()->GetTransceivers();
-                RTC_DCHECK(transceivers.size() > 0);
+                if (transceivers.empty()) {
+                    EndCall("remote description has no media", true);
+                    return;
+                }
                 auto transceiver = transceivers[0];
 
                 // Force send/recv mode
@@ -769,7 +840,7 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                     // answer to have more m-lines than the offer and therefore make
                     // SetLocalDescription fail.
 
-                    cricket::AudioOptions audio_options;
+                    webrtc::AudioOptions audio_options;
                     if (opts_.llama) {
                         audio_options.echo_cancellation = false;
                         audio_options.auto_gain_control = false;
@@ -787,7 +858,7 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                     // Try to attach our track to an existing AUDIO transceiver that came
                     // from the remote offer.
                     for (const auto& t : peer_connection()->GetTransceivers()) {
-                        if (t->media_type() == cricket::MEDIA_TYPE_AUDIO) {
+                        if (t->media_type() == webrtc::MediaType::AUDIO) {
                             // Attach our local track FIRST, then switch direction to sendrecv.
                             auto sender = t->sender();
                             if (sender && sender->SetTrack(audio_track_.get())) {
@@ -845,12 +916,12 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                         }
                         if (!video_source_) {
                             RTC_LOG(LS_INFO) << "Callee falling back to EchoVideoTrackSource";
-                            if (rtc::Thread::Current() == signaling_thread()) {
-                                auto src = rtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
+                            if (webrtc::Thread::Current() == signaling_thread()) {
+                                auto src = webrtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
                                 video_source_ = src;
                             } else {
                                 signaling_thread()->BlockingCall([this]() {
-                                    auto src = rtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
+                                    auto src = webrtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
                                     video_source_ = src;
                                 });
                             }
@@ -863,7 +934,7 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                             video_track_ = local_video_track;
                             video_track_->set_enabled(true);
                             for (const auto& t : peer_connection()->GetTransceivers()) {
-                              if (t->media_type() == cricket::MEDIA_TYPE_VIDEO) {
+                              if (t->media_type() == webrtc::MediaType::VIDEO) {
                                 auto sender = t->sender();
                                 if (sender && sender->SetTrack(video_track_.get())) {
                                   auto dir_res = t->SetDirectionWithError(
@@ -884,7 +955,7 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                         RTC_LOG(LS_INFO) << "Video source configured for callee.";
                     }
 
-                    create_session_observer_ = rtc::make_ref_counted<LambdaCreateSessionDescriptionObserver>(
+                    create_session_observer_ = webrtc::make_ref_counted<LambdaCreateSessionDescriptionObserver>(
                         [this](std::unique_ptr<webrtc::SessionDescriptionInterface> desc) {
                             fprintf(stderr, "[peer] CreateAnswer callback fired\n");
                             std::string sdp;
@@ -913,16 +984,14 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                                 return;
                             }
 
-                            set_local_description_observer_ = rtc::make_ref_counted<LambdaSetLocalDescriptionObserver>(
+                            set_local_description_observer_ = webrtc::make_ref_counted<LambdaSetLocalDescriptionObserver>(
                                 [this, sdp](webrtc::RTCError error) {
                                     fprintf(stderr, "[peer] SetLocalDescription callback ok=%d\n", error.ok() ? 1 : 0);
                                     if (!error.ok()) {
                                         fprintf(stderr, "[peer] SetLocalDescription failed: %s\n", error.message());
                                         RTC_LOG(LS_ERROR) << "Failed to set local description: " 
                                                         << error.message();
-                                        signaling_thread()->PostTask([this]() {
-                                            SendMessage(std::string("BYE"));
-                                        });
+                                        EndCall("set local description failed", true);
                                         return;
                                     }
                                     RTC_LOG(LS_INFO) << "Local description set successfully";
@@ -946,15 +1015,16 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
 
 void DirectPeer::AddIceCandidate(const std::string& candidate_sdp, int mline_index) {
     signaling_thread()->PostTask([this, candidate_sdp, mline_index]() {
-        // Queue if descriptions aren't ready yet
-        if (!peer_connection_->remote_description() || !peer_connection_->local_description()) {
+        // Queue until the PeerConnection exists and both descriptions are set.
+        if (!peer_connection_ || !peer_connection_->remote_description() ||
+            !peer_connection_->local_description()) {
             RTC_LOG(LS_INFO) << "Queuing ICE candidate - descriptions not ready";
             pending_ice_candidates_.push_back({mline_index, candidate_sdp});
             return;
         }
 
         webrtc::SdpParseError error;
-        std::unique_ptr<webrtc::IceCandidateInterface> candidate(
+        std::unique_ptr<webrtc::IceCandidate> candidate(
             webrtc::CreateIceCandidate(std::to_string(mline_index), mline_index, candidate_sdp, &error));
         if (!candidate) {
             RTC_LOG(LS_ERROR) << "Failed to parse ICE candidate: " << error.description;
@@ -962,7 +1032,9 @@ void DirectPeer::AddIceCandidate(const std::string& candidate_sdp, int mline_ind
         }
 
         RTC_LOG(LS_INFO) << "Adding ICE candidate (mline=" << mline_index << ")";
-        peer_connection_->AddIceCandidate(candidate.get());
+        peer_connection_->AddIceCandidate(std::move(candidate), [](webrtc::RTCError error) {
+            if (!error.ok()) RTC_LOG(LS_WARNING) << "AddIceCandidate failed: " << error.message();
+        });
     });
 }
 
@@ -1061,7 +1133,7 @@ void DirectPeer::DrainPendingIceCandidates() {
         const std::string& candidate_sdp = item.second;
 
         webrtc::SdpParseError error;
-        std::unique_ptr<webrtc::IceCandidateInterface> candidate(
+        std::unique_ptr<webrtc::IceCandidate> candidate(
             webrtc::CreateIceCandidate(std::to_string(mline_index), mline_index, candidate_sdp, &error));
         if (!candidate) {
             RTC_LOG(LS_ERROR) << "Failed to parse queued ICE candidate: " << error.description;
@@ -1069,7 +1141,9 @@ void DirectPeer::DrainPendingIceCandidates() {
         }
 
         RTC_LOG(LS_INFO) << "Adding previously queued ICE candidate (mline=" << mline_index << ")";
-        peer_connection_->AddIceCandidate(candidate.get());
+        peer_connection_->AddIceCandidate(std::move(candidate), [](webrtc::RTCError error) {
+            if (!error.ok()) RTC_LOG(LS_WARNING) << "AddIceCandidate failed: " << error.message();
+        });
     }
 
     pending_ice_candidates_.clear();

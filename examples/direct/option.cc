@@ -190,6 +190,9 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --room_name=<name>                 Room name to join (default: room1)\n"
       "  --websocket_signaling, --no-websocket_signaling  Enable/disable raw WebSocket signaling endpoint (default: enabled)\n"
       "  --websocket_port=<port>            Raw WebSocket signaling port (default: 3457)\n"
+      "  --call_setup_timeout_ms=<ms>       Abort a call not connected within this time (default: 45000)\n"
+      "  --media_grace_ms=<ms>              Hang up after media stays disconnected this long (default: 10000)\n"
+      "  --hangup_ack_timeout_ms=<ms>       Wait this long for 200 OK after BYE (default: 2000)\n"
       "  --help                             Show this help message\n\n"
       "Examples (callee called first, encryption is recommended):\n"
       "  directcall --config settings.json\n"
@@ -208,6 +211,7 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--llama_llava_yuv", "--turns", "--vpn", "--camera", "--bonjour_name",
     "--user_name", "--target_name", "--room_name",
     "--websocket_signaling", "--no-websocket_signaling", "--websocket_port",
+    "--call_setup_timeout_ms", "--media_grace_ms", "--hangup_ack_timeout_ms",
     "--help"
   };
 
@@ -425,6 +429,14 @@ Options parseOptions(const std::vector<std::string>& args) {
              RTC_LOG(LS_INFO) << "Config websocket_port: " << config_json["websocket_port"].asInt();
              opts.websocket_port = config_json["websocket_port"].asInt();
         }
+        for (auto [key, field] : {std::pair{"call_setup_timeout_ms", &opts.call_setup_timeout_ms},
+                                  std::pair{"media_grace_ms", &opts.media_grace_ms},
+                                  std::pair{"hangup_ack_timeout_ms", &opts.hangup_ack_timeout_ms}}) {
+          if (config_json.isMember(key) && config_json[key].isInt()) {
+            *field = config_json[key].asInt();
+            RTC_LOG(LS_INFO) << "Config " << key << ": " << *field;
+          }
+        }
 
         RTC_LOG(LS_INFO) << "Loaded options from config file: " << opts.config_path;
       } else {
@@ -508,6 +520,12 @@ Options parseOptions(const std::vector<std::string>& args) {
         opts.room_name = arg.substr(12);
     } else if (arg.find("--websocket_port=") == 0) {
         opts.websocket_port = std::stoi(arg.substr(17));
+    } else if (arg.find("--call_setup_timeout_ms=") == 0) {
+        opts.call_setup_timeout_ms = std::stoi(arg.substr(24));
+    } else if (arg.find("--media_grace_ms=") == 0) {
+        opts.media_grace_ms = std::stoi(arg.substr(17));
+    } else if (arg.find("--hangup_ack_timeout_ms=") == 0) {
+        opts.hangup_ack_timeout_ms = std::stoi(arg.substr(24));
     }
     // Handle flags
     if (arg == "--encryption") {
@@ -668,20 +686,20 @@ std::string getUsage(const Options opts) {
 // LOGGING
 
 void DirectSetLoggingLevel(LoggingSeverity level) {
-  rtc::LogMessage::LogToDebug(static_cast<rtc::LoggingSeverity>(level));
+  webrtc::LogMessage::LogToDebug(static_cast<webrtc::LoggingSeverity>(level));
 }
 
 // CERTIFICATES
 
 // Function to create a self-signed certificate
-rtc::scoped_refptr<rtc::RTCCertificate> DirectCreateCertificate() {
-  auto key_params = rtc::KeyParams::RSA(2048);  // Use RSA with 2048-bit key
-  auto identity = rtc::SSLIdentity::Create("webrtc", key_params);
+webrtc::scoped_refptr<webrtc::RTCCertificate> DirectCreateCertificate() {
+  auto key_params = webrtc::KeyParams::RSA(2048);  // Use RSA with 2048-bit key
+  auto identity = webrtc::SSLIdentity::Create("webrtc", key_params);
   if (!identity) {
     RTC_LOG(LS_ERROR) << "Failed to create SSL identity";
     return nullptr;
   }
-  return rtc::RTCCertificate::Create(std::move(identity));
+  return webrtc::RTCCertificate::Create(std::move(identity));
 }
 
 // Function to read a file into a string
@@ -697,7 +715,7 @@ std::string DirectReadFile(const std::string& path) {
 }
 
 // Function to load a certificate from PEM files
-rtc::scoped_refptr<rtc::RTCCertificate> DirectLoadCertificate(
+webrtc::scoped_refptr<webrtc::RTCCertificate> DirectLoadCertificate(
     const std::string& cert_path,
     const std::string& key_path) {
   // Read the certificate and key files
@@ -714,18 +732,18 @@ rtc::scoped_refptr<rtc::RTCCertificate> DirectLoadCertificate(
   RTC_LOG(LS_VERBOSE) << "Private Key PEM:\n" << key_pem;
 
   // Create an SSL identity from the PEM strings
-  auto identity = rtc::SSLIdentity::CreateFromPEMStrings(key_pem, cert_pem);
+  auto identity = webrtc::SSLIdentity::CreateFromPEMStrings(key_pem, cert_pem);
   if (!identity) {
     RTC_LOG(LS_ERROR) << "Failed to create SSL identity from PEM strings";
     return nullptr;
   }
 
-  return rtc::RTCCertificate::Create(std::move(identity));
+  return webrtc::RTCCertificate::Create(std::move(identity));
 }
 
 // Function to load certificate from environment variables or fall back to
 // CreateCertificate
-DIRECT_API rtc::scoped_refptr<rtc::RTCCertificate> DirectLoadCertificateFromEnv(Options opts) {
+DIRECT_API webrtc::scoped_refptr<webrtc::RTCCertificate> DirectLoadCertificateFromEnv(Options opts) {
   RTC_LOG(LS_INFO) << "DirectLoadCertificateFromEnv called with cert_path: '" << opts.webrtc_cert_path << "', key_path: '" << opts.webrtc_key_path << "'";
   
   // Get paths from environment variables
@@ -758,14 +776,14 @@ DIRECT_API rtc::scoped_refptr<rtc::RTCCertificate> DirectLoadCertificateFromEnv(
 }
 
 DIRECT_API uint32_t DirectCreateRandomId() {
-  return rtc::CreateRandomId();
+  return webrtc::CreateRandomId();
 }
 
 DIRECT_API std::string DirectCreateRandomUuid() {
-  return rtc::CreateRandomUuid();
+  return webrtc::CreateRandomUuid();
 }
 
-DIRECT_API void DirectThreadSetName(rtc::Thread* thread, const char* name) {
+DIRECT_API void DirectThreadSetName(webrtc::Thread* thread, const char* name) {
   if(thread && name && *name) {
     thread->SetName(name, nullptr);
   }

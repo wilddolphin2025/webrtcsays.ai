@@ -99,7 +99,7 @@ public:
     std::shared_ptr<WebSocketClient> &ws_client() { return ws_client_; }
 protected:
     std::shared_ptr<WebSocketClient> ws_client_;
-    std::unique_ptr<rtc::Thread> network_thread_;
+    std::unique_ptr<webrtc::Thread> network_thread_;
     std::string jwt_token_;
     Options opts_;
     bool connected_;
@@ -150,7 +150,7 @@ private:
     bool initialized_ = false;
     std::string resolved_target_ip_;
     int resolved_target_port_ = 0;
-    rtc::Thread* owner_thread_ = nullptr; // Thread where the object was created
+    webrtc::Thread* owner_thread_ = nullptr; // Thread where the object was created
     UserListReceivedCallback user_list_callback_;
 
     // True once we've launched the initial WebRTC dial. Prevents retry on

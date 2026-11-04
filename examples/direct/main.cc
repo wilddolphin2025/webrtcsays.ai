@@ -41,37 +41,55 @@
 #include "client.h"
 //#include "room.h"
 
-static volatile bool g_shutdown = false;
-static volatile int g_shutdown_count = 0;
+static volatile sig_atomic_t g_shutdown = 0;
+static volatile sig_atomic_t g_shutdown_count = 0;
 
-// Signal handler for Ctrl+C
-void signalHandler(int signal) {
-    if (signal == SIGINT) {
-        g_shutdown_count++;
-        std::cout << "\nCtrl+C received (" << g_shutdown_count << "/3), shutting down...\n";
-        g_shutdown = true;
-        
-        // Force immediate exit after 3 Ctrl+C presses to handle stuck scenarios
-        if (g_shutdown_count >= 3) {
-            std::cout << "Force exit after multiple Ctrl+C signals\n";
-            std::cout.flush();
-            _exit(1);  // Use _exit for immediate termination
-        }
-        
-        // After 2nd Ctrl+C, be more aggressive
-        if (g_shutdown_count >= 2) {
-            std::cout << "Aggressive shutdown mode activated\n";
-            std::cout.flush();
-            // Set a 2-second timeout to force exit
-            std::thread([]() {
-                std::this_thread::sleep_for(std::chrono::seconds(2));
-                std::cout << "Force exit due to timeout\n";
-                std::cout.flush();
-                _exit(1);
-            }).detach();
-        }
+// Graceful teardown (BYE, ack wait, thread joins) must finish within this or
+// the process exits hard. Keep it below systemd's TimeoutStopSec.
+constexpr int kShutdownDeadlineMs = 10000;
+
+// Only async-signal-safe calls in here: write(2) and _exit(2).
+extern "C" void signalHandler(int /*signal*/) {
+    g_shutdown = 1;
+    if (++g_shutdown_count >= 2) {
+        static const char kMsg[] = "\nSecond termination signal, exiting now\n";
+        (void)!write(STDERR_FILENO, kMsg, sizeof(kMsg) - 1);
+        _exit(130);
     }
+    static const char kMsg[] = "\nTermination signal received, hanging up...\n";
+    (void)!write(STDERR_FILENO, kMsg, sizeof(kMsg) - 1);
 }
+
+static void InstallSignalHandlers() {
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = signalHandler;
+    sigemptyset(&sa.sa_mask);
+    for (int sig : {SIGINT, SIGTERM, SIGHUP}) {
+        sigaction(sig, &sa, nullptr);
+    }
+    // Writes to a socket the peer already closed must fail with EPIPE
+    // instead of killing the process.
+    signal(SIGPIPE, SIG_IGN);
+}
+
+// Started once shutdown begins; exits hard if teardown wedges.
+static void ArmShutdownWatchdog() {
+    static std::atomic<bool> armed{false};
+    if (armed.exchange(true)) return;
+    std::thread([] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kShutdownDeadlineMs));
+        fprintf(stderr, "Graceful shutdown exceeded %d ms, forcing exit\n",
+                kShutdownDeadlineMs);
+        _exit(1);
+    }).detach();
+}
+
+#if defined(MSG_NOSIGNAL)
+constexpr int kSendFlags = MSG_NOSIGNAL;
+#else
+constexpr int kSendFlags = 0;
+#endif
 
 namespace {
 
@@ -196,11 +214,22 @@ class DirectWebSocketProxy {
   void Stop() {
     if (!running_.exchange(false)) return;
     if (listen_fd_ >= 0) {
-      shutdown(listen_fd_, SHUT_RDWR);
+      shutdown(listen_fd_, SHUT_RDWR);  // wakes accept()
+    }
+    if (server_thread_.joinable()) server_thread_.join();
+    if (listen_fd_ >= 0) {
       close(listen_fd_);
       listen_fd_ = -1;
     }
-    if (server_thread_.joinable()) server_thread_.join();
+    // Client loops poll running_ every 200 ms and say BYE on the way out.
+    std::vector<ClientThread> clients;
+    {
+      std::lock_guard<std::mutex> lock(clients_mutex_);
+      clients.swap(client_threads_);
+    }
+    for (auto& c : clients) {
+      c.thread.join();
+    }
   }
 
  private:
@@ -246,7 +275,27 @@ class DirectWebSocketProxy {
       for (int i = 7; i >= 0; --i) frame.push_back(static_cast<uint8_t>((len >> (i * 8)) & 0xff));
     }
     frame.insert(frame.end(), text.begin(), text.end());
-    return send(fd, frame.data(), frame.size(), 0) == static_cast<ssize_t>(frame.size());
+    return SendAll(fd, frame.data(), frame.size());
+  }
+
+  // send() may write partially under backpressure (large SDP blobs).
+  static bool SendAll(int fd, const void* data, size_t len) {
+    const uint8_t* p = static_cast<const uint8_t*>(data);
+    while (len > 0) {
+      ssize_t n = send(fd, p, len, kSendFlags);
+      if (n < 0 && errno == EINTR) continue;
+      if (n <= 0) return false;
+      p += n;
+      len -= static_cast<size_t>(n);
+    }
+    return true;
+  }
+
+  static bool SendDirectFrame(int fd, const std::string& msg) {
+    if (msg.size() > 65535) return false;
+    uint8_t hdr[2] = {static_cast<uint8_t>((msg.size() >> 8) & 0xff),
+                      static_cast<uint8_t>(msg.size() & 0xff)};
+    return SendAll(fd, hdr, sizeof(hdr)) && SendAll(fd, msg.data(), msg.size());
   }
 
   static bool SendWsControlFrame(int fd, uint8_t opcode, const std::vector<uint8_t>& payload) {
@@ -255,7 +304,7 @@ class DirectWebSocketProxy {
     frame.push_back(static_cast<uint8_t>(0x80 | (opcode & 0x0f)));
     frame.push_back(static_cast<uint8_t>(payload.size() & 0x7f));
     frame.insert(frame.end(), payload.begin(), payload.end());
-    return send(fd, frame.data(), frame.size(), 0) == static_cast<ssize_t>(frame.size());
+    return SendAll(fd, frame.data(), frame.size());
   }
 
   static bool ReadWsFrame(int fd, uint8_t& opcode, std::string& text_payload) {
@@ -391,78 +440,137 @@ class DirectWebSocketProxy {
         << "Connection: Upgrade\r\n"
         << "Sec-WebSocket-Accept: " << accept << "\r\n\r\n";
     const std::string resp = out.str();
-    return send(client_fd, resp.data(), resp.size(), 0) == static_cast<ssize_t>(resp.size());
+    return SendAll(client_fd, resp.data(), resp.size());
   }
 
   void HandleClient(int client_fd) {
+    // Bound the HTTP upgrade so a silent client cannot pin this thread.
+    struct timeval handshake_tv = {5, 0};
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &handshake_tv, sizeof(handshake_tv));
     if (!PerformHandshake(client_fd)) {
       close(client_fd);
       return;
     }
+    struct timeval no_tv = {0, 0};
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &no_tv, sizeof(no_tv));
 
     int direct_fd = ConnectToDirectTcp();
     if (direct_fd < 0) {
       SendWsTextFrame(client_fd, "480 Temporarily Unavailable");
+      SendWsControlFrame(client_fd, 0x8, {0x03, 0xF3});  // 1011
       close(client_fd);
       return;
     }
 
+    // Browsers answer pings with pongs; anything from the browser counts as
+    // liveness. A tab that vanished (sleep, network loss) stops answering.
+    constexpr auto kPingInterval = std::chrono::seconds(15);
+    constexpr auto kIdleTimeout = std::chrono::seconds(45);
+    auto last_rx = std::chrono::steady_clock::now();
+    auto last_ping = last_rx;
+
+    // Who ended the session decides what each side is told.
+    enum class End { kRunning, kBrowserGone, kBrowserClosed, kDirectClosed, kStopping };
+    End end = End::kRunning;
+    bool bye_seen = false;  // BYE already crossed the bridge in either direction
+
     std::vector<uint8_t> direct_buf;
     direct_buf.reserve(65536);
-    while (running_.load() && !g_shutdown) {
+    while (end == End::kRunning) {
+      if (!running_.load() || g_shutdown) {
+        end = End::kStopping;
+        break;
+      }
+      auto now = std::chrono::steady_clock::now();
+      if (now - last_rx > kIdleTimeout) {
+        fprintf(stderr, "[ws] browser idle for %llds, dropping\n",
+                static_cast<long long>(kIdleTimeout.count()));
+        end = End::kBrowserGone;
+        break;
+      }
+      if (now - last_ping > kPingInterval) {
+        SendWsControlFrame(client_fd, 0x9, {});
+        last_ping = now;
+      }
+
       fd_set rfds;
       FD_ZERO(&rfds);
       FD_SET(client_fd, &rfds);
       FD_SET(direct_fd, &rfds);
       const int maxfd = std::max(client_fd, direct_fd);
-      struct timeval tv;
-      tv.tv_sec = 0;
-      tv.tv_usec = 200000;
+      struct timeval tv = {0, 200000};
       const int sel = select(maxfd + 1, &rfds, nullptr, nullptr, &tv);
-      if (sel < 0) break;
+      if (sel < 0) {
+        if (errno == EINTR) continue;
+        end = End::kBrowserGone;
+        break;
+      }
       if (sel == 0) continue;
 
       if (FD_ISSET(client_fd, &rfds)) {
         uint8_t opcode = 0;
         std::string ws_text;
-        if (!ReadWsFrame(client_fd, opcode, ws_text)) break;
-        if (opcode == 0x8) break;  // close
-        if (opcode == 0x9) {       // ping
-          std::vector<uint8_t> empty;
-          SendWsControlFrame(client_fd, 0xA, empty);
+        if (!ReadWsFrame(client_fd, opcode, ws_text)) {
+          end = End::kBrowserGone;
+          break;
+        }
+        last_rx = std::chrono::steady_clock::now();
+        if (opcode == 0x8) {
+          end = End::kBrowserClosed;
+          break;
+        }
+        if (opcode == 0x9) {
+          std::vector<uint8_t> echo(ws_text.begin(), ws_text.end());
+          SendWsControlFrame(client_fd, 0xA, echo);
           continue;
         }
-        if (opcode != 0x1) continue;  // text only
+        if (opcode != 0x1) continue;  // pong / binary
         std::string direct_msg = MaybeJsonToDirect(ws_text);
         if (direct_msg.empty()) continue;
-        if (direct_msg.size() > 65535) continue;
-        uint8_t hdr[2] = {
-            static_cast<uint8_t>((direct_msg.size() >> 8) & 0xff),
-            static_cast<uint8_t>(direct_msg.size() & 0xff)};
-        if (send(direct_fd, hdr, sizeof(hdr), 0) != static_cast<ssize_t>(sizeof(hdr))) break;
-        if (send(direct_fd, direct_msg.data(), direct_msg.size(), 0) != static_cast<ssize_t>(direct_msg.size())) break;
+        if (direct_msg == "BYE" || direct_msg == "CANCEL") bye_seen = true;
+        if (!SendDirectFrame(direct_fd, direct_msg)) {
+          end = End::kDirectClosed;
+          break;
+        }
       }
 
       if (FD_ISSET(direct_fd, &rfds)) {
         std::array<char, 65536> b{};
         const ssize_t n = recv(direct_fd, b.data(), b.size(), 0);
-        if (n <= 0) break;
+        if (n <= 0) {
+          end = End::kDirectClosed;
+          break;
+        }
         direct_buf.insert(direct_buf.end(), b.begin(), b.begin() + n);
         while (direct_buf.size() >= 2) {
           const uint16_t mlen = (static_cast<uint16_t>(direct_buf[0]) << 8) |
                                 static_cast<uint16_t>(direct_buf[1]);
           if (direct_buf.size() < static_cast<size_t>(2 + mlen)) break;
           std::string msg(direct_buf.begin() + 2, direct_buf.begin() + 2 + mlen);
-          if (!SendWsTextFrame(client_fd, msg)) {
-            close(direct_fd);
-            close(client_fd);
-            return;
-          }
           direct_buf.erase(direct_buf.begin(), direct_buf.begin() + 2 + mlen);
+          if (msg == "BYE") bye_seen = true;
+          if (!SendWsTextFrame(client_fd, msg)) {
+            end = End::kBrowserGone;
+            break;
+          }
         }
       }
     }
 
+    // Browser side vanished or we are stopping: tell directcall so it tears
+    // the call down now instead of waiting for ICE to time out.
+    if (end != End::kDirectClosed && !bye_seen) {
+      SendDirectFrame(direct_fd, "BYE");
+    }
+    // Close the WebSocket properly so the page sees code 1000 / 1001.
+    if (end == End::kDirectClosed) {
+      SendWsControlFrame(client_fd, 0x8, {0x03, 0xE8});  // 1000 normal
+    } else if (end == End::kStopping) {
+      SendWsControlFrame(client_fd, 0x8, {0x03, 0xE9});  // 1001 going away
+    } else if (end == End::kBrowserClosed) {
+      SendWsControlFrame(client_fd, 0x8, {});  // echo close
+    }
+    shutdown(direct_fd, SHUT_WR);
     close(direct_fd);
     close(client_fd);
   }
@@ -471,22 +579,19 @@ class DirectWebSocketProxy {
     listen_fd_ = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd_ < 0) return;
     int one = 1;
+    // No SO_REUSEPORT: a second directcall must fail to bind instead of
+    // silently sharing the port and stealing browser connections.
     setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-#ifdef SO_REUSEPORT
-    setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one));
-#endif
 
     struct sockaddr_in sa;
     std::memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
     sa.sin_port = htons(static_cast<uint16_t>(ws_port_));
     sa.sin_addr.s_addr = INADDR_ANY;
-    if (bind(listen_fd_, reinterpret_cast<struct sockaddr*>(&sa), sizeof(sa)) != 0) {
-      close(listen_fd_);
-      listen_fd_ = -1;
-      return;
-    }
-    if (listen(listen_fd_, 16) != 0) {
+    if (bind(listen_fd_, reinterpret_cast<struct sockaddr*>(&sa), sizeof(sa)) != 0 ||
+        listen(listen_fd_, 16) != 0) {
+      fprintf(stderr, "WebSocket signaling: cannot listen on port %d: %s\n",
+              ws_port_, strerror(errno));
       close(listen_fd_);
       listen_fd_ = -1;
       return;
@@ -498,10 +603,28 @@ class DirectWebSocketProxy {
     while (running_.load() && !g_shutdown) {
       int cfd = accept(listen_fd_, nullptr, nullptr);
       if (cfd < 0) {
-        if (!running_.load()) break;
+        if (!running_.load() || g_shutdown) break;
+        if (errno == EINTR || errno == ECONNABORTED) continue;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
         continue;
       }
-      std::thread([this, cfd]() { HandleClient(cfd); }).detach();
+      std::lock_guard<std::mutex> lock(clients_mutex_);
+      // Reap finished client threads so the list does not grow forever.
+      for (auto it = client_threads_.begin(); it != client_threads_.end();) {
+        if (it->done->load()) {
+          it->thread.join();
+          it = client_threads_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+      auto done = std::make_shared<std::atomic<bool>>(false);
+      client_threads_.push_back(
+          {std::thread([this, cfd, done]() {
+             HandleClient(cfd);
+             done->store(true);
+           }),
+           done});
     }
   }
 
@@ -511,6 +634,12 @@ class DirectWebSocketProxy {
   std::atomic<bool> running_{false};
   int listen_fd_ = -1;
   std::thread server_thread_;
+  struct ClientThread {
+    std::thread thread;
+    std::shared_ptr<std::atomic<bool>> done;
+  };
+  std::mutex clients_mutex_;
+  std::vector<ClientThread> client_threads_;
 };
 
 }  // namespace
@@ -535,10 +664,18 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  // Install signal handler for Ctrl+C
-  signal(SIGINT, signalHandler);
+  InstallSignalHandlers();
 
-  //DirectSetLoggingLevel(AS_INFO);
+  if (const char* level = getenv("DIRECT_LOG_LEVEL")) {
+    const std::string l(level);
+    // libdirect only exports DirectSetLoggingLevel; its enum mirrors
+    // webrtc::LoggingSeverity.
+    DirectSetLoggingLevel(static_cast<LoggingSeverity>(
+        l == "verbose" ? webrtc::LS_VERBOSE
+        : l == "info"  ? webrtc::LS_INFO
+        : l == "error" ? webrtc::LS_ERROR
+                       : webrtc::LS_WARNING));
+  }
   DirectApplication::rtcInitialize();
 
   // Parse server address and room from options
@@ -597,13 +734,14 @@ int main(int argc, char* argv[]) {
         // Preload AI model files into OS page cache on a background thread
         // so the first call doesn't stall on disk I/O
         if (session_count == 1) {
-          std::thread([&opts]() {
+          std::thread([opts]() {
             auto preload = [](const std::string& path, const char* name) {
               if (path.empty()) return;
               FILE* f = fopen(path.c_str(), "rb");
               if (!f) return;
-              char buf[1 << 20];
-              while (fread(buf, 1, sizeof(buf), f) > 0) {}
+              // Heap buffer: secondary threads get 512 KiB stacks on macOS.
+              std::vector<char> buf(1 << 20);
+              while (fread(buf.data(), 1, buf.size(), f) > 0) {}
               fclose(f);
               fprintf(stderr, "Preloaded %s into page cache: %s\n", name, path.c_str());
             };
@@ -637,18 +775,18 @@ int main(int argc, char* argv[]) {
         continue;
       }
 
-      // Signal quit immediately if shutdown is requested
       if (g_shutdown && callee) {
-        fprintf(stderr, "Shutdown requested - signaling callee quit\n");
+        ArmShutdownWatchdog();
+        if (callee->InCall()) {
+          // Tell the remote side before the process goes away.
+          fprintf(stderr, "Shutdown: hanging up active call\n");
+          callee->ResetConnectionClosedEvent();
+          callee->EndCall("shutting down", /*notify_remote=*/true);
+          callee->WaitUntilConnectionClosed(opts.hangup_ack_timeout_ms + 500);
+        }
         callee->SignalQuit();
       }
-      
-      // Always signal internal threads to quit before destroying the object
-      if (callee) {
-        fprintf(stderr, "Signaling callee quit (session teardown)\n");
-        callee->SignalQuit();
-      }
-      
+
       callee.reset();
       
       if (!g_shutdown) {
@@ -701,12 +839,16 @@ int main(int argc, char* argv[]) {
         }
       }
       
-      // Signal quit immediately if shutdown is requested
       if (g_shutdown && caller) {
-        fprintf(stderr, "Shutdown requested - signaling caller quit\n");
+        ArmShutdownWatchdog();
+        fprintf(stderr, "Shutdown: hanging up caller\n");
+        caller->ResetConnectionClosedEvent();
         caller->Disconnect();
+        // Wait for the callee's 200 OK (or the ack timeout) so BYE is
+        // actually delivered before the threads are joined.
+        caller->DirectPeer::WaitUntilConnectionClosed(opts.hangup_ack_timeout_ms + 500);
       }
-      
+
       caller.reset();
       
       if (!g_shutdown) {
@@ -732,48 +874,23 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  // Cleanup phase
+  // Sessions were torn down inside their loops; release anything left.
   fprintf(stderr, "Starting cleanup...\n");
-  
-  if(opts.mode == "caller" or opts.mode == "both") {
-    if (caller) {
-      caller->Disconnect();
-      // Shorter timeout for cleanup, don't wait too long
-      int cleanup_timeout = g_shutdown_count >= 2 ? 1000 : 5000;
-      if (caller->WaitUntilConnectionClosed(cleanup_timeout)) {
-        fprintf(stderr, "Caller connection closed\n");
-      } else {
-        fprintf(stderr, "Caller connection not closed after timeout\n");
-      }
-    }
+  ArmShutdownWatchdog();
+  if (caller) {
+    caller->Disconnect();
+    caller->DirectPeer::WaitUntilConnectionClosed(opts.hangup_ack_timeout_ms + 500);
+    caller.reset();
   }
-
-  if(opts.mode == "callee" or opts.mode == "both") {
-    if (callee) {
-      fprintf(stderr, "Signaling callee quit...\n");
-      callee->SignalQuit();
-      callee.reset();
-      fprintf(stderr, "Callee cleanup complete\n");
-    }
+  if (callee) {
+    callee->SignalQuit();
+    callee.reset();
   }
-
-  if(opts.mode == "caller" or opts.mode == "both") {
-    if (caller) {
-      fprintf(stderr, "Signaling caller quit...\n");
-      caller->Disconnect();
-      caller.reset();
-      fprintf(stderr, "Caller cleanup complete\n");
-    }
-  }
-
-  // Allow some time for threads to process quit, but not too long in aggressive mode
-  int sleep_time = g_shutdown_count >= 2 ? 10000 : 50000;
-  fprintf(stderr, "Waiting %d microseconds for thread cleanup...\n", sleep_time);
-  usleep(sleep_time);
-
-  DirectApplication::rtcCleanup();
   if (ws_proxy) {
     ws_proxy->Stop();
   }
+
+  DirectApplication::rtcCleanup();
+  fprintf(stderr, "Shutdown complete\n");
   return 0;
 }

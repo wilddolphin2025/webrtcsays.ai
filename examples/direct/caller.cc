@@ -46,31 +46,31 @@ DirectCaller::DirectCaller(Options opts)
         std::string ip;
         int port = 0;
         if (DiscoverBonjourService(opts.bonjour_name, ip, port)) {
-            remote_addr_ = rtc::SocketAddress(ip, port);
+            remote_addr_ = webrtc::SocketAddress(ip, port);
             RTC_LOG(LS_INFO) << "Bonjour discovery found service " << opts.bonjour_name << " at " << ip << ":" << port;
         } else {
             ParseIpAndPort(opts.address, ip, port);
-            remote_addr_ = rtc::SocketAddress(ip, port);
+            remote_addr_ = webrtc::SocketAddress(ip, port);
         }
     } else {
         std::string ip; int port = 0;
         ParseIpAndPort(opts.address, ip, port);
-        remote_addr_ = rtc::SocketAddress(ip, port);
+        remote_addr_ = webrtc::SocketAddress(ip, port);
     }
 #else
     std::string ip;
     int port = 0;    
     ParseIpAndPort(opts.address, ip, port);
-    remote_addr_ = rtc::SocketAddress(ip, port);
+    remote_addr_ = webrtc::SocketAddress(ip, port);
 #endif // #if TARGET_OS_IOS || TARGET_OS_OSX
 }
 
 DirectCaller::~DirectCaller() {
-    // tcp_socket_ cleanup is handled by DirectApplication base class destructor/Cleanup
+    Cleanup();
 }
 
 bool DirectCaller::Connect(const char* ip, int port) {
-    remote_addr_ = rtc::SocketAddress(ip, port);
+    remote_addr_ = webrtc::SocketAddress(ip, port);
     return Connect();
 }
 
@@ -79,7 +79,7 @@ bool DirectCaller::ConnectWithBonjourName(const char* bonjour_name) {
     std::string ip;
     int port = 0;
     if (DiscoverBonjourService(bonjour_name, ip, port)) {
-        remote_addr_ = rtc::SocketAddress(ip, port);
+        remote_addr_ = webrtc::SocketAddress(ip, port);
     }
     return Connect();
 }
@@ -162,18 +162,18 @@ bool DirectCaller::Connect() {
         }
 
         // Use inherited tcp_socket_
-        tcp_socket_.reset(new rtc::AsyncTCPSocket(wrapped_socket));
+        tcp_socket_ = std::make_unique<webrtc::AsyncTCPSocket>(
+            *env_, std::unique_ptr<webrtc::Socket>(wrapped_socket));
         tcp_socket_->RegisterReceivedPacketCallback(
-            [this](rtc::AsyncPacketSocket* socket, const rtc::ReceivedPacket& packet) {
+            [this](webrtc::AsyncPacketSocket* socket, const webrtc::ReceivedIpPacket& packet) {
                 // Access data using packet.payload()
                 OnMessage(socket, 
                           reinterpret_cast<const unsigned char*>(packet.payload().data()), 
                           packet.payload().size(), 
                           packet.source_address());
             });
-        tcp_socket_->SubscribeCloseEvent("caller_close_event",
-            [this](rtc::AsyncPacketSocket* socket, int err) {
-                // Access data using packet.payload()
+        tcp_socket_->SubscribeCloseEvent(this,
+            [this](webrtc::AsyncPacketSocket* socket, int err) {
                 OnClose(socket);
             });
         OnConnect(tcp_socket_.get());
@@ -183,7 +183,7 @@ bool DirectCaller::Connect() {
     return network_thread()->BlockingCall(std::move(task));
 }
 
-void DirectCaller::OnConnect(rtc::AsyncPacketSocket* socket) {
+void DirectCaller::OnConnect(webrtc::AsyncPacketSocket* socket) {
     RTC_LOG(LS_INFO) << "Connected to " << remote_addr_.ToString();
     UpdateState(DirectCaller::State::Connected);  // Update state on successful connection
     
@@ -195,10 +195,10 @@ void DirectCaller::OnConnect(rtc::AsyncPacketSocket* socket) {
     SendHelloWithRetry();
 }
 
-void DirectCaller::OnMessage(rtc::AsyncPacketSocket* socket,
+void DirectCaller::OnMessage(webrtc::AsyncPacketSocket* socket,
                            const unsigned char* data,
                            size_t len,
-                           const rtc::SocketAddress& remote_addr) {
+                           const webrtc::SocketAddress& remote_addr) {
     std::string raw(reinterpret_cast<const char*>(data), len);
     RTC_LOG(LS_INFO) << "Caller received: " << raw;
 
@@ -212,86 +212,48 @@ void DirectCaller::OnMessage(rtc::AsyncPacketSocket* socket,
 
     std::string message = trim(raw);
 
-    // Special-case: we are waiting for BYE that confirms our previous CANCEL.
-    // The callee responds with a BYE, not another CANCEL.
     if (message.rfind(Msg::kBye, 0) == 0) {
-        RTC_LOG(LS_INFO) << "Received CANCEL ACK (BYE). Resetting caller state.";
-        ResetCallStartedFlag();      // let derived class clear busy flag / dial queued address
-
-        // Tear down the old PeerConnection & socket so the next call starts cleanly.
-        ShutdownInternal();
-        if (tcp_socket_) {
-            tcp_socket_->Close();
-            tcp_socket_.reset();
+        if (hanging_up_) {
+            // Legacy callees acknowledge CANCEL with BYE.
+            FinishHangup();
+        } else {
+            SendMessage(StatusCodes::kOk);
+            EndCall("remote BYE", /*notify_remote=*/false);
         }
-        return; // skip regular 200-OK processing below
+        return;
     }
-
-    // -------------------------------------------------------------------
-    // Normal handshake / signalling processing starts here
-    // -------------------------------------------------------------------
 
     if (message.rfind(StatusCodes::kOk, 0) == 0) {
-        // Stop further HELLO retries – handshake completed successfully.
-        welcome_received_ = true;
-
-        // Build INIT JSON with capability / option hints
-        std::ostringstream oss;
-        oss << "{";
-        oss << "\"agent\":\"" << init_agent() << "\"";  // from DirectApplication preference
-        // Include important runtime flags from opts_
-        oss << ",\"encryption\":" << (opts_.encryption ? "true" : "false");
-        oss << ",\"video\":" << (opts_.video ? "true" : "false");
-        if (!opts_.llama_model.empty()) {
-            std::string llama_name = std::filesystem::path(opts_.llama_model).filename().string();
-            oss << ",\"llama_model\":\"" << llama_name << "\"";
+        if (hanging_up_) {
+            FinishHangup();  // Ack of our BYE.
+        } else if (!welcome_received_) {
+            welcome_received_ = true;  // HELLO accepted: stop retries.
+            SendInvite();
+        } else {
+            RTC_LOG(LS_INFO) << "Ignoring unexpected 200 OK";
         }
-        if (!opts_.llava_mmproj.empty()) {
-            std::string mmproj_name = std::filesystem::path(opts_.llava_mmproj).filename().string();
-            oss << ",\"llava_mmproj\":\"" << mmproj_name << "\"";
-        }
-        if (!opts_.room_name.empty()) {
-            oss << ",\"room_name\":\"" << opts_.room_name << "\"";
-        }
-        if (!opts_.language.empty()) {
-            oss << ",\"language\":\"" << opts_.language << "\"";
-        }
-        oss << "}";
-
-        std::string invite_payload = std::string(Msg::kInvitePrefix) + oss.str();
-        SendMessage(invite_payload);
-    } 
-    else if (message.find(Msg::kWaiting) == 0) {
-        Start();
-    } 
-    else if (StatusCodes::IsStatusCode(message)) {
-        RTC_LOG(LS_WARNING) << "Received error status from callee: " << message;
-        // Stop HELLO retries to avoid spamming the callee.
-        welcome_received_ = false;
-        hello_attempts_ = kMaxHelloAttempts; // disable further retries
-
-        // Clean up connection attempt.
-        ShutdownInternal();
-
-        // Close and reset socket similar to CANCEL handling.
-        if (tcp_socket_) {
-            tcp_socket_->Close();
-            tcp_socket_.reset();
-        }
+        return;
     }
-    else if (message == StatusCodes::kOk) {
-        UpdateState(DirectCaller::State::Connected);  // Confirm connection
-        // We are idle again – let the derived class reset its busy flag.
-        ResetCallStartedFlag();
 
-        ShutdownInternal();
-        if (tcp_socket_) {
-            tcp_socket_->Close();
-            tcp_socket_.reset();
+    if (message.find(Msg::kWaiting) == 0) {
+        Start();
+        return;
+    }
+
+    if (StatusCodes::IsStatusCode(message)) {
+        RTC_LOG(LS_WARNING) << "Received error status from callee: " << message;
+        welcome_received_ = false;
+        hello_attempts_ = kMaxHelloAttempts;  // disable further retries
+        if (InCall()) {
+            EndCall("callee rejected", /*notify_remote=*/false);
+        } else {
+            FinishHangup();
         }
-    } 
+        return;
+    }
+
     // Handle ANSWER using raw to preserve formatting
-    else if (message.find(Msg::kAnswerPrefix) == 0) {
+    if (message.find(Msg::kAnswerPrefix) == 0) {
         const size_t prefix_len = sizeof(Msg::kAnswerPrefix) - 1; // length of "ANSWER:"
         std::string sdp_fragment = raw.substr(prefix_len);
 
@@ -334,29 +296,79 @@ void DirectCaller::OnMessage(rtc::AsyncPacketSocket* socket,
     }
 }
 
-void DirectCaller::Disconnect() {
-    RTC_LOG(LS_INFO) << "Caller signaling disconnect, sending CANCEL due to connection timeout.";
-    // Update timestamp *before* signaling/shutdown
-    last_disconnect_time_ = std::chrono::steady_clock::now(); 
-    
-    if (SendMessage(Msg::kCancel)) { // Send CANCEL to signal disconnect without shutdown
-        RTC_LOG(LS_INFO) << "CANCEL message sent successfully.";
-    } else {
-        RTC_LOG(LS_WARNING) << "Failed to send CANCEL message.";
+void DirectCaller::SendInvite() {
+    std::ostringstream oss;
+    oss << "{";
+    oss << "\"agent\":\"" << init_agent() << "\"";
+    oss << ",\"encryption\":" << (opts_.encryption ? "true" : "false");
+    oss << ",\"video\":" << (opts_.video ? "true" : "false");
+    if (!opts_.llama_model.empty()) {
+        oss << ",\"llama_model\":\"" << std::filesystem::path(opts_.llama_model).filename().string() << "\"";
     }
-    // Initiate the PeerConnection close process directly via the virtual method
-    RTC_LOG(LS_INFO) << "Calling ShutdownInternal to close PeerConnection.";
-    ShutdownInternal(); 
-    // Reset state to allow for a new connection
-    tcp_socket_.reset();
-    RTC_LOG(LS_INFO) << "Caller state reset for new connection.";
+    if (!opts_.llava_mmproj.empty()) {
+        oss << ",\"llava_mmproj\":\"" << std::filesystem::path(opts_.llava_mmproj).filename().string() << "\"";
+    }
+    if (!opts_.room_name.empty()) {
+        oss << ",\"room_name\":\"" << opts_.room_name << "\"";
+    }
+    if (!opts_.language.empty()) {
+        oss << ",\"language\":\"" << opts_.language << "\"";
+    }
+    oss << "}";
+    SendMessage(std::string(Msg::kInvitePrefix) + oss.str());
+}
 
-    // Ensure call_started_ and related state are cleared even when the
-    // disconnect happened before we had an established signaling channel
-    // (e.g. raw socket never connected or CANCEL could not be delivered).
-    // This guarantees that the next ADDRESS message we receive will trigger
-    // a fresh dial attempt instead of being queued indefinitely.
-    ResetCallStartedFlag();
+void DirectCaller::Disconnect() {
+    last_disconnect_time_ = std::chrono::steady_clock::now();
+    DirectPeer::ResetCallStartedFlag();
+    if (InCall()) {
+        // OnCallEnded() waits for the callee's acknowledgement.
+        EndCall("local hangup", /*notify_remote=*/true);
+        return;
+    }
+    if (network_thread()) {
+        network_thread()->PostTask([this] { FinishHangup(); });
+    }
+}
+
+void DirectCaller::OnCallEnded(bool notified_remote) {
+    network_thread()->PostTask([this, notified_remote] {
+        if (!notified_remote || !tcp_socket_) {
+            FinishHangup();
+            return;
+        }
+        hanging_up_ = true;
+        network_thread()->PostDelayedTask(
+            [this] {
+                if (hanging_up_) {
+                    RTC_LOG(LS_WARNING) << "No hangup acknowledgement, closing";
+                    FinishHangup();
+                }
+            },
+            webrtc::TimeDelta::Millis(opts_.hangup_ack_timeout_ms));
+    });
+}
+
+void DirectCaller::FinishHangup() {
+    RTC_DCHECK_RUN_ON(network_thread());
+    hanging_up_ = false;
+    if (tcp_socket_) {
+        tcp_socket_->UnsubscribeCloseEvent(this);
+        tcp_socket_->Close();
+        tcp_socket_.reset();
+    }
+    UpdateState(DirectCaller::State::Disconnected);
+    connection_closed_event_.Set();
+}
+
+void DirectCaller::OnClose(webrtc::AsyncPacketSocket* socket) {
+    RTC_LOG(LS_INFO) << "Caller signaling socket closed";
+    if (InCall()) {
+        EndCall("signaling connection lost", /*notify_remote=*/false);
+        return;
+    }
+    // Do not destroy the socket inside its own close callback.
+    network_thread()->PostTask([this] { FinishHangup(); });
 }
 
 // -----------------------------------------------------------------------------

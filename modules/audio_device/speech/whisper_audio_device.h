@@ -148,8 +148,8 @@ class WhisperAudioDevice : public SpeechAudioDevice {
   int8_t* _playoutBuffer;
 
   Mutex mutex_;
-  rtc::PlatformThread _ptrThreadRec;
-  rtc::PlatformThread _ptrThreadPlay;
+  webrtc::PlatformThread _ptrThreadRec;
+  webrtc::PlatformThread _ptrThreadPlay;
 
   size_t _recordingFramesIn10MS;
   size_t _playoutFramesIn10MS;

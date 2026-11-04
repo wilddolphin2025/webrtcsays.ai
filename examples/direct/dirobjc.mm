@@ -29,7 +29,7 @@ void DirectApplication::SetVideoCapturer(RTCVideoCapturer* capturer) {
   // Point capturer at our adapter
   capturer.delegate = adapter;
   // Wrap adapter in a native VideoTrackSource
-  auto native_source = rtc::make_ref_counted<webrtc::ObjCVideoTrackSource>(adapter);
+  auto native_source = webrtc::make_ref_counted<webrtc::ObjCVideoTrackSource>(adapter);
   // Hand it to the C++ engine
   RTC_LOG(LS_INFO) << "SetVideoCapturer:: SetVideoSource by ObjCVideoTrackSource";
   SetVideoSource(native_source);
@@ -37,7 +37,7 @@ void DirectApplication::SetVideoCapturer(RTCVideoCapturer* capturer) {
 
 void DirectApplication::SetVideoRenderer(RTCMTLVideoView* renderer) {
   // Wrap the provided Obj-C view into a native VideoSink
-  std::unique_ptr<rtc::VideoSinkInterface<webrtc::VideoFrame>> native_sink =
+  std::unique_ptr<webrtc::VideoSinkInterface<webrtc::VideoFrame>> native_sink =
       std::make_unique<webrtc::ObjCVideoRenderer>(renderer);
   // Hand it to the C++ engine
   RTC_LOG(LS_INFO) << "SetVideoRenderer:: SetVideoSink by ObjCVideoRenderer";

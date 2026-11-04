@@ -110,6 +110,9 @@ struct Options {
     int tts_threads = 0;     // 0 = auto (hardware_concurrency)
     bool websocket_signaling = true;  // expose raw WebSocket signaling endpoint
     int websocket_port = 3457;        // raw WebSocket signaling port
+    int call_setup_timeout_ms = 45000;  // INVITE -> media connected
+    int media_grace_ms = 10000;         // tolerated PeerConnection "disconnected"
+    int hangup_ack_timeout_ms = 2000;   // BYE -> 200 OK before force-close
 };
 
 // Function to parse command line string to above options
@@ -123,10 +126,10 @@ DIRECT_API std::string getUsage(const Options opts);
 
 DIRECT_API void DirectSetLoggingLevel(LoggingSeverity level);
 
-DIRECT_API rtc::scoped_refptr<rtc::RTCCertificate> DirectLoadCertificateFromEnv(Options opts);
+DIRECT_API webrtc::scoped_refptr<webrtc::RTCCertificate> DirectLoadCertificateFromEnv(Options opts);
 DIRECT_API uint32_t DirectCreateRandomId();
 DIRECT_API std::string DirectCreateRandomUuid();
-DIRECT_API void DirectThreadSetName(rtc::Thread* thread, const char* name);
+DIRECT_API void DirectThreadSetName(webrtc::Thread* thread, const char* name);
 DIRECT_API webrtc::IceCandidateInterface* DirectCreateIceCandidate(const char* sdp_mid,
     int sdp_mline_index,
     const char* sdp,

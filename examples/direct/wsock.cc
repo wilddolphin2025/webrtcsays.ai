@@ -163,7 +163,7 @@ void WebSocketClient::stop_listening() {
   }
 }
 
-void WebSocketClient::set_network_thread(rtc::Thread* thread) {
+void WebSocketClient::set_network_thread(webrtc::Thread* thread) {
   network_thread_ = thread;
 }
 

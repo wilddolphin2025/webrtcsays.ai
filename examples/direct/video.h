@@ -18,7 +18,7 @@
 
 #include "api/video/video_source_interface.h"
 #include "media/base/fake_frame_source.h"
-#include "media/base/video_broadcaster.h"
+#include "api/video/video_broadcaster.h"
 #include "rtc_base/synchronization/mutex.h"
 #include "rtc_base/task_queue_for_test.h"
 #include "rtc_base/task_utils/repeating_task.h"
@@ -36,14 +36,14 @@ namespace webrtc {
 // StaticPeriodic video source no longer used; class definitions removed to reduce footprint.
 
 class EchoVideoTrackSource : public webrtc::VideoTrackSource,
-                            public rtc::VideoSinkInterface<webrtc::VideoFrame> {
+                            public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
  public:
   EchoVideoTrackSource()
       : webrtc::VideoTrackSource(/*remote=*/false) {
      SetState(webrtc::MediaSourceInterface::kLive);
    }
 
-  // rtc::VideoSinkInterface implementation – called with frames from the
+  // webrtc::VideoSinkInterface implementation – called with frames from the
   // *remote* video track we attach to.
   void OnFrame(const webrtc::VideoFrame& frame) override {
     broadcaster_.OnFrame(frame);
@@ -51,26 +51,26 @@ class EchoVideoTrackSource : public webrtc::VideoTrackSource,
   void OnDiscardedFrame() override {}
 
   // Expose wants aggregation from broadcaster
-  rtc::VideoSinkWants wants() const { return broadcaster_.wants(); }
+  webrtc::VideoSinkWants wants() const { return broadcaster_.wants(); }
 
  protected:
   // webrtc::VideoTrackSource implementation – this is what the WebRTC encoder
   // pulls frames from.
-  rtc::VideoSourceInterface<webrtc::VideoFrame>* source() override {
+  webrtc::VideoSourceInterface<webrtc::VideoFrame>* source() override {
     return &broadcaster_;
   }
 
  private:
-  rtc::VideoBroadcaster broadcaster_;
+  webrtc::VideoBroadcaster broadcaster_;
 };
 
 #if defined(WEBRTC_SPEECH_DEVICES) 
 // Simple video sink that logs frame information to the console
-class LlamaVideoRenderer : public rtc::VideoSinkInterface<webrtc::VideoFrame> {
+class LlamaVideoRenderer : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
   // Function to check if a WebRTC VideoFrame (I420 format) is black
   bool isVideoFrameBlack(const webrtc::VideoFrame& frame, int threshold = 16) {
       // Get the I420 buffer from the VideoFrame
-      rtc::scoped_refptr<webrtc::I420BufferInterface> buffer = frame.video_frame_buffer()->ToI420();
+      webrtc::scoped_refptr<webrtc::I420BufferInterface> buffer = frame.video_frame_buffer()->ToI420();
       if (!buffer) {
           return false; // Invalid buffer
       }
@@ -104,14 +104,14 @@ class LlamaVideoRenderer : public rtc::VideoSinkInterface<webrtc::VideoFrame> {
   void OnFrame(const webrtc::VideoFrame& frame) {
 
     if (!isVideoFrameBlack(frame)) {
-      rtc::scoped_refptr<webrtc::VideoFrameBuffer> buffer(
+      webrtc::scoped_refptr<webrtc::VideoFrameBuffer> buffer(
           frame.video_frame_buffer());
       RTC_LOG(LS_VERBOSE) << "Received video frame (" << buffer->type() << ") "
                         << frame.width() << "x" << frame.height()
                         << " timestamp=" << frame.timestamp_us();
 
       // Convert the frame to I420 format and populate YUVData
-      rtc::scoped_refptr<webrtc::I420BufferInterface> i420_buffer = buffer->ToI420();
+      webrtc::scoped_refptr<webrtc::I420BufferInterface> i420_buffer = buffer->ToI420();
       if (i420_buffer) {
         size_t y_size = i420_buffer->StrideY() * i420_buffer->height();
         size_t uv_size = i420_buffer->StrideU() * i420_buffer->ChromaHeight();

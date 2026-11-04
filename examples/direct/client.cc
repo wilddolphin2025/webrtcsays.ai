@@ -23,7 +23,7 @@
 #include "pc/video_track_source.h"
 
 // Forward declaration from peer.cc so we can create a camera source here.
-rtc::scoped_refptr<webrtc::VideoTrackSourceInterface>
+webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface>
 CreateCameraVideoSource(class DirectPeer*, const Options&);
 
 // DirectCallerClient Implementation
@@ -31,10 +31,10 @@ CreateCameraVideoSource(class DirectPeer*, const Options&);
 DirectCallerClient::DirectCallerClient(const Options& opts)
     : DirectCaller(opts), initialized_(false) {
     resolved_target_port_ = 0;   
-    if (!rtc::Thread::Current()) {
-        rtc::ThreadManager::Instance()->WrapCurrentThread();
+    if (!webrtc::Thread::Current()) {
+        webrtc::ThreadManager::Instance()->WrapCurrentThread();
     }
-    owner_thread_ = rtc::Thread::Current();
+    owner_thread_ = webrtc::Thread::Current();
     signaling_client_ = std::make_unique<DirectClient>(opts);
     // Busy when caller already in an active call
     signaling_client_->setIsBusyCallback([this]() {
@@ -65,7 +65,10 @@ DirectCallerClient::DirectCallerClient(const Options& opts)
     });    
 }
 
-DirectCallerClient::~DirectCallerClient() { Disconnect(); }
+DirectCallerClient::~DirectCallerClient() {
+    Disconnect();
+    Cleanup();
+}
 
 bool DirectCallerClient::Initialize() {
     if (initialized_) {
@@ -250,9 +253,9 @@ bool DirectCallerClient::IsConnected() const {
 }
 
 void DirectCallerClient::RunOnBackgroundThread() {
-    // If we are currently on an rtc::Thread (i.e., WebRTC internal thread),
+    // If we are currently on an webrtc::Thread (i.e., WebRTC internal thread),
     // spawn a native thread to satisfy the DCHECK in DirectApplication.
-    if (rtc::Thread::Current()) {
+    if (webrtc::Thread::Current()) {
         std::thread([this]() {
             DirectCaller::RunOnBackgroundThread();
         }).detach();
@@ -413,6 +416,7 @@ DirectCalleeClient::DirectCalleeClient(const Options& opts)
 
 DirectCalleeClient::~DirectCalleeClient() {
     StopListening();
+    Cleanup();
 }
 
 bool DirectCalleeClient::Initialize() {
@@ -491,13 +495,13 @@ bool DirectCalleeClient::StartListening() {
     // Forward raw INVITE lines (with JSON payload) so DirectPeer can extract agent info.
     signaling_client_->setInviteReceivedCallback([this](const std::string& raw_message) {
         // Pass through to DirectPeer message handler; no socket context in WSS path.
-        this->HandleMessage(nullptr, raw_message, rtc::SocketAddress());
+        this->HandleMessage(nullptr, raw_message, webrtc::SocketAddress());
     });
     
     // Forward raw WAITING lines (with JSON payload) so DirectPeer can extract agent info.
     signaling_client_->setWaitingReceivedCallback([this](const std::string& raw_message) {
         // Pass through to DirectPeer message handler; no socket context in WSS path.
-        this->HandleMessage(nullptr, raw_message, rtc::SocketAddress());
+        this->HandleMessage(nullptr, raw_message, webrtc::SocketAddress());
     });
 
     // Try to connect to signaling server to register our presence
@@ -683,7 +687,7 @@ void DirectCalleeClient::setupWebRTCListener() {
                 APP_LOG(AS_INFO) << "Callee will create talking-face source during answer setup";
             } else if (!opts_.camera.empty()) {
                 
-                if (rtc::Thread::Current() == signaling_thread()) {
+                if (webrtc::Thread::Current() == signaling_thread()) {
                     video_source_ = CreateCameraVideoSource(this, opts_);
                 } else {
                     signaling_thread()->BlockingCall([this]() {
@@ -693,12 +697,12 @@ void DirectCalleeClient::setupWebRTCListener() {
             }
             if (!video_source_ && opts_.talking_face.empty()) {
                 APP_LOG(AS_INFO) << "Callee fallback to synthetic video source";
-                if (rtc::Thread::Current() == signaling_thread()) {
-                    auto src = rtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
+                if (webrtc::Thread::Current() == signaling_thread()) {
+                    auto src = webrtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
                     video_source_ = src;
                 } else {
                     signaling_thread()->BlockingCall([this]() {
-                        auto src = rtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
+                        auto src = webrtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
                         video_source_ = src;
                     });
                 }
@@ -852,7 +856,7 @@ void DirectCalleeClient::onIncomingCall(const std::string& peer_id, const std::s
         }
 
         // Set the remote description asynchronously, then generate the answer.
-        set_remote_description_observer_ = rtc::make_ref_counted<LambdaSetRemoteDescriptionObserver>(
+        set_remote_description_observer_ = webrtc::make_ref_counted<LambdaSetRemoteDescriptionObserver>(
             [this, peer_id](webrtc::RTCError error) {
                 if (!error.ok()) {
                     APP_LOG(AS_ERROR) << "DirectCalleeClient: Failed to set remote description: " << error.message();
@@ -877,7 +881,7 @@ void DirectCalleeClient::createAndSendAnswer(const std::string& peer_id) {
 
     webrtc::PeerConnectionInterface::RTCOfferAnswerOptions answer_opts;
 
-    create_session_observer_ = rtc::make_ref_counted<LambdaCreateSessionDescriptionObserver>(
+    create_session_observer_ = webrtc::make_ref_counted<LambdaCreateSessionDescriptionObserver>(
         [this, peer_id](std::unique_ptr<webrtc::SessionDescriptionInterface> desc) {
             std::string local_sdp;
             desc->ToString(&local_sdp);
@@ -910,7 +914,7 @@ void DirectCalleeClient::createAndSendAnswer(const std::string& peer_id) {
                 return;
             }
 
-            set_local_description_observer_ = rtc::make_ref_counted<LambdaSetLocalDescriptionObserver>(
+            set_local_description_observer_ = webrtc::make_ref_counted<LambdaSetLocalDescriptionObserver>(
                 [this, peer_id, local_sdp](webrtc::RTCError error) {
                     if (!error.ok()) {
                         APP_LOG(AS_ERROR) << "DirectCalleeClient: Failed to set local description: " << error.message();
@@ -1036,7 +1040,7 @@ DirectClient::DirectClient(const Options& opts)
     invite_received_callback_ = nullptr;
     waiting_received_callback_ = nullptr;
     // Create a dedicated network thread for WebSocket operations first
-    network_thread_ = rtc::Thread::CreateWithSocketServer();
+    network_thread_ = webrtc::Thread::CreateWithSocketServer();
     network_thread_->SetName("WebSocketNetworkThread", nullptr);
     network_thread_->Start();
 
@@ -1068,7 +1072,7 @@ DirectClient::~DirectClient() {
     if (network_thread_) {
         auto* nt = network_thread_.get();
 
-        if (rtc::Thread::Current() == nt) {
+        if (webrtc::Thread::Current() == nt) {
             // Already executing on the network thread – cannot use BlockingCall
             // and cannot join this thread from itself.  Do immediate cleanup
             // then hand-off the join to a detached std::thread.
@@ -1094,7 +1098,7 @@ DirectClient::~DirectClient() {
         } else {
             // Normal case – we are on a different thread and can block.
             if (ws_client_) {
-                rtc::Event done;
+                webrtc::Event done;
                 nt->PostTask([this, &done]() {
                     ws_client_->set_allow_reconnect(false);
                     ws_client_->disconnect();

@@ -75,7 +75,7 @@ public:
     std::string base64_encode(const std::string& in);
 
     // SSL context management
-    void set_network_thread(rtc::Thread* thread);
+    void set_network_thread(webrtc::Thread* thread);
 
     // Ping/Pong handling
     void send_ping();
@@ -104,7 +104,7 @@ private:
 
     // Configuration
     Config config_;
-    rtc::Thread* network_thread_;
+    webrtc::Thread* network_thread_;
 
     // Message handling
     std::string buffer_;

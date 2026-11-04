@@ -484,6 +484,10 @@ if (is_ios) {
 
       deps = [
         "../api:create_modular_peer_connection_factory",
+        "../api:peer_connection_interface",
+        "../api:jsep",
+        "../pc:pc_test_utils",
+        "../pc:session_description",
         "../api:enable_media",
         "../api:peer_connection_interface",
         "../api:scoped_refptr",
@@ -864,7 +868,9 @@ if (is_android) {
       "//third_party/google-truth:google_truth_java",
     ]
   }
+}
 
+if (!build_with_chromium) {
   if (is_ios) {
     action_foreach("create_bracket_include_headers_direct_framework") {
       script = "//tools_webrtc/apple/copy_framework_header.py"
@@ -933,7 +939,6 @@ if (is_android) {
 
       deps = [
         ":create_bracket_include_headers_direct_framework",
-        "//sdk/objc/native/src:native_src_objc",
         "//sdk:native_video",
         "//sdk:framework_objc_signed_bundle",
         "//api:async_dns_resolver",
@@ -1047,8 +1052,16 @@ if (is_android) {
         # ... (keep original deps for non-iOS) ...
         "../api:async_dns_resolver",
         "../api:audio_options_api",
-        "../api:create_peerconnection_factory",
-        "../api:libjingle_peerconnection_api",
+        "../api:create_modular_peer_connection_factory",
+        "../api:enable_media",
+        "../api/audio:builtin_audio_processing_builder",
+        "../api/audio:create_audio_device_module",
+        "../api/environment",
+        "../api/environment:environment_factory",
+        "../api/video:video_broadcaster",
+        "../rtc_base:base64",
+        "../rtc_base:network",
+        "../p2p:basic_port_allocator",
         "../api:media_stream_interface",
         "../api:rtp_sender_interface",
         "../api:scoped_refptr",
@@ -1075,8 +1088,6 @@ if (is_android) {
         "../api/video:video_rtp_headers",
         "../api/video_codecs:video_codecs_api",
         "../media:media_channel",
-        "../media:video_common",
-        "../media:rtc_media_tests_utils",
         "../p2p:connection",
         "../p2p:port_allocator",
         "../pc:video_track_source",
@@ -1092,14 +1103,9 @@ if (is_android) {
         "../rtc_base:ssl_adapter",
         "../rtc_base:stringutils",
         "../rtc_base:threading",
-        "../rtc_base/third_party/sigslot",
-        "../rtc_base:task_queue_for_test",
-        "../system_wrappers:field_trial",
-        "../test:field_trial",
         "../test:platform_video_capturer",
         "../test:rtp_test_utils",
         "../test:test_video_capturer",
-        "../rtc_base:task_queue_for_test",
         "//third_party/abseil-cpp/absl/memory",
         "//third_party/jsoncpp:jsoncpp",
       ]

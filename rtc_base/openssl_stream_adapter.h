@@ -17,29 +17,31 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "absl/functional/any_invocable.h"
 #include "absl/strings/string_view.h"
-#include "api/array_view.h"
-#include "rtc_base/buffer.h"
-#ifdef OPENSSL_IS_BORINGSSL
-#include <openssl/base.h>
-
-#include "rtc_base/boringssl_identity.h"
-#else
-#include "rtc_base/openssl_identity.h"
-#endif
-#include "api/field_trials_view.h"
+#include "api/environment/environment.h"
 #include "api/task_queue/pending_task_safety_flag.h"
+#include "api/task_queue/task_queue_base.h"
+#include "rtc_base/buffer.h"
+#include "rtc_base/ssl_certificate.h"
 #include "rtc_base/ssl_identity.h"
 #include "rtc_base/ssl_stream_adapter.h"
 #include "rtc_base/stream.h"
 #include "rtc_base/task_utils/repeating_task.h"
-#include "rtc_base/thread.h"
+#include "system_wrappers/include/clock.h"
 
-namespace rtc {
+#ifdef OPENSSL_IS_BORINGSSL
+#include "rtc_base/boringssl_identity.h"
+#include "rtc_base/openssl.h"
+#else
+#include "rtc_base/openssl_identity.h"
+#endif
+
+namespace webrtc {
 
 // This class was written with OpenSSLAdapter (a socket adapter) as a
 // starting point. It has similar structure and functionality, but uses a
@@ -70,9 +72,9 @@ namespace rtc {
 class OpenSSLStreamAdapter final : public SSLStreamAdapter {
  public:
   OpenSSLStreamAdapter(
+      std::optional<Environment> env,
       std::unique_ptr<StreamInterface> stream,
-      absl::AnyInvocable<void(SSLHandshakeError)> handshake_error,
-      const webrtc::FieldTrialsView* field_trials = nullptr);
+      absl::AnyInvocable<void(SSLHandshakeError)> handshake_error);
   ~OpenSSLStreamAdapter() override;
 
   void SetIdentity(std::unique_ptr<SSLIdentity> identity) override;
@@ -82,7 +84,7 @@ class OpenSSLStreamAdapter final : public SSLStreamAdapter {
   void SetServerRole(SSLRole role = SSL_SERVER) override;
   SSLPeerCertificateDigestError SetPeerCertificateDigest(
       absl::string_view digest_alg,
-      rtc::ArrayView<const uint8_t> digest_val) override;
+      std::span<const uint8_t> digest_val) override;
 
   std::unique_ptr<SSLCertChain> GetPeerSSLCertChain() const override;
 
@@ -92,11 +94,11 @@ class OpenSSLStreamAdapter final : public SSLStreamAdapter {
   [[deprecated]] void SetMode(SSLMode mode) override;
   void SetMaxProtocolVersion(SSLProtocolVersion version) override;
   void SetInitialRetransmissionTimeout(int timeout_ms) override;
+  void UpdateRetransmissionTimeout(int timeout_ms) override;
+  void SetMTU(int mtu) override;
 
-  StreamResult Read(rtc::ArrayView<uint8_t> data,
-                    size_t& read,
-                    int& error) override;
-  StreamResult Write(rtc::ArrayView<const uint8_t> data,
+  StreamResult Read(std::span<uint8_t> data, size_t& read, int& error) override;
+  StreamResult Write(std::span<const uint8_t> data,
                      size_t& written,
                      int& error) override;
   void Close() override;
@@ -110,7 +112,9 @@ class OpenSSLStreamAdapter final : public SSLStreamAdapter {
   bool GetSslVersionBytes(int* version) const override;
   // Key Extractor interface
   bool ExportSrtpKeyingMaterial(
-      rtc::ZeroOnFreeBuffer<uint8_t>& keying_material) override;
+      ZeroOnFreeBuffer<uint8_t>& keying_material) override;
+  bool AppendSrtpKeyingMaterial(
+      ZeroOnFreeBuffer<uint8_t>& keying_material) override;
 
   uint16_t GetPeerSignatureAlgorithm() const override;
 
@@ -132,6 +136,18 @@ class OpenSSLStreamAdapter final : public SSLStreamAdapter {
 
   // Return max DTLS SSLProtocolVersion supported by implementation.
   static SSLProtocolVersion GetMaxSupportedDTLSProtocolVersion();
+
+  // Return number of times DTLS retransmission has been triggered.
+  // Used for testing (and maybe put into stats?).
+  int GetRetransmissionCount() const override { return retransmission_count_; }
+
+  // Set cipher group ids to use during DTLS handshake to establish ephemeral
+  // key, see CryptoOptions::EphemeralKeyExchangeCipherGroups.
+  bool SetSslGroupIds(const std::vector<uint16_t>& group_ids) override;
+
+  // Return the the ID of the group used by the adapters most recently
+  // completed handshake, or 0 if not applicable (e.g. before the handshake).
+  uint16_t GetSslGroupId() const override;
 
  private:
   enum SSLState {
@@ -199,12 +215,15 @@ class OpenSSLStreamAdapter final : public SSLStreamAdapter {
            !peer_certificate_digest_value_.empty();
   }
 
+  void MaybeSetTimeout();
+
+  const std::optional<Environment> env_;
   const std::unique_ptr<StreamInterface> stream_;
   absl::AnyInvocable<void(SSLHandshakeError)> handshake_error_;
 
-  rtc::Thread* const owner_;
-  webrtc::ScopedTaskSafety task_safety_;
-  webrtc::RepeatingTaskHandle timeout_task_;
+  TaskQueueBase* const owner_;
+  ScopedTaskSafety task_safety_;
+  RepeatingTaskHandle timeout_task_;
 
   SSLState state_;
   SSLRole role_;
@@ -234,6 +253,9 @@ class OpenSSLStreamAdapter final : public SSLStreamAdapter {
   // The DtlsSrtp ciphers
   std::string srtp_ciphers_;
 
+  // The ssl cipher groups to be used for DTLS handshake.
+  std::vector<uint16_t> ssl_cipher_groups_;
+
   // Do DTLS or not
   SSLMode ssl_mode_;
 
@@ -244,14 +266,28 @@ class OpenSSLStreamAdapter final : public SSLStreamAdapter {
   // be too aggressive for low bandwidth links.
   int dtls_handshake_timeout_ms_ = 50;
 
-  // 0 == Disabled
-  // 1 == Max
-  // 2 == Enabled (both min and max)
-  const int force_dtls_13_ = 0;
+  // MTU configured for dtls.
+  int dtls_mtu_ = 1200;
+
+  int retransmission_count_ = 0;
+
+  // Kill switch (from field-trial) flag to disable the use of
+  // SSL_set_group_ids.
+  const bool disable_ssl_group_ids_ = false;
+
+#ifdef OPENSSL_IS_BORINGSSL
+  class ScopedClockForTesting {
+   public:
+    ScopedClockForTesting(SSL_CTX* ctx, Clock* clock);
+    ~ScopedClockForTesting();
+  };
+  std::optional<ScopedClockForTesting> clock_for_testing_;
+#endif
 };
 
 /////////////////////////////////////////////////////////////////////////////
 
-}  // namespace rtc
+}  //  namespace webrtc
+
 
 #endif  // RTC_BASE_OPENSSL_STREAM_ADAPTER_H_

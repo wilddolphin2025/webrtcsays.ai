@@ -10,10 +10,9 @@
 
 #include "api/video_codecs/video_encoder.h"
 
-#include <string.h>
-
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -87,12 +86,6 @@ VideoEncoder::ScalingSettings::ScalingSettings(const ScalingSettings&) =
 
 VideoEncoder::ScalingSettings::~ScalingSettings() {}
 
-// static
-constexpr VideoEncoder::ScalingSettings::KOff
-    VideoEncoder::ScalingSettings::kOff;
-// static
-constexpr uint8_t VideoEncoder::EncoderInfo::kMaxFramerateFraction;
-
 bool VideoEncoder::ResolutionBitrateLimits::operator==(
     const ResolutionBitrateLimits& rhs) const {
   return frame_size_pixels == rhs.frame_size_pixels &&
@@ -109,6 +102,7 @@ VideoEncoder::EncoderInfo::EncoderInfo()
       implementation_name("unknown"),
       has_trusted_rate_controller(false),
       is_hardware_accelerated(true),
+      enable_cpu_overuse_detection(true),
       fps_allocation{absl::InlinedVector<uint8_t, kMaxTemporalStreams>(
           1,
           kMaxFramerateFraction)},
@@ -120,7 +114,7 @@ VideoEncoder::EncoderInfo::EncoderInfo(const EncoderInfo&) = default;
 VideoEncoder::EncoderInfo::~EncoderInfo() = default;
 
 std::string VideoEncoder::EncoderInfo::ToString() const {
-  rtc::StringBuilder oss;
+  StringBuilder oss;
   oss << "EncoderInfo { "
          "ScalingSettings { ";
   if (scaling_settings.thresholds) {
@@ -140,6 +134,7 @@ std::string VideoEncoder::EncoderInfo::ToString() const {
          ", has_trusted_rate_controller = "
       << has_trusted_rate_controller
       << ", is_hardware_accelerated = " << is_hardware_accelerated
+      << ", enable_cpu_overuse_detection = " << enable_cpu_overuse_detection
       << ", fps_allocation = [";
   size_t num_spatial_layer_with_fps_allocation = 0;
   for (size_t i = 0; i < kMaxSpatialLayers; ++i) {
@@ -160,11 +155,11 @@ std::string VideoEncoder::EncoderInfo::ToString() const {
     if (!fractions.empty()) {
       first = false;
       oss << "[ ";
-      for (size_t i = 0; i < fractions.size(); ++i) {
-        if (i > 0) {
+      for (size_t j = 0; j < fractions.size(); ++j) {
+        if (j > 0) {
           oss << ", ";
         }
-        oss << (static_cast<double>(fractions[i]) / kMaxFramerateFraction);
+        oss << (static_cast<double>(fractions[j]) / kMaxFramerateFraction);
       }
       oss << "] ";
     }
@@ -196,6 +191,13 @@ std::string VideoEncoder::EncoderInfo::ToString() const {
   if (is_qp_trusted.has_value()) {
     oss << ", is_qp_trusted = " << is_qp_trusted.value();
   }
+  if (max_pixels_per_frame.has_value()) {
+    oss << ", max_pixels_per_frame = " << max_pixels_per_frame.value();
+  }
+  if (mapped_resolution.has_value()) {
+    oss << ", mapped_resolution = " << mapped_resolution->width << " x "
+        << mapped_resolution->height;
+  }
   oss << "}";
   return oss.str();
 }
@@ -220,7 +222,9 @@ bool VideoEncoder::EncoderInfo::operator==(const EncoderInfo& rhs) const {
   if (supports_native_handle != rhs.supports_native_handle ||
       implementation_name != rhs.implementation_name ||
       has_trusted_rate_controller != rhs.has_trusted_rate_controller ||
-      is_hardware_accelerated != rhs.is_hardware_accelerated) {
+      is_hardware_accelerated != rhs.is_hardware_accelerated ||
+      enable_cpu_overuse_detection != rhs.enable_cpu_overuse_detection ||
+      max_pixels_per_frame != rhs.max_pixels_per_frame) {
     return false;
   }
 

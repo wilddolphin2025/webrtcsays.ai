@@ -14,17 +14,24 @@
 #include <jni.h>
 
 #include <atomic>
+#include <cstdint>
 #include <deque>
+#include <memory>
+#include <optional>
+#include <string>
 
 #include "api/sequence_checker.h"
+#include "api/video/encoded_image.h"
 #include "api/video_codecs/video_decoder.h"
 #include "common_video/h264/h264_bitstream_parser.h"
+#include "rtc_base/race_checker.h"
+#include "rtc_base/synchronization/mutex.h"
+#include "rtc_base/thread_annotations.h"
+#include "sdk/android/native_api/jni/scoped_java_ref.h"
+
 #ifdef RTC_ENABLE_H265
 #include "common_video/h265/h265_bitstream_parser.h"
 #endif
-#include "rtc_base/race_checker.h"
-#include "rtc_base/synchronization/mutex.h"
-#include "sdk/android/src/jni/jni_helpers.h"
 
 namespace webrtc {
 namespace jni {
@@ -90,7 +97,7 @@ class VideoDecoderWrapper : public VideoDecoder {
   SequenceChecker decoder_thread_checker_;
   // Callbacks must be executed sequentially on an arbitrary thread. We do not
   // own this thread so a thread checker cannot be used.
-  rtc::RaceChecker callback_race_checker_;
+  RaceChecker callback_race_checker_;
 
   // Initialized on Configure and immutable after that.
   VideoDecoder::Settings decoder_settings_

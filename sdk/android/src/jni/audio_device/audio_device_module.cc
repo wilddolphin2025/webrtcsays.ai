@@ -10,17 +10,25 @@
 
 #include "sdk/android/src/jni/audio_device/audio_device_module.h"
 
+#include <jni.h>
+
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 
+#include "api/audio/audio_device.h"
+#include "api/audio/audio_device_defines.h"
+#include "api/environment/environment.h"
 #include "api/make_ref_counted.h"
+#include "api/scoped_refptr.h"
 #include "api/sequence_checker.h"
-#include "api/task_queue/default_task_queue_factory.h"
-#include "api/task_queue/task_queue_factory.h"
 #include "modules/audio_device/audio_device_buffer.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "sdk/android/generated_audio_device_module_base_jni/WebRtcAudioManager_jni.h"
+#include "sdk/android/native_api/jni/scoped_java_ref.h"
 #include "system_wrappers/include/metrics.h"
 
 namespace webrtc {
@@ -54,17 +62,18 @@ class AndroidAudioDeviceModule : public AudioDeviceModule {
     NUM_STATUSES = 4
   };
 
-  AndroidAudioDeviceModule(AudioDeviceModule::AudioLayer audio_layer,
+  AndroidAudioDeviceModule(const Environment& env,
+                           AudioDeviceModule::AudioLayer audio_layer,
                            bool is_stereo_playout_supported,
                            bool is_stereo_record_supported,
                            uint16_t playout_delay_ms,
                            std::unique_ptr<AudioInput> audio_input,
                            std::unique_ptr<AudioOutput> audio_output)
-      : audio_layer_(audio_layer),
+      : env_(env),
+        audio_layer_(audio_layer),
         is_stereo_playout_supported_(is_stereo_playout_supported),
         is_stereo_record_supported_(is_stereo_record_supported),
         playout_delay_ms_(playout_delay_ms),
-        task_queue_factory_(CreateDefaultTaskQueueFactory()),
         input_(std::move(audio_input)),
         output_(std::move(audio_output)),
         initialized_(false) {
@@ -91,8 +100,7 @@ class AndroidAudioDeviceModule : public AudioDeviceModule {
   int32_t Init() override {
     RTC_DLOG(LS_INFO) << __FUNCTION__;
     RTC_DCHECK(thread_checker_.IsCurrent());
-    audio_device_buffer_ =
-        std::make_unique<AudioDeviceBuffer>(task_queue_factory_.get());
+    audio_device_buffer_ = std::make_unique<AudioDeviceBuffer>(env_);
     AttachAudioBuffer();
     if (initialized_) {
       return 0;
@@ -298,8 +306,6 @@ class AndroidAudioDeviceModule : public AudioDeviceModule {
     RTC_DLOG(LS_INFO) << __FUNCTION__;
     if (!initialized_)
       return -1;
-    if (!Recording())
-      return 0;
     audio_device_buffer_->StopRecording();
     int32_t result = input_->StopRecording();
     RTC_DLOG(LS_INFO) << "output: " << result;
@@ -578,7 +584,13 @@ class AndroidAudioDeviceModule : public AudioDeviceModule {
   std::optional<Stats> GetStats() const override {
     if (!initialized_)
       return std::nullopt;
-    return output_->GetStats();
+    Stats stats;
+    bool has_stats = output_->GetStats(&stats);
+    has_stats |= input_->GetStats(&stats);
+    if (has_stats) {
+      return stats;
+    }
+    return std::nullopt;
   }
 
   int32_t AttachAudioBuffer() {
@@ -591,11 +603,11 @@ class AndroidAudioDeviceModule : public AudioDeviceModule {
  private:
   SequenceChecker thread_checker_;
 
+  const Environment env_;
   const AudioDeviceModule::AudioLayer audio_layer_;
   const bool is_stereo_playout_supported_;
   const bool is_stereo_record_supported_;
   const uint16_t playout_delay_ms_;
-  const std::unique_ptr<TaskQueueFactory> task_queue_factory_;
   const std::unique_ptr<AudioInput> input_;
   const std::unique_ptr<AudioOutput> output_;
   std::unique_ptr<AudioDeviceBuffer> audio_device_buffer_;
@@ -649,7 +661,8 @@ bool IsLowLatencyOutputSupported(JNIEnv* env,
   return Java_WebRtcAudioManager_isLowLatencyOutputSupported(env, j_context);
 }
 
-rtc::scoped_refptr<AudioDeviceModule> CreateAudioDeviceModuleFromInputAndOutput(
+scoped_refptr<AudioDeviceModule> CreateAudioDeviceModuleFromInputAndOutput(
+    const Environment& env,
     AudioDeviceModule::AudioLayer audio_layer,
     bool is_stereo_playout_supported,
     bool is_stereo_record_supported,
@@ -657,10 +670,12 @@ rtc::scoped_refptr<AudioDeviceModule> CreateAudioDeviceModuleFromInputAndOutput(
     std::unique_ptr<AudioInput> audio_input,
     std::unique_ptr<AudioOutput> audio_output) {
   RTC_DLOG(LS_INFO) << __FUNCTION__;
-  return rtc::make_ref_counted<AndroidAudioDeviceModule>(
-      audio_layer, is_stereo_playout_supported, is_stereo_record_supported,
+  return make_ref_counted<AndroidAudioDeviceModule>(
+      env, audio_layer, is_stereo_playout_supported, is_stereo_record_supported,
       playout_delay_ms, std::move(audio_input), std::move(audio_output));
 }
 
 }  // namespace jni
 }  // namespace webrtc
+
+DEFINE_JNI(WebRtcAudioManager)

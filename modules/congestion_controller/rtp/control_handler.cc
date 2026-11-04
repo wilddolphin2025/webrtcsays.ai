@@ -10,14 +10,15 @@
 
 #include "modules/congestion_controller/rtp/control_handler.h"
 
-#include <algorithm>
-#include <vector>
+#include <optional>
 
+#include "api/sequence_checker.h"
+#include "api/transport/network_types.h"
 #include "api/units/data_rate.h"
+#include "api/units/time_delta.h"
 #include "modules/pacing/pacing_controller.h"
+#include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
-#include "rtc_base/numerics/safe_conversions.h"
-#include "rtc_base/numerics/safe_minmax.h"
 
 namespace webrtc {
 
@@ -55,6 +56,7 @@ std::optional<TargetTransferRate> CongestionControlHandler::GetUpdate() {
     new_outgoing.target_rate = DataRate::Zero();
   if (!last_reported_ ||
       last_reported_->target_rate != new_outgoing.target_rate ||
+      last_reported_->cwnd_reduce_ratio != new_outgoing.cwnd_reduce_ratio ||
       (!new_outgoing.target_rate.IsZero() &&
        (last_reported_->network_estimate.loss_rate_ratio !=
             new_outgoing.network_estimate.loss_rate_ratio ||

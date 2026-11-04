@@ -10,22 +10,26 @@
 
 #include "modules/audio_coding/neteq/tools/neteq_performance_test.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <string>
+
 #include "api/audio/audio_frame.h"
+#include "api/audio_codecs/audio_format.h"
 #include "api/audio_codecs/builtin_audio_decoder_factory.h"
 #include "api/environment/environment.h"
-#include "api/environment/environment_factory.h"
 #include "api/neteq/default_neteq_factory.h"
 #include "api/neteq/neteq.h"
+#include "api/rtp_headers.h"
+#include "api/units/timestamp.h"
 #include "modules/audio_coding/codecs/pcm16b/pcm16b.h"
 #include "modules/audio_coding/neteq/tools/audio_loop.h"
 #include "modules/audio_coding/neteq/tools/rtp_generator.h"
 #include "rtc_base/checks.h"
 #include "system_wrappers/include/clock.h"
+#include "test/create_test_environment.h"
 #include "test/testsupport/file_utils.h"
-
-using webrtc::NetEq;
-using webrtc::test::AudioLoop;
-using webrtc::test::RtpGenerator;
 
 namespace webrtc {
 namespace test {
@@ -34,7 +38,7 @@ int64_t NetEqPerformanceTest::Run(int runtime_ms,
                                   int lossrate,
                                   double drift_factor) {
   const std::string kInputFileName =
-      webrtc::test::ResourcePath("audio_coding/testfile32kHz", "pcm");
+      test::ResourcePath("audio_coding/testfile32kHz", "pcm");
   const int kSampRateHz = 32000;
   const std::string kDecoderName = "pcm16-swb32";
   const int kPayloadType = 95;
@@ -42,7 +46,7 @@ int64_t NetEqPerformanceTest::Run(int runtime_ms,
   // Initialize NetEq instance.
   NetEq::Config config;
   config.sample_rate_hz = kSampRateHz;
-  Environment env = CreateEnvironment();
+  Environment env = CreateTestEnvironment();
   auto neteq = DefaultNetEqFactory().Create(env, config,
                                             CreateBuiltinAudioDecoderFactory());
   // Register decoder in `neteq`.

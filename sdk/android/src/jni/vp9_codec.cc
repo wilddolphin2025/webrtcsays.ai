@@ -14,6 +14,7 @@
 #include "modules/video_coding/codecs/vp9/include/vp9.h"
 #include "sdk/android/generated_libvpx_vp9_jni/LibvpxVp9Decoder_jni.h"
 #include "sdk/android/generated_libvpx_vp9_jni/LibvpxVp9Encoder_jni.h"
+#include "sdk/android/native_api/jni/java_types.h"
 #include "sdk/android/src/jni/jni_helpers.h"
 
 namespace webrtc {
@@ -39,3 +40,6 @@ static jboolean JNI_LibvpxVp9Decoder_IsSupported(JNIEnv* jni) {
 
 }  // namespace jni
 }  // namespace webrtc
+
+DEFINE_JNI(LibvpxVp9Decoder)
+DEFINE_JNI(LibvpxVp9Encoder)

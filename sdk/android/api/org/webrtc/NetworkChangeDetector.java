@@ -30,6 +30,17 @@ public interface NetworkChangeDetector {
     CONNECTION_NONE
   }
 
+  public static enum NetworkSlice {
+    NO_SLICE(0),
+    UNIFIED_COMMUNICATIONS(1);
+
+    public final int code;
+
+    NetworkSlice(int code) {
+      this.code = code;
+    }
+  }
+
   public static class IPAddress {
     public final byte[] address;
 
@@ -38,7 +49,7 @@ public interface NetworkChangeDetector {
     }
 
     @SuppressWarnings("UnusedMethod")
-    @CalledByNative("IPAddress")
+    @CalledByNative
     private byte[] getAddress() {
       return address;
     }
@@ -52,44 +63,57 @@ public interface NetworkChangeDetector {
     public final ConnectionType underlyingTypeForVpn;
     public final long handle;
     public final IPAddress[] ipAddresses;
+    public final NetworkSlice slice;
 
-    public NetworkInformation(String name, ConnectionType type, ConnectionType underlyingTypeForVpn,
-        long handle, IPAddress[] addresses) {
+    public NetworkInformation(
+        String name,
+        ConnectionType type,
+        ConnectionType underlyingTypeForVpn,
+        long handle,
+        IPAddress[] addresses,
+        NetworkSlice slice) {
       this.name = name;
       this.type = type;
       this.underlyingTypeForVpn = underlyingTypeForVpn;
       this.handle = handle;
       this.ipAddresses = addresses;
+      this.slice = slice;
     }
 
     @SuppressWarnings("UnusedMethod")
-    @CalledByNative("NetworkInformation")
+    @CalledByNative
     private IPAddress[] getIpAddresses() {
       return ipAddresses;
     }
 
     @SuppressWarnings("UnusedMethod")
-    @CalledByNative("NetworkInformation")
+    @CalledByNative
     private ConnectionType getConnectionType() {
       return type;
     }
 
     @SuppressWarnings("UnusedMethod")
-    @CalledByNative("NetworkInformation")
+    @CalledByNative
     private ConnectionType getUnderlyingConnectionTypeForVpn() {
       return underlyingTypeForVpn;
     }
 
     @SuppressWarnings("UnusedMethod")
-    @CalledByNative("NetworkInformation")
+    @CalledByNative
     private long getHandle() {
       return handle;
     }
 
     @SuppressWarnings("UnusedMethod")
-    @CalledByNative("NetworkInformation")
+    @CalledByNative
     private String getName() {
       return name;
+    }
+
+    @SuppressWarnings("UnusedMethod")
+    @CalledByNative
+    private int getSliceAsInt() {
+      return slice.code;
     }
   };
 

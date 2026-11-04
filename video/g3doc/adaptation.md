@@ -1,5 +1,5 @@
 <!-- go/cmark -->
-<!--* freshness: {owner: 'eshr' reviewed: '2024-11-06'} *-->
+<!--* freshness: {owner: 'eshr' reviewed: '2025-05-08'} *-->
 
 # Video Adaptation
 
@@ -60,8 +60,8 @@ A custom resource can be injected into the call using the
 
 ## Adaptation
 
-When a a *resource* signals the it is over or underused, this signal reaches the
-`ResourceAdaptationProcessor` who requests an `Adaptation` proposal from the
+When a *resource* signals that it is over or underused, this signal reaches the
+`ResourceAdaptationProcessor` which requests an `Adaptation` proposal from the
 [VideoStreamAdapter][VideoStreamAdapter]. This proposal is based on the
 degradation preference of the video stream. `ResourceAdaptationProcessor` will
 determine if the `Adaptation` should be applied based on the current adaptation
@@ -111,4 +111,4 @@ for sources that need video adaptation.
 [bitrate_constraint.h]: https://source.chromium.org/chromium/chromium/src/+/main:third_party/webrtc/video/adaptation/bitrate_constraint.h
 [AddOrUpdateSink]: https://source.chromium.org/chromium/chromium/src/+/main:third_party/webrtc/api/video/video_source_interface.h?q=AddOrUpdateSink
 [VideoSinkWants]: https://source.chromium.org/chromium/chromium/src/+/main:third_party/webrtc/api/video/video_source_interface.h?q=%22RTC_EXPORT%20VideoSinkWants%22
-[adapted_video_track_source.h]: https://source.chromium.org/chromium/chromium/src/+/main:third_party/webrtc/media/base/adapted_video_track_source.h
+[adapted_video_track_source.h]: https://source.chromium.org/chromium/chromium/src/+/main:third_party/webrtc/api/video/adapted_video_track_source.h

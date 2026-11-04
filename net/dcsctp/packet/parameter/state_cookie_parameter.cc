@@ -9,27 +9,22 @@
  */
 #include "net/dcsctp/packet/parameter/state_cookie_parameter.h"
 
-#include <stdint.h>
-
+#include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
-#include <type_traits>
 #include <vector>
 
-#include "api/array_view.h"
 #include "net/dcsctp/packet/bounded_byte_reader.h"
 #include "net/dcsctp/packet/bounded_byte_writer.h"
-#include "net/dcsctp/packet/tlv_trait.h"
 #include "rtc_base/strings/string_builder.h"
 
 namespace dcsctp {
 
 // https://tools.ietf.org/html/rfc4960#section-3.3.3.1
 
-constexpr int StateCookieParameter::kType;
-
 std::optional<StateCookieParameter> StateCookieParameter::Parse(
-    rtc::ArrayView<const uint8_t> data) {
+    std::span<const uint8_t> data) {
   std::optional<BoundedByteReader<kHeaderSize>> reader = ParseTLV(data);
   if (!reader.has_value()) {
     return std::nullopt;
@@ -43,7 +38,7 @@ void StateCookieParameter::SerializeTo(std::vector<uint8_t>& out) const {
 }
 
 std::string StateCookieParameter::ToString() const {
-  rtc::StringBuilder sb;
+  webrtc::StringBuilder sb;
   sb << "State Cookie parameter (cookie_length=" << data_.size() << ")";
   return sb.Release();
 }

@@ -16,20 +16,18 @@
 
 #include <memory>
 #include <optional>
-#include <string>
+#include <span>
 #include <utility>
 #include <vector>
 
-#include "absl/base/attributes.h"
-#include "api/array_view.h"
+#include "absl/strings/string_view.h"
+#include "api/audio/audio_view.h"
 #include "api/call/bitrate_allocation.h"
 #include "api/units/data_rate.h"
 #include "api/units/time_delta.h"
 #include "rtc_base/buffer.h"
 
 namespace webrtc {
-
-class RtcEventLog;
 
 // Statistics related to Audio Network Adaptation.
 struct ANAStats {
@@ -80,7 +78,6 @@ class AudioEncoder {
     kPcmA = 3,
     kPcmU = 4,
     kG722 = 5,
-    kIlbc = 6,
 
     // Number of histogram bins in the UMA logging of codec types. The
     // total number of different codecs that are logged cannot exceed this
@@ -95,6 +92,13 @@ class AudioEncoder {
     bool send_even_if_empty = false;
     bool speech = true;
     CodecType encoder_type = CodecType::kOther;
+
+    // Used by EncodedAudioFrameInjector to set metadata that override
+    // values used in the default case. Internal encoders do not set these
+    // values.
+    std::optional<uint8_t> audio_level_dbov_override;
+    std::optional<int64_t> absolute_capture_timestamp_ms_override;
+    std::optional<std::vector<uint32_t>> csrcs_override;
   };
 
   // This is the main struct for auxiliary encoding information. Each encoded
@@ -152,8 +156,8 @@ class AudioEncoder {
   // EncodeImpl() which does the actual work, and then checks some
   // postconditions.
   EncodedInfo Encode(uint32_t rtp_timestamp,
-                     rtc::ArrayView<const int16_t> audio,
-                     rtc::Buffer* encoded);
+                     std::span<const int16_t> audio,
+                     Buffer* encoded);
 
   // Resets the encoder to its starting state, discarding any input that has
   // been fed to the encoder but not yet emitted in a packet.
@@ -189,7 +193,7 @@ class AudioEncoder {
   // Tells the encoder what average bitrate we'd like it to produce. The
   // encoder is free to adjust or disregard the given bitrate (the default
   // implementation does the latter).
-  ABSL_DEPRECATED("Use OnReceivedTargetAudioBitrate instead")
+  [[deprecated("Use OnReceivedTargetAudioBitrate instead")]]
   virtual void SetTargetBitrate(int target_bps);
 
   // Causes this encoder to let go of any other encoders it contains, and
@@ -198,12 +202,10 @@ class AudioEncoder {
   // not call any methods on this encoder afterwards, except for the
   // destructor. The default implementation just returns an empty array.
   // NOTE: This method is subject to change. Do not call or override it.
-  virtual rtc::ArrayView<std::unique_ptr<AudioEncoder>>
-  ReclaimContainedEncoders();
+  virtual std::span<std::unique_ptr<AudioEncoder>> ReclaimContainedEncoders();
 
   // Enables audio network adaptor. Returns true if successful.
-  virtual bool EnableAudioNetworkAdaptor(const std::string& config_string,
-                                         RtcEventLog* event_log);
+  virtual bool EnableAudioNetworkAdaptor(absl::string_view config);
 
   // Disables audio network adaptor.
   virtual void DisableAudioNetworkAdaptor();
@@ -213,17 +215,12 @@ class AudioEncoder {
   virtual void OnReceivedUplinkPacketLossFraction(
       float uplink_packet_loss_fraction);
 
-  ABSL_DEPRECATED("")
+  [[deprecated]]
   virtual void OnReceivedUplinkRecoverablePacketLossFraction(
       float uplink_recoverable_packet_loss_fraction);
 
   // Provides target audio bitrate to this encoder to allow it to adapt.
   virtual void OnReceivedTargetAudioBitrate(int target_bps);
-
-  // Provides target audio bitrate and corresponding probing interval of
-  // the bandwidth estimator to this encoder to allow it to adapt.
-  virtual void OnReceivedUplinkBandwidth(int target_audio_bitrate_bps,
-                                         std::optional<int64_t> bwe_period_ms);
 
   // Provides target audio bitrate and corresponding probing interval of
   // the bandwidth estimator to this encoder to allow it to adapt.
@@ -258,14 +255,14 @@ class AudioEncoder {
   }
 
   // The maximum number of audio channels supported by WebRTC encoders.
-  static constexpr int kMaxNumberOfChannels = 24;
+  static constexpr int kMaxNumberOfChannels = kMaxNumberOfAudioChannels;
 
  protected:
   // Subclasses implement this to perform the actual encoding. Called by
   // Encode().
   virtual EncodedInfo EncodeImpl(uint32_t rtp_timestamp,
-                                 rtc::ArrayView<const int16_t> audio,
-                                 rtc::Buffer* encoded) = 0;
+                                 std::span<const int16_t> audio,
+                                 Buffer* encoded) = 0;
 };
 }  // namespace webrtc
 #endif  // API_AUDIO_CODECS_AUDIO_ENCODER_H_

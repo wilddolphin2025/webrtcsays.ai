@@ -13,16 +13,19 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <optional>
-#include <string>
+#include <span>
 
-#include "api/array_view.h"
+#include "absl/strings/string_view.h"
 #include "api/call/bitrate_allocation.h"
+#include "api/units/data_rate.h"
 #include "rtc_base/buffer.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/trace_event.h"
 
 namespace webrtc {
+
+// TODO(peah): Rationale
+static_assert(AudioEncoder::kMaxNumberOfChannels <= 255, "");
 
 ANAStats::ANAStats() = default;
 ANAStats::~ANAStats() = default;
@@ -41,10 +44,9 @@ int AudioEncoder::RtpTimestampRateHz() const {
   return SampleRateHz();
 }
 
-AudioEncoder::EncodedInfo AudioEncoder::Encode(
-    uint32_t rtp_timestamp,
-    rtc::ArrayView<const int16_t> audio,
-    rtc::Buffer* encoded) {
+AudioEncoder::EncodedInfo AudioEncoder::Encode(uint32_t rtp_timestamp,
+                                               std::span<const int16_t> audio,
+                                               Buffer* encoded) {
   TRACE_EVENT0("webrtc", "AudioEncoder::Encode");
   RTC_CHECK_EQ(audio.size(),
                static_cast<size_t>(NumChannels() * SampleRateHz() / 100));
@@ -75,14 +77,12 @@ void AudioEncoder::SetMaxPlaybackRate(int /* frequency_hz */) {}
 
 void AudioEncoder::SetTargetBitrate(int /* target_bps */) {}
 
-rtc::ArrayView<std::unique_ptr<AudioEncoder>>
+std::span<std::unique_ptr<AudioEncoder>>
 AudioEncoder::ReclaimContainedEncoders() {
-  return nullptr;
+  return {};
 }
 
-bool AudioEncoder::EnableAudioNetworkAdaptor(
-    const std::string& /* config_string */,
-    RtcEventLog* /* event_log */) {
+bool AudioEncoder::EnableAudioNetworkAdaptor(absl::string_view /*config*/) {
   return false;
 }
 
@@ -97,17 +97,13 @@ void AudioEncoder::OnReceivedUplinkRecoverablePacketLossFraction(
 }
 
 void AudioEncoder::OnReceivedTargetAudioBitrate(int target_audio_bitrate_bps) {
-  OnReceivedUplinkBandwidth(target_audio_bitrate_bps, std::nullopt);
+  BitrateAllocationUpdate update;
+  update.target_bitrate = DataRate::BitsPerSec(target_audio_bitrate_bps);
+  OnReceivedUplinkAllocation(update);
 }
 
-void AudioEncoder::OnReceivedUplinkBandwidth(
-    int /* target_audio_bitrate_bps */,
-    std::optional<int64_t> /* bwe_period_ms */) {}
-
-void AudioEncoder::OnReceivedUplinkAllocation(BitrateAllocationUpdate update) {
-  OnReceivedUplinkBandwidth(update.target_bitrate.bps(),
-                            update.bwe_period.ms());
-}
+void AudioEncoder::OnReceivedUplinkAllocation(
+    BitrateAllocationUpdate /* update */) {}
 
 void AudioEncoder::OnReceivedRtt(int /* rtt_ms */) {}
 
@@ -120,5 +116,4 @@ ANAStats AudioEncoder::GetANAStats() const {
   return ANAStats();
 }
 
-constexpr int AudioEncoder::kMaxNumberOfChannels;
 }  // namespace webrtc

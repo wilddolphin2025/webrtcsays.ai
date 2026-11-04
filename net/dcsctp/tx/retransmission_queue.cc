@@ -10,29 +10,27 @@
 #include "net/dcsctp/tx/retransmission_queue.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <iterator>
-#include <map>
 #include <optional>
-#include <set>
-#include <string>
 #include <utility>
 #include <vector>
 
 #include "absl/algorithm/container.h"
 #include "absl/strings/string_view.h"
-#include "api/array_view.h"
+#include "api/units/time_delta.h"
+#include "api/units/timestamp.h"
+#include "net/dcsctp/common/internal_types.h"
 #include "net/dcsctp/common/math.h"
 #include "net/dcsctp/common/sequence_numbers.h"
 #include "net/dcsctp/packet/chunk/data_chunk.h"
-#include "net/dcsctp/packet/chunk/forward_tsn_chunk.h"
-#include "net/dcsctp/packet/chunk/forward_tsn_common.h"
 #include "net/dcsctp/packet/chunk/idata_chunk.h"
-#include "net/dcsctp/packet/chunk/iforward_tsn_chunk.h"
 #include "net/dcsctp/packet/chunk/sack_chunk.h"
 #include "net/dcsctp/packet/data.h"
+#include "net/dcsctp/public/dcsctp_handover_state.h"
 #include "net/dcsctp/public/dcsctp_options.h"
+#include "net/dcsctp/public/dcsctp_socket.h"
 #include "net/dcsctp/public/types.h"
 #include "net/dcsctp/timer/timer.h"
 #include "net/dcsctp/tx/outstanding_data.h"
@@ -111,12 +109,12 @@ void RetransmissionQueue::MaybeExitFastRecovery(
 }
 
 void RetransmissionQueue::HandleIncreasedCumulativeTsnAck(
-    size_t unacked_bytes,
+    size_t unacked_packet_bytes,
     size_t total_bytes_acked) {
   // Allow some margin for classifying as fully utilized, due to e.g. that too
   // small packets (less than kMinimumFragmentedPayload) are not sent +
   // overhead.
-  bool is_fully_utilized = unacked_bytes + options_.mtu >= cwnd_;
+  bool is_fully_utilized = unacked_packet_bytes + options_.mtu >= cwnd_;
   size_t old_cwnd = cwnd_;
   if (phase() == CongestionAlgorithmPhase::kSlowStart) {
     if (is_fully_utilized && !is_in_fast_recovery()) {
@@ -202,14 +200,14 @@ void RetransmissionQueue::HandlePacketLoss(
 }
 
 void RetransmissionQueue::UpdateReceiverWindow(uint32_t a_rwnd) {
-  rwnd_ = outstanding_data_.unacked_bytes() >= a_rwnd
+  rwnd_ = outstanding_data_.unacked_payload_bytes() >= a_rwnd
               ? 0
-              : a_rwnd - outstanding_data_.unacked_bytes();
+              : a_rwnd - outstanding_data_.unacked_payload_bytes();
 }
 
 void RetransmissionQueue::StartT3RtxTimerIfOutstandingData() {
-  // Note: Can't use `unacked_bytes()` as that one doesn't count chunks to
-  // be retransmitted.
+  // Note: Can't use `unacked_packet_bytes()` as that one doesn't count chunks
+  // to be retransmitted.
   if (outstanding_data_.empty()) {
     // https://tools.ietf.org/html/rfc4960#section-6.3.2
     // "Whenever all outstanding data sent to an address have been
@@ -252,6 +250,14 @@ bool RetransmissionQueue::IsSackValid(const SackChunk& sack) const {
   } else if (cumulative_tsn_ack > outstanding_data_.highest_outstanding_tsn()) {
     return false;
   }
+
+  for (const auto& block : sack.gap_ack_blocks()) {
+    if (UnwrappedTSN::AddTo(cumulative_tsn_ack, block.end) >
+        outstanding_data_.highest_outstanding_tsn()) {
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -262,7 +268,7 @@ bool RetransmissionQueue::HandleSack(Timestamp now, const SackChunk& sack) {
 
   UnwrappedTSN old_last_cumulative_tsn_ack =
       outstanding_data_.last_cumulative_tsn_ack();
-  size_t old_unacked_bytes = outstanding_data_.unacked_bytes();
+  size_t old_unacked_packet_bytes = outstanding_data_.unacked_packet_bytes();
   size_t old_rwnd = rwnd_;
   UnwrappedTSN cumulative_tsn_ack =
       tsn_unwrapper_.Unwrap(sack.cumulative_tsn_ack());
@@ -299,10 +305,10 @@ bool RetransmissionQueue::HandleSack(Timestamp now, const SackChunk& sack) {
   RTC_DLOG(LS_VERBOSE) << log_prefix_ << "Received SACK, cum_tsn_ack="
                        << *cumulative_tsn_ack.Wrap() << " ("
                        << *old_last_cumulative_tsn_ack.Wrap()
-                       << "), unacked_bytes="
-                       << outstanding_data_.unacked_bytes() << " ("
-                       << old_unacked_bytes << "), rwnd=" << rwnd_ << " ("
-                       << old_rwnd << ")";
+                       << "), unacked_packet_bytes="
+                       << outstanding_data_.unacked_packet_bytes() << " ("
+                       << old_unacked_packet_bytes << "), rwnd=" << rwnd_
+                       << " (" << old_rwnd << ")";
 
   if (cumulative_tsn_ack > old_last_cumulative_tsn_ack) {
     // https://tools.ietf.org/html/rfc4960#section-6.3.2
@@ -313,7 +319,8 @@ bool RetransmissionQueue::HandleSack(Timestamp now, const SackChunk& sack) {
     // Note: It may be started again in a bit further down.
     t3_rtx_.Stop();
 
-    HandleIncreasedCumulativeTsnAck(old_unacked_bytes, ack_info.bytes_acked);
+    HandleIncreasedCumulativeTsnAck(old_unacked_packet_bytes,
+                                    ack_info.bytes_acked);
   }
 
   if (ack_info.has_packet_loss) {
@@ -351,7 +358,7 @@ void RetransmissionQueue::UpdateRTT(Timestamp now,
 
 void RetransmissionQueue::HandleT3RtxTimerExpiry() {
   size_t old_cwnd = cwnd_;
-  size_t old_unacked_bytes = unacked_bytes();
+  size_t old_unacked_packet_bytes = unacked_packet_bytes();
   // https://tools.ietf.org/html/rfc4960#section-6.3.3
   // "For the destination address for which the timer expires, adjust
   // its ssthresh with rules defined in Section 7.2.3 and set the cwnd <- MTU."
@@ -388,8 +395,8 @@ void RetransmissionQueue::HandleT3RtxTimerExpiry() {
 
   RTC_DLOG(LS_INFO) << log_prefix_ << "t3-rtx expired. new cwnd=" << cwnd_
                     << " (" << old_cwnd << "), ssthresh=" << ssthresh_
-                    << ", unacked_bytes " << unacked_bytes() << " ("
-                    << old_unacked_bytes << ")";
+                    << ", unacked_packet_bytes " << unacked_packet_bytes()
+                    << " (" << old_unacked_packet_bytes << ")";
   RTC_DCHECK(IsConsistent());
 }
 
@@ -398,7 +405,7 @@ RetransmissionQueue::GetChunksForFastRetransmit(size_t bytes_in_packet) {
   RTC_DCHECK(outstanding_data_.has_data_to_be_fast_retransmitted());
   RTC_DCHECK(IsDivisibleBy4(bytes_in_packet));
   std::vector<std::pair<TSN, Data>> to_be_sent;
-  size_t old_unacked_bytes = unacked_bytes();
+  size_t old_unacked_packet_bytes = unacked_packet_bytes();
 
   to_be_sent =
       outstanding_data_.GetChunksToBeFastRetransmitted(bytes_in_packet);
@@ -432,13 +439,14 @@ RetransmissionQueue::GetChunksForFastRetransmit(size_t bytes_in_packet) {
 
   RTC_DLOG(LS_VERBOSE) << log_prefix_ << "Fast-retransmitting TSN "
                        << webrtc::StrJoin(to_be_sent, ",",
-                                          [&](rtc::StringBuilder& sb,
+                                          [&](webrtc::StringBuilder& sb,
                                               const std::pair<TSN, Data>& c) {
                                             sb << *c.first;
                                           })
                        << " - " << bytes_retransmitted
-                       << " bytes. unacked_bytes=" << unacked_bytes() << " ("
-                       << old_unacked_bytes << ")";
+                       << " bytes. unacked_packet_bytes="
+                       << unacked_packet_bytes() << " ("
+                       << old_unacked_packet_bytes << ")";
 
   RTC_DCHECK(IsConsistent());
   return to_be_sent;
@@ -451,15 +459,26 @@ std::vector<std::pair<TSN, Data>> RetransmissionQueue::GetChunksToSend(
   RTC_DCHECK(IsDivisibleBy4(bytes_remaining_in_packet));
 
   std::vector<std::pair<TSN, Data>> to_be_sent;
-  size_t old_unacked_bytes = unacked_bytes();
+  size_t old_unacked_packet_bytes = unacked_packet_bytes();
   size_t old_rwnd = rwnd_;
 
-  // Calculate the bandwidth budget (how many bytes that is
-  // allowed to be sent), and fill that up first with chunks that are
-  // scheduled to be retransmitted. If there is still budget, send new chunks
-  // (which will have their TSN assigned here.)
+  // Calculate the bandwidth budget (how many bytes that is allowed to be sent).
+  size_t max_packet_bytes_allowed_by_cwnd =
+      old_unacked_packet_bytes >= cwnd_ ? 0 : cwnd_ - old_unacked_packet_bytes;
+  size_t max_packet_bytes_allowed_by_rwnd =
+      RoundUpTo4(rwnd() + data_chunk_header_size_);
+
+  if (outstanding_data_.unacked_items() == 0) {
+    // https://datatracker.ietf.org/doc/html/rfc4960#section-6.1
+    // ... However, regardless of the value of rwnd (including if it is 0), the
+    // data sender can always have one DATA chunk in flight to the receiver if
+    // allowed by cwnd (see rule B, below).
+    max_packet_bytes_allowed_by_rwnd = options_.mtu;
+  }
   size_t max_bytes =
-      RoundDownTo4(std::min(max_bytes_to_send(), bytes_remaining_in_packet));
+      RoundDownTo4(std::min(std::min(max_packet_bytes_allowed_by_cwnd,
+                                     max_packet_bytes_allowed_by_rwnd),
+                            bytes_remaining_in_packet));
 
   to_be_sent = outstanding_data_.GetChunksToBeRetransmitted(max_bytes);
 
@@ -484,7 +503,7 @@ std::vector<std::pair<TSN, Data>> RetransmissionQueue::GetChunksToSend(
 
     size_t chunk_size = GetSerializedChunkSize(chunk_opt->data);
     max_bytes -= chunk_size;
-    rwnd_ -= chunk_size;
+    rwnd_ -= chunk_opt->data.size();
 
     std::optional<UnwrappedTSN> tsn = outstanding_data_.Insert(
         chunk_opt->message_id, chunk_opt->data, now,
@@ -513,7 +532,7 @@ std::vector<std::pair<TSN, Data>> RetransmissionQueue::GetChunksToSend(
     }
     RTC_DLOG(LS_VERBOSE) << log_prefix_ << "Sending TSN "
                          << webrtc::StrJoin(to_be_sent, ",",
-                                            [&](rtc::StringBuilder& sb,
+                                            [&](webrtc::StringBuilder& sb,
                                                 const std::pair<TSN, Data>& c) {
                                               sb << *c.first;
                                             })
@@ -523,8 +542,9 @@ std::vector<std::pair<TSN, Data>> RetransmissionQueue::GetChunksToSend(
                                 [&](size_t r, const std::pair<TSN, Data>& d) {
                                   return r + GetSerializedChunkSize(d.second);
                                 })
-                         << " bytes. unacked_bytes=" << unacked_bytes() << " ("
-                         << old_unacked_bytes << "), cwnd=" << cwnd_
+                         << " bytes. unacked_packet_bytes="
+                         << unacked_packet_bytes() << " ("
+                         << old_unacked_packet_bytes << "), cwnd=" << cwnd_
                          << ", rwnd=" << rwnd_ << " (" << old_rwnd << ")";
   }
   RTC_DCHECK(IsConsistent());
@@ -539,20 +559,6 @@ bool RetransmissionQueue::ShouldSendForwardTsn(Timestamp now) {
   bool ret = outstanding_data_.ShouldSendForwardTsn();
   RTC_DCHECK(IsConsistent());
   return ret;
-}
-
-size_t RetransmissionQueue::max_bytes_to_send() const {
-  size_t left = unacked_bytes() >= cwnd_ ? 0 : cwnd_ - unacked_bytes();
-
-  if (unacked_bytes() == 0) {
-    // https://datatracker.ietf.org/doc/html/rfc4960#section-6.1
-    // ... However, regardless of the value of rwnd (including if it is 0), the
-    // data sender can always have one DATA chunk in flight to the receiver if
-    // allowed by cwnd (see rule B, below).
-    return left;
-  }
-
-  return std::min(rwnd(), left);
 }
 
 void RetransmissionQueue::PrepareResetStream(StreamID stream_id) {
@@ -578,27 +584,35 @@ void RetransmissionQueue::RollbackResetStreams() {
 
 HandoverReadinessStatus RetransmissionQueue::GetHandoverReadiness() const {
   HandoverReadinessStatus status;
-  if (!outstanding_data_.empty()) {
+  bool block_on_outstanding_data =
+      !options_.enable_handover_with_outstanding_data;
+  if (block_on_outstanding_data && !outstanding_data_.empty()) {
     status.Add(HandoverUnreadinessReason::kRetransmissionQueueOutstandingData);
   }
   if (fast_recovery_exit_tsn_.has_value()) {
     status.Add(HandoverUnreadinessReason::kRetransmissionQueueFastRecovery);
   }
-  if (outstanding_data_.has_data_to_be_retransmitted()) {
+  if (block_on_outstanding_data &&
+      outstanding_data_.has_data_to_be_retransmitted()) {
     status.Add(HandoverUnreadinessReason::kRetransmissionQueueNotEmpty);
   }
   return status;
 }
 
-void RetransmissionQueue::AddHandoverState(DcSctpSocketHandoverState& state) {
+void RetransmissionQueue::AddHandoverState(webrtc::Timestamp now,
+                                           DcSctpSocketHandoverState& state) {
   state.tx.next_tsn = next_tsn().value();
   state.tx.rwnd = rwnd_;
   state.tx.cwnd = cwnd_;
   state.tx.ssthresh = ssthresh_;
   state.tx.partial_bytes_acked = partial_bytes_acked_;
+  state.tx.last_cumulative_tsn_ack =
+      outstanding_data_.last_cumulative_tsn_ack().value();
+  outstanding_data_.AddHandoverState(now, state);
 }
 
 void RetransmissionQueue::RestoreFromState(
+    webrtc::Timestamp now,
     const DcSctpSocketHandoverState& state) {
   // Validate that the component is in pristine state.
   RTC_DCHECK(outstanding_data_.empty());
@@ -610,7 +624,20 @@ void RetransmissionQueue::RestoreFromState(
   ssthresh_ = state.tx.ssthresh;
   partial_bytes_acked_ = state.tx.partial_bytes_acked;
 
-  outstanding_data_.ResetSequenceNumbers(
-      tsn_unwrapper_.Unwrap(TSN(state.tx.next_tsn - 1)));
+  if (options_.enable_handover_with_outstanding_data) {
+    UnwrappedTSN last_cumulative_tsn_ack =
+        state.tx.outstanding_data.empty()
+            ? tsn_unwrapper_.Unwrap(TSN(state.tx.next_tsn - 1))
+            : tsn_unwrapper_.Unwrap(TSN(state.tx.last_cumulative_tsn_ack));
+
+    outstanding_data_.RestoreFromState(now, last_cumulative_tsn_ack, state);
+
+    if (!outstanding_data_.empty()) {
+      t3_rtx_.Start();
+    }
+  } else {
+    outstanding_data_.ResetSequenceNumbers(
+        tsn_unwrapper_.Unwrap(TSN(state.tx.next_tsn - 1)));
+  }
 }
 }  // namespace dcsctp

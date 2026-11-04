@@ -12,12 +12,16 @@
 
 #include <atomic>
 #include <memory>
+#include <utility>
 
 #include "api/task_queue/task_queue_base.h"
+#include "api/task_queue/task_queue_factory.h"
 #include "api/units/time_delta.h"
+#include "api/units/timestamp.h"
 #include "rtc_base/event.h"
 #include "rtc_base/task_queue_for_test.h"
 #include "rtc_base/task_utils/repeating_task.h"
+#include "rtc_base/virtual_socket_server.h"
 #include "test/gmock.h"
 #include "test/gtest.h"
 
@@ -26,11 +30,29 @@
 namespace webrtc {
 namespace {
 using ::testing::AtLeast;
-using ::testing::Invoke;
 using ::testing::MockFunction;
 using ::testing::NiceMock;
 using ::testing::Return;
 constexpr Timestamp kStartTime = Timestamp::Seconds(1000);
+
+// Records TaskQueueBase::Current() at the point where it is destroyed.
+class DestructionObserver {
+ public:
+  explicit DestructionObserver(TaskQueueBase** destroyed_on)
+      : destroyed_on_(destroyed_on) {}
+  DestructionObserver(DestructionObserver&& other)
+      : destroyed_on_(std::exchange(other.destroyed_on_, nullptr)) {}
+  DestructionObserver(const DestructionObserver&) = delete;
+  DestructionObserver& operator=(const DestructionObserver&) = delete;
+  ~DestructionObserver() {
+    if (destroyed_on_ != nullptr) {
+      *destroyed_on_ = TaskQueueBase::Current();
+    }
+  }
+
+ private:
+  TaskQueueBase** destroyed_on_;
+};
 }  // namespace
 
 TEST(SimulatedTimeControllerTest, TaskIsStoppedOnStop) {
@@ -41,7 +63,7 @@ TEST(SimulatedTimeControllerTest, TaskIsStoppedOnStop) {
   GlobalSimulatedTimeController time_simulation(kStartTime);
   std::unique_ptr<TaskQueueBase, TaskQueueDeleter> task_queue =
       time_simulation.GetTaskQueueFactory()->CreateTaskQueue(
-          "TestQueue", TaskQueueFactory::Priority::NORMAL);
+          "TestQueue", TaskQueueFactory::Priority::kNormal);
   std::atomic_int counter(0);
   auto handle = RepeatingTaskHandle::Start(task_queue.get(), [&] {
     if (++counter >= kShortIntervalCount)
@@ -66,7 +88,7 @@ TEST(SimulatedTimeControllerTest, TaskCanStopItself) {
   GlobalSimulatedTimeController time_simulation(kStartTime);
   std::unique_ptr<TaskQueueBase, TaskQueueDeleter> task_queue =
       time_simulation.GetTaskQueueFactory()->CreateTaskQueue(
-          "TestQueue", TaskQueueFactory::Priority::NORMAL);
+          "TestQueue", TaskQueueFactory::Priority::kNormal);
 
   RepeatingTaskHandle handle;
   task_queue->PostTask([&] {
@@ -96,7 +118,7 @@ TEST(SimulatedTimeControllerTest, Example) {
   GlobalSimulatedTimeController time_simulation(kStartTime);
   std::unique_ptr<TaskQueueBase, TaskQueueDeleter> task_queue =
       time_simulation.GetTaskQueueFactory()->CreateTaskQueue(
-          "TestQueue", TaskQueueFactory::Priority::NORMAL);
+          "TestQueue", TaskQueueFactory::Priority::kNormal);
   auto object = std::make_unique<ObjectOnTaskQueue>();
   // Create and start the periodic task.
   RepeatingTaskHandle handle;
@@ -115,7 +137,7 @@ TEST(SimulatedTimeControllerTest, DelayTaskRunOnTime) {
   GlobalSimulatedTimeController time_simulation(kStartTime);
   std::unique_ptr<TaskQueueBase, TaskQueueDeleter> task_queue =
       time_simulation.GetTaskQueueFactory()->CreateTaskQueue(
-          "TestQueue", TaskQueueFactory::Priority::NORMAL);
+          "TestQueue", TaskQueueFactory::Priority::kNormal);
 
   bool delay_task_executed = false;
   task_queue->PostDelayedTask([&] { delay_task_executed = true; },
@@ -125,7 +147,7 @@ TEST(SimulatedTimeControllerTest, DelayTaskRunOnTime) {
   EXPECT_TRUE(delay_task_executed);
 }
 
-TEST(SimulatedTimeControllerTest, ThreadYeildsOnSynchronousCall) {
+TEST(SimulatedTimeControllerTest, ThreadYieldsOnSynchronousCall) {
   GlobalSimulatedTimeController sim(kStartTime);
   auto main_thread = sim.GetMainThread();
   auto t2 = sim.CreateThread("thread", nullptr);
@@ -134,7 +156,7 @@ TEST(SimulatedTimeControllerTest, ThreadYeildsOnSynchronousCall) {
   // called.
   main_thread->PostTask([&] { task_has_run = true; });
   SendTask(t2.get(), [] {
-    rtc::Event yield_event;
+    Event yield_event;
     // Wait() triggers YieldExecution() which will runs message processing on
     // all threads that are not in the yielded set.
 
@@ -153,14 +175,43 @@ TEST(SimulatedTimeControllerTest, SkipsDelayedTaskForward) {
   constexpr auto duration_during_which_nothing_runs = TimeDelta::Seconds(2);
   constexpr auto shorter_duration = TimeDelta::Seconds(1);
   MockFunction<void()> fun;
-  EXPECT_CALL(fun, Call).WillOnce(Invoke([&] {
+  EXPECT_CALL(fun, Call).WillOnce([&] {
     ASSERT_EQ(sim.GetClock()->CurrentTime(),
               kStartTime + duration_during_which_nothing_runs);
-  }));
+  });
   main_thread->PostDelayedTask(fun.AsStdFunction(), shorter_duration);
   sim.SkipForwardBy(duration_during_which_nothing_runs);
   // Run tasks that were pending during the skip.
   sim.AdvanceTime(TimeDelta::Zero());
+}
+
+TEST(SimulatedTimeControllerTest, CreateThreadWithSocketServer) {
+  GlobalSimulatedTimeController sim(kStartTime);
+  auto ss = std::make_unique<VirtualSocketServer>();
+  auto t2 = sim.CreateThreadWithSocketServer("thread", ss.get());
+  EXPECT_TRUE(t2);
+  EXPECT_EQ(t2->socketserver(), ss.get());
+
+  bool task_has_run = false;
+  t2->PostTask([&] { task_has_run = true; });
+  sim.AdvanceTime(TimeDelta::Zero());
+  EXPECT_TRUE(task_has_run);
+}
+
+TEST(SimulatedTimeControllerTest, PendingTasksAreDestroyedOnTheTaskQueue) {
+  GlobalSimulatedTimeController sim(kStartTime);
+  std::unique_ptr<TaskQueueBase, TaskQueueDeleter> task_queue =
+      sim.GetTaskQueueFactory()->CreateTaskQueue(
+          "TestQueue", TaskQueueFactory::Priority::kNormal);
+  TaskQueueBase* task_queue_ptr = task_queue.get();
+
+  TaskQueueBase* destroyed_on = nullptr;
+  task_queue->PostTask([observer = DestructionObserver(&destroyed_on)] {});
+
+  // Deletes the queue, which destroys the pending task without running it.
+  task_queue = nullptr;
+
+  EXPECT_EQ(destroyed_on, task_queue_ptr);
 }
 
 }  // namespace webrtc

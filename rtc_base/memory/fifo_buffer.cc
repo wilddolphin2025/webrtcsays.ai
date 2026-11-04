@@ -11,10 +11,17 @@
 #include "rtc_base/memory/fifo_buffer.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <span>
 
-#include "rtc_base/thread.h"
+#include "api/sequence_checker.h"
+#include "api/task_queue/task_queue_base.h"
+#include "rtc_base/checks.h"
+#include "rtc_base/stream.h"
 
-namespace rtc {
+namespace webrtc {
 
 FifoBuffer::FifoBuffer(size_t size)
     : state_(SS_OPEN),
@@ -22,11 +29,11 @@ FifoBuffer::FifoBuffer(size_t size)
       buffer_length_(size),
       data_length_(0),
       read_position_(0),
-      owner_(Thread::Current()) {
+      owner_(TaskQueueBase::Current()) {
   // all events are done on the owner_ thread
 }
 
-FifoBuffer::FifoBuffer(size_t size, Thread* owner)
+FifoBuffer::FifoBuffer(size_t size, TaskQueueBase* owner)
     : state_(SS_OPEN),
       buffer_(new char[size]),
       buffer_length_(size),
@@ -49,7 +56,7 @@ StreamState FifoBuffer::GetState() const {
   return state_;
 }
 
-StreamResult FifoBuffer::Read(rtc::ArrayView<uint8_t> buffer,
+StreamResult FifoBuffer::Read(std::span<uint8_t> buffer,
                               size_t& bytes_read,
                               int& error) {
   RTC_DCHECK_RUN_ON(&callback_sequence_);
@@ -72,7 +79,7 @@ StreamResult FifoBuffer::Read(rtc::ArrayView<uint8_t> buffer,
   return result;
 }
 
-StreamResult FifoBuffer::Write(rtc::ArrayView<const uint8_t> buffer,
+StreamResult FifoBuffer::Write(std::span<const uint8_t> buffer,
                                size_t& bytes_written,
                                int& error) {
   RTC_DCHECK_RUN_ON(&callback_sequence_);
@@ -195,4 +202,4 @@ StreamResult FifoBuffer::WriteLocked(const void* buffer,
   return SR_SUCCESS;
 }
 
-}  // namespace rtc
+}  // namespace webrtc

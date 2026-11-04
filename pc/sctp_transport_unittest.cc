@@ -19,6 +19,7 @@
 
 #include "absl/memory/memory.h"
 #include "api/dtls_transport_interface.h"
+#include "api/environment/environment.h"
 #include "api/make_ref_counted.h"
 #include "api/priority.h"
 #include "api/rtc_error.h"
@@ -32,39 +33,39 @@
 #include "p2p/dtls/fake_dtls_transport.h"
 #include "pc/dtls_transport.h"
 #include "rtc_base/copy_on_write_buffer.h"
-#include "rtc_base/thread.h"
+#include "test/create_test_environment.h"
 #include "test/gmock.h"
 #include "test/gtest.h"
+#include "test/run_loop.h"
 #include "test/wait_until.h"
 
 namespace webrtc {
 
 constexpr int kTestMaxSctpStreams = 1234;
 
-using cricket::FakeDtlsTransport;
 using ::testing::ElementsAre;
 
 namespace {
 
-class FakeCricketSctpTransport : public cricket::SctpTransportInternal {
+class FakeSctpTransportInternal : public SctpTransportInternal {
  public:
+  explicit FakeSctpTransportInternal(DtlsTransportInternal* transport)
+      : transport_(transport) {}
+
   void SetOnConnectedCallback(std::function<void()> callback) override {
     on_connected_callback_ = std::move(callback);
   }
   void SetDataChannelSink(DataChannelSink* sink) override {}
-  void SetDtlsTransport(cricket::DtlsTransportInternal* transport) override {}
-  bool Start(int local_port, int remote_port, int max_message_size) override {
-    return true;
-  }
+  DtlsTransportInternal* dtls_transport() const override { return transport_; }
+  bool Start(const SctpOptions& options) override { return true; }
   bool OpenStream(int sid, PriorityValue priority) override { return true; }
   bool ResetStream(int sid) override { return true; }
   RTCError SendData(int sid,
                     const SendDataParams& params,
-                    const rtc::CopyOnWriteBuffer& payload) override {
+                    const CopyOnWriteBuffer& payload) override {
     return RTCError::OK();
   }
   bool ReadyToSendData() override { return true; }
-  void set_debug_name_for_testing(const char* debug_name) override {}
   int max_message_size() const override { return 0; }
   std::optional<int> max_outbound_streams() const override {
     return max_outbound_streams_;
@@ -75,6 +76,7 @@ class FakeCricketSctpTransport : public cricket::SctpTransportInternal {
   size_t buffered_amount(int sid) const override { return 0; }
   size_t buffered_amount_low_threshold(int sid) const override { return 0; }
   void SetBufferedAmountLowThreshold(int sid, size_t bytes) override {}
+  size_t EarlyReceivedPacketCountForTesting() const override { return 0; }
 
   void SendSignalAssociationChangeCommunicationUp() {
     ASSERT_TRUE(on_connected_callback_);
@@ -87,6 +89,7 @@ class FakeCricketSctpTransport : public cricket::SctpTransportInternal {
   void set_max_inbound_streams(int streams) { max_inbound_streams_ = streams; }
 
  private:
+  DtlsTransportInternal* const transport_;
   std::optional<int> max_outbound_streams_;
   std::optional<int> max_inbound_streams_;
   std::function<void()> on_connected_callback_;
@@ -125,56 +128,69 @@ class SctpTransportTest : public ::testing::Test {
   SctpTransport* transport() { return transport_.get(); }
   SctpTransportObserverInterface* observer() { return &observer_; }
 
-  void CreateTransport() {
-    std::unique_ptr<cricket::DtlsTransportInternal> cricket_transport =
-        std::make_unique<FakeDtlsTransport>(
-            "audio", cricket::ICE_CANDIDATE_COMPONENT_RTP);
-    dtls_transport_ =
-        rtc::make_ref_counted<DtlsTransport>(std::move(cricket_transport));
+  void TearDown() override {
+    if (dtls_transport_ && internal_transport_) {
+      internal_transport_->UnsubscribeDtlsTransportState(dtls_transport_.get());
+      dtls_transport_->Clear(internal_transport_.get());
+    }
+  }
 
-    auto cricket_sctp_transport =
-        absl::WrapUnique(new FakeCricketSctpTransport());
-    transport_ = rtc::make_ref_counted<SctpTransport>(
-        std::move(cricket_sctp_transport), dtls_transport_);
+  void CreateTransport() {
+    internal_transport_ = std::make_unique<FakeDtlsTransport>(
+        env_, "audio", ICE_CANDIDATE_COMPONENT_RTP);
+    dtls_transport_ =
+        make_ref_counted<DtlsTransport>(internal_transport_.get());
+    internal_transport_->SubscribeDtlsTransportState(
+        dtls_transport_.get(),
+        [this](DtlsTransportInternal* transport, DtlsTransportState state) {
+          dtls_transport_->OnInternalDtlsState(transport);
+        });
+
+    auto sctp_transport_internal = absl::WrapUnique(
+        new FakeSctpTransportInternal(internal_transport_.get()));
+    transport_ = make_ref_counted<SctpTransport>(
+        std::move(sctp_transport_internal), dtls_transport_);
   }
 
   void CompleteSctpHandshake() {
     // The computed MaxChannels shall be the minimum of the outgoing
     // and incoming # of streams.
-    CricketSctpTransport()->set_max_outbound_streams(kTestMaxSctpStreams);
-    CricketSctpTransport()->set_max_inbound_streams(kTestMaxSctpStreams + 1);
-    CricketSctpTransport()->SendSignalAssociationChangeCommunicationUp();
+    MySctpTransportInternal()->set_max_outbound_streams(kTestMaxSctpStreams);
+    MySctpTransportInternal()->set_max_inbound_streams(kTestMaxSctpStreams + 1);
+    MySctpTransportInternal()->SendSignalAssociationChangeCommunicationUp();
   }
 
-  FakeCricketSctpTransport* CricketSctpTransport() {
-    return static_cast<FakeCricketSctpTransport*>(transport_->internal());
+  FakeSctpTransportInternal* MySctpTransportInternal() {
+    return static_cast<FakeSctpTransportInternal*>(transport_->internal());
   }
 
-  rtc::AutoThread main_thread_;
-  rtc::scoped_refptr<SctpTransport> transport_;
-  rtc::scoped_refptr<DtlsTransport> dtls_transport_;
+  test::RunLoop main_thread_;
+  const Environment env_ = CreateTestEnvironment();
+  scoped_refptr<SctpTransport> transport_;
+  scoped_refptr<DtlsTransport> dtls_transport_;
+  std::unique_ptr<FakeDtlsTransport> internal_transport_;
   TestSctpTransportObserver observer_;
 };
 
 TEST(SctpTransportSimpleTest, CreateClearDelete) {
-  rtc::AutoThread main_thread;
-  std::unique_ptr<cricket::DtlsTransportInternal> cricket_transport =
-      std::make_unique<FakeDtlsTransport>("audio",
-                                          cricket::ICE_CANDIDATE_COMPONENT_RTP);
-  rtc::scoped_refptr<DtlsTransport> dtls_transport =
-      rtc::make_ref_counted<DtlsTransport>(std::move(cricket_transport));
+  test::RunLoop main_thread;
+  std::unique_ptr<DtlsTransportInternal> internal_transport =
+      std::make_unique<FakeDtlsTransport>(CreateTestEnvironment(), "audio",
+                                          ICE_CANDIDATE_COMPONENT_RTP);
+  scoped_refptr<DtlsTransport> dtls_transport =
+      make_ref_counted<DtlsTransport>(internal_transport.get());
 
-  std::unique_ptr<cricket::SctpTransportInternal> fake_cricket_sctp_transport =
-      absl::WrapUnique(new FakeCricketSctpTransport());
-  rtc::scoped_refptr<SctpTransport> sctp_transport =
-      rtc::make_ref_counted<SctpTransport>(
-          std::move(fake_cricket_sctp_transport), dtls_transport);
+  std::unique_ptr<SctpTransportInternal> fake_sctp_transport_internal =
+      absl::WrapUnique(new FakeSctpTransportInternal(internal_transport.get()));
+  scoped_refptr<SctpTransport> sctp_transport = make_ref_counted<SctpTransport>(
+      std::move(fake_sctp_transport_internal), dtls_transport);
   ASSERT_TRUE(sctp_transport->internal());
   ASSERT_EQ(SctpTransportState::kConnecting,
             sctp_transport->Information().state());
   sctp_transport->Clear();
   ASSERT_FALSE(sctp_transport->internal());
   ASSERT_EQ(SctpTransportState::kClosed, sctp_transport->Information().state());
+  dtls_transport->Clear(internal_transport.get());
 }
 
 TEST_F(SctpTransportTest, EventsObservedWhenConnecting) {
@@ -223,8 +239,7 @@ TEST_F(SctpTransportTest, CloseWhenTransportCloses) {
   ASSERT_THAT(WaitUntil([&] { return observer_.State(); },
                         ::testing::Eq(SctpTransportState::kConnected)),
               IsRtcOk());
-  static_cast<cricket::FakeDtlsTransport*>(dtls_transport_->internal())
-      ->SetDtlsState(DtlsTransportState::kClosed);
+  internal_transport_->SetDtlsState(DtlsTransportState::kClosed);
   ASSERT_THAT(WaitUntil([&] { return observer_.State(); },
                         ::testing::Eq(SctpTransportState::kClosed)),
               IsRtcOk());

@@ -17,12 +17,12 @@
 
 #include "absl/functional/any_invocable.h"
 #include "api/scoped_refptr.h"
+#include "api/task_queue/task_queue_base.h"
 #include "rtc_base/rtc_certificate.h"
 #include "rtc_base/ssl_identity.h"
 #include "rtc_base/system/rtc_export.h"
-#include "rtc_base/thread.h"
 
-namespace rtc {
+namespace webrtc {
 
 // Generates `RTCCertificate`s.
 // See `RTCCertificateGenerator` for the WebRTC repo's implementation.
@@ -61,7 +61,8 @@ class RTC_EXPORT RTCCertificateGenerator
       const KeyParams& key_params,
       const std::optional<uint64_t>& expires_ms);
 
-  RTCCertificateGenerator(Thread* signaling_thread, Thread* worker_thread);
+  RTCCertificateGenerator(TaskQueueBase* signaling_thread,
+                          TaskQueueBase* worker_thread);
   ~RTCCertificateGenerator() override {}
 
   // `RTCCertificateGeneratorInterface` overrides.
@@ -74,10 +75,11 @@ class RTC_EXPORT RTCCertificateGenerator
                                 Callback callback) override;
 
  private:
-  Thread* const signaling_thread_;
-  Thread* const worker_thread_;
+  TaskQueueBase* const signaling_thread_;
+  TaskQueueBase* const worker_thread_;
 };
 
-}  // namespace rtc
+}  //  namespace webrtc
+
 
 #endif  // RTC_BASE_RTC_CERTIFICATE_GENERATOR_H_

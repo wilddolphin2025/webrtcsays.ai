@@ -10,17 +10,21 @@
 
 #include "modules/rtp_rtcp/source/rtp_packet_history.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
 #include <utility>
+#include <vector>
 
-#include "api/environment/environment_factory.h"
+#include "api/environment/environment.h"
 #include "api/units/time_delta.h"
 #include "api/units/timestamp.h"
 #include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
 #include "modules/rtp_rtcp/source/rtp_packet_to_send.h"
+#include "rtc_base/copy_on_write_buffer.h"
 #include "system_wrappers/include/clock.h"
+#include "test/create_test_environment.h"
 #include "test/gmock.h"
 #include "test/gtest.h"
 
@@ -58,7 +62,7 @@ class RtpPacketHistoryTest
  protected:
   RtpPacketHistoryTest()
       : fake_clock_(123456),
-        env_(CreateEnvironment(&fake_clock_)),
+        env_(CreateTestEnvironment({.time = &fake_clock_})),
         hist_(env_, /*enable_padding_prio=*/GetParam()) {}
 
   SimulatedClock fake_clock_;
@@ -148,7 +152,7 @@ TEST_P(RtpPacketHistoryTest, GetRtpPacket) {
   Timestamp capture_time = Timestamp::Millis(1);
   std::unique_ptr<RtpPacketToSend> packet = CreateRtpPacket(kStartSeqNum);
   packet->set_capture_time(capture_time);
-  rtc::CopyOnWriteBuffer buffer = packet->Buffer();
+  CopyOnWriteBuffer buffer = packet->Buffer();
   hist_.PutRtpPacket(std::move(packet),
                      /*send_time=*/fake_clock_.CurrentTime());
 
@@ -629,7 +633,7 @@ INSTANTIATE_TEST_SUITE_P(
 TEST(RtpPacketHistoryRecentLargePacketMode,
      GetPayloadPaddingPacketAfterCullWithAcksReturnOldPacket) {
   SimulatedClock fake_clock(1234);
-  Environment env = CreateEnvironment(&fake_clock);
+  Environment env = CreateTestEnvironment({.time = &fake_clock});
   RtpPacketHistory history(env,
                            RtpPacketHistory::PaddingMode::kRecentLargePacket);
 
@@ -650,7 +654,7 @@ TEST(RtpPacketHistoryRecentLargePacketMode,
 TEST(RtpPacketHistoryRecentLargePacketMode,
      GetPayloadPaddingPacketIgnoreSmallRecentPackets) {
   SimulatedClock fake_clock(1234);
-  Environment env = CreateEnvironment(&fake_clock);
+  Environment env = CreateTestEnvironment({.time = &fake_clock});
   RtpPacketHistory history(env,
                            RtpPacketHistory::PaddingMode::kRecentLargePacket);
   history.SetStorePacketsStatus(StorageMode::kStoreAndCull, 10);
@@ -672,7 +676,7 @@ TEST(RtpPacketHistoryRecentLargePacketMode,
 TEST(RtpPacketHistoryRecentLargePacketMode,
      GetPayloadPaddingPacketReturnsRecentPacketIfSizeNearMax) {
   SimulatedClock fake_clock(1234);
-  Environment env = CreateEnvironment(&fake_clock);
+  Environment env = CreateTestEnvironment({.time = &fake_clock});
   RtpPacketHistory history(env,
                            RtpPacketHistory::PaddingMode::kRecentLargePacket);
   history.SetStorePacketsStatus(StorageMode::kStoreAndCull, 10);
@@ -694,7 +698,7 @@ TEST(RtpPacketHistoryRecentLargePacketMode,
 TEST(RtpPacketHistoryRecentLargePacketMode,
      GetPayloadPaddingPacketReturnsLastPacketAfterLargeSequenceNumberGap) {
   SimulatedClock fake_clock(1234);
-  Environment env = CreateEnvironment(&fake_clock);
+  Environment env = CreateTestEnvironment({.time = &fake_clock});
   RtpPacketHistory history(env,
                            RtpPacketHistory::PaddingMode::kRecentLargePacket);
   history.SetStorePacketsStatus(StorageMode::kStoreAndCull, 10);

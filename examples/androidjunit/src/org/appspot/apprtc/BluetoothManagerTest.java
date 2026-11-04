@@ -34,17 +34,17 @@ import java.util.ArrayList;
 import java.util.List;
 import org.appspot.apprtc.AppRTCBluetoothManager.State;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.robolectric.RobolectricTestRunner;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLog;
-import org.robolectric.RobolectricTestRunner;
 
 /**
- * Verifies basic behavior of the AppRTCBluetoothManager class.
- * Note that the test object uses an AppRTCAudioManager (injected in ctor),
- * but a mocked version is used instead. Hence, the parts "driven" by the AppRTC
- * audio manager are not included in this test.
+ * Verifies basic behavior of the AppRTCBluetoothManager class. Note that the test object uses an
+ * AppRTCAudioManager (injected in ctor), but a mocked version is used instead. Hence, the parts
+ * "driven" by the AppRTC audio manager are not included in this test.
  */
 @RunWith(RobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
@@ -76,54 +76,55 @@ public class BluetoothManagerTest {
     when(mockedAudioManager.isBluetoothScoAvailableOffCall()).thenReturn(true);
 
     // Create the test object and override protected methods for this test.
-    bluetoothManager = new AppRTCBluetoothManager(context, mockedAppRtcAudioManager) {
-      @Override
-      protected AudioManager getAudioManager(Context context) {
-        Log.d(TAG, "getAudioManager");
-        return mockedAudioManager;
-      }
+    bluetoothManager =
+        new AppRTCBluetoothManager(context, mockedAppRtcAudioManager) {
+          @Override
+          protected AudioManager getAudioManager(Context context) {
+            Log.d(TAG, "getAudioManager");
+            return mockedAudioManager;
+          }
 
-      @Override
-      protected void registerReceiver(BroadcastReceiver receiver, IntentFilter filter) {
-        Log.d(TAG, "registerReceiver");
-        if (filter.hasAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
-            && filter.hasAction(BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED)) {
-          // Gives access to the real broadcast receiver so the test can use it.
-          bluetoothHeadsetStateReceiver = receiver;
-        }
-      }
+          @Override
+          protected void registerReceiver(BroadcastReceiver receiver, IntentFilter filter) {
+            Log.d(TAG, "registerReceiver");
+            if (filter.hasAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+                && filter.hasAction(BluetoothHeadset.ACTION_AUDIO_STATE_CHANGED)) {
+              // Gives access to the real broadcast receiver so the test can use it.
+              bluetoothHeadsetStateReceiver = receiver;
+            }
+          }
 
-      @Override
-      protected void unregisterReceiver(BroadcastReceiver receiver) {
-        Log.d(TAG, "unregisterReceiver");
-        if (receiver == bluetoothHeadsetStateReceiver) {
-          bluetoothHeadsetStateReceiver = null;
-        }
-      }
+          @Override
+          protected void unregisterReceiver(BroadcastReceiver receiver) {
+            Log.d(TAG, "unregisterReceiver");
+            if (receiver == bluetoothHeadsetStateReceiver) {
+              bluetoothHeadsetStateReceiver = null;
+            }
+          }
 
-      @Override
-      protected boolean getBluetoothProfileProxy(
-          Context context, BluetoothProfile.ServiceListener listener, int profile) {
-        Log.d(TAG, "getBluetoothProfileProxy");
-        if (profile == BluetoothProfile.HEADSET) {
-          // Allows the test to access the real Bluetooth service listener object.
-          bluetoothServiceListener = listener;
-        }
-        return true;
-      }
+          @Override
+          protected boolean getBluetoothProfileProxy(
+              Context context, BluetoothProfile.ServiceListener listener, int profile) {
+            Log.d(TAG, "getBluetoothProfileProxy");
+            if (profile == BluetoothProfile.HEADSET) {
+              // Allows the test to access the real Bluetooth service listener object.
+              bluetoothServiceListener = listener;
+            }
+            return true;
+          }
 
-      @Override
-      protected boolean hasPermission(Context context, String permission) {
-        Log.d(TAG, "hasPermission(" + permission + ")");
-        // Ensure that the client asks for Bluetooth permission.
-        return android.Manifest.permission.BLUETOOTH.equals(permission);
-      }
+          @Override
+          protected boolean hasPermission(Context context, String permission) {
+            Log.d(TAG, "hasPermission(" + permission + ")");
+            // Ensure that the client asks for Bluetooth permission.
+            return android.Manifest.permission.BLUETOOTH.equals(permission);
+          }
 
-      @Override
-      protected void logBluetoothAdapterInfo(BluetoothAdapter localAdapter) {
-        // Do nothing in tests. No need to mock BluetoothAdapter.
-      }
-    };
+          @Override
+          protected void logBluetoothAdapterInfo(BluetoothAdapter localAdapter) {
+            // Do nothing in tests. No need to mock BluetoothAdapter.
+          }
+        };
   }
 
   // Verify that Bluetooth service listener for headset profile is properly initialized.
@@ -148,9 +149,9 @@ public class BluetoothManagerTest {
   @Test
   public void testBluetoothDefaultStartStopStates() {
     bluetoothManager.start();
-    assertEquals(bluetoothManager.getState(), State.HEADSET_UNAVAILABLE);
+    assertEquals(State.HEADSET_UNAVAILABLE, bluetoothManager.getState());
     bluetoothManager.stop();
-    assertEquals(bluetoothManager.getState(), State.UNINITIALIZED);
+    assertEquals(State.UNINITIALIZED, bluetoothManager.getState());
   }
 
   // Verify correct state after receiving BluetoothServiceListener.onServiceConnected()
@@ -158,10 +159,10 @@ public class BluetoothManagerTest {
   @Test
   public void testBluetoothServiceListenerConnectedWithNoHeadset() {
     bluetoothManager.start();
-    assertEquals(bluetoothManager.getState(), State.HEADSET_UNAVAILABLE);
+    assertEquals(State.HEADSET_UNAVAILABLE, bluetoothManager.getState());
     simulateBluetoothServiceConnectedWithNoConnectedHeadset();
     verify(mockedAppRtcAudioManager, times(1)).updateAudioDeviceState();
-    assertEquals(bluetoothManager.getState(), State.HEADSET_UNAVAILABLE);
+    assertEquals(State.HEADSET_UNAVAILABLE, bluetoothManager.getState());
   }
 
   // Verify correct state after receiving BluetoothServiceListener.onServiceConnected()
@@ -170,20 +171,20 @@ public class BluetoothManagerTest {
   @Test
   public void testBluetoothServiceListenerConnectedWithHeadset() {
     bluetoothManager.start();
-    assertEquals(bluetoothManager.getState(), State.HEADSET_UNAVAILABLE);
+    assertEquals(State.HEADSET_UNAVAILABLE, bluetoothManager.getState());
     simulateBluetoothServiceConnectedWithConnectedHeadset();
     verify(mockedAppRtcAudioManager, times(1)).updateAudioDeviceState();
-    assertEquals(bluetoothManager.getState(), State.HEADSET_AVAILABLE);
+    assertEquals(State.HEADSET_AVAILABLE, bluetoothManager.getState());
   }
 
   // Verify correct state after receiving BluetoothProfile.ServiceListener.onServiceDisconnected().
   @Test
   public void testBluetoothServiceListenerDisconnected() {
     bluetoothManager.start();
-    assertEquals(bluetoothManager.getState(), State.HEADSET_UNAVAILABLE);
+    assertEquals(State.HEADSET_UNAVAILABLE, bluetoothManager.getState());
     simulateBluetoothServiceDisconnected();
     verify(mockedAppRtcAudioManager, times(1)).updateAudioDeviceState();
-    assertEquals(bluetoothManager.getState(), State.HEADSET_UNAVAILABLE);
+    assertEquals(State.HEADSET_UNAVAILABLE, bluetoothManager.getState());
   }
 
   // Verify correct state after BluetoothServiceListener.onServiceConnected() and
@@ -193,36 +194,35 @@ public class BluetoothManagerTest {
   @Test
   public void testBluetoothHeadsetConnected() {
     bluetoothManager.start();
-    assertEquals(bluetoothManager.getState(), State.HEADSET_UNAVAILABLE);
+    assertEquals(State.HEADSET_UNAVAILABLE, bluetoothManager.getState());
     simulateBluetoothServiceConnectedWithConnectedHeadset();
     simulateBluetoothHeadsetConnected();
     verify(mockedAppRtcAudioManager, times(2)).updateAudioDeviceState();
-    assertEquals(bluetoothManager.getState(), State.HEADSET_AVAILABLE);
+    assertEquals(State.HEADSET_AVAILABLE, bluetoothManager.getState());
   }
 
   // Verify correct state sequence for a case when a BT headset is available,
   // followed by BT SCO audio being enabled and then stopped.
   @Test
+  @Ignore("https://issues.webrtc.org/481918423")
   public void testBluetoothScoAudioStartAndStop() {
     bluetoothManager.start();
-    assertEquals(bluetoothManager.getState(), State.HEADSET_UNAVAILABLE);
+    assertEquals(State.HEADSET_UNAVAILABLE, bluetoothManager.getState());
     simulateBluetoothServiceConnectedWithConnectedHeadset();
-    assertEquals(bluetoothManager.getState(), State.HEADSET_AVAILABLE);
+    assertEquals(State.HEADSET_AVAILABLE, bluetoothManager.getState());
     bluetoothManager.startScoAudio();
-    assertEquals(bluetoothManager.getState(), State.SCO_CONNECTING);
+    assertEquals(State.SCO_CONNECTING, bluetoothManager.getState());
     simulateBluetoothScoConnectionConnected();
-    assertEquals(bluetoothManager.getState(), State.SCO_CONNECTED);
+    assertEquals(State.SCO_CONNECTED, bluetoothManager.getState());
     bluetoothManager.stopScoAudio();
     simulateBluetoothScoConnectionDisconnected();
-    assertEquals(bluetoothManager.getState(), State.SCO_DISCONNECTING);
+    assertEquals(State.SCO_DISCONNECTING, bluetoothManager.getState());
     bluetoothManager.stop();
-    assertEquals(bluetoothManager.getState(), State.UNINITIALIZED);
+    assertEquals(State.UNINITIALIZED, bluetoothManager.getState());
     verify(mockedAppRtcAudioManager, times(3)).updateAudioDeviceState();
   }
 
-  /**
-   * Private helper methods.
-   */
+  /** Private helper methods. */
   private void simulateBluetoothServiceConnectedWithNoConnectedHeadset() {
     mockedBluetoothDeviceList.clear();
     when(mockedBluetoothHeadset.getConnectedDevices()).thenReturn(mockedBluetoothDeviceList);

@@ -20,35 +20,27 @@ USE_PYTHON3 = True
 
 # Files and directories that are *skipped* by cpplint in the presubmit script.
 CPPLINT_EXCEPTIONS = [
-    'api/video_codecs/video_decoder.h',
-    'common_types.cc',
-    'common_types.h',
     'examples/objc',
-    'media/base/stream_params.h',
-    'media/base/video_common.h',
     'modules/audio_coding',
     'modules/audio_device',
     'modules/audio_processing',
     'modules/desktop_capture',
-    'modules/include/module_common_types.h',
     'modules/utility',
     'modules/video_capture',
-    'p2p/base/pseudo_tcp.cc',
-    'p2p/base/pseudo_tcp.h',
     'PRESUBMIT.py',
     'presubmit_test_mocks.py',
     'presubmit_test.py',
     'rtc_base',
     'sdk/android/src/jni',
     'sdk/objc',
-    'system_wrappers',
     'test',
     'tools_webrtc',
-    'voice_engine',
 ]
 
 PYLINT_OLD_STYLE = [
     "PRESUBMIT.py",
+    "presubmit_test.py",
+    "presubmit_test_mocks.py",
     "tools_webrtc/autoroller/roll_deps.py",
     "tools_webrtc/android/build_aar.py",
     "tools_webrtc/ios/build_ios_libs.py",
@@ -255,10 +247,8 @@ def CheckNoPragmaOnce(input_api, output_api, source_file_filter):
     return []
 
 
-def CheckNoFRIEND_TEST(# pylint: disable=invalid-name
-        input_api,
-        output_api,
-        source_file_filter):
+def CheckNoFRIEND_TEST(  # pylint: disable=invalid-name
+        input_api, output_api, source_file_filter):
     """Make sure that gtest's FRIEND_TEST() macro is not used, the
   FRIEND_TEST_ALL_PREFIXES() macro from testsupport/gtest_prod_util.h should be
   used instead since that allows for FLAKY_, FAILS_ and DISABLED_ prefixes."""
@@ -289,7 +279,8 @@ def IsLintDisabled(disabled_paths, file_path):
     return False
 
 
-def CheckApprovedFilesLintClean(input_api, output_api,
+def CheckApprovedFilesLintClean(input_api,
+                                output_api,
                                 source_file_filter=None):
     """Checks that all new or non-exempt .cc and .h files pass cpplint.py.
   This check is based on CheckChangeLintsClean in
@@ -374,6 +365,7 @@ def CheckNoMixingSources(input_api, gn_files, output_api):
 
   See bugs.webrtc.org/7743 for more context.
   """
+
     def _MoreThanOneSourceUsed(*sources_lists):
         sources_used = 0
         for source_list in sources_lists:
@@ -538,7 +530,7 @@ def CheckNoStreamUsageIsAdded(input_api,
         'std::ostream& F() {  // no-presubmit-check TODO(webrtc:8982)\n'
         '\n'
         'If you are adding new code, consider using '
-        'rtc::SimpleStringBuilder\n'
+        'webrtc::StringBuilder\n'
         '(in rtc_base/strings/string_builder.h).\n'
         'Affected files:\n')
     errors = []  # 2-element tuples with (file, line number)
@@ -664,6 +656,24 @@ def CheckGnGen(input_api, output_api):
     return []
 
 
+def CheckDeps(input_api, output_api):
+    """Runs checkdeps """
+    repo_root = input_api.change.RepositoryRoot()
+    checkdeps_path = input_api.os_path.join(repo_root, 'buildtools',
+                                            'checkdeps')
+    with _AddToPath(checkdeps_path):
+        import checkdeps
+
+    deps_checker = checkdeps.DepsChecker(input_api.PresubmitLocalPath())
+    deps_checker.CheckDirectory(input_api.PresubmitLocalPath())
+    results = []
+    if deps_checker.results_formatter.GetResults():
+        results.append(
+            output_api.PresubmitError('\n'.join(
+                deps_checker.results_formatter.GetResults())))
+    return results
+
+
 def CheckUnwantedDependencies(input_api, output_api, source_file_filter):
     """Runs checkdeps on #include statements added in this
   change. Breaking - rules is an error, breaking ! rules is a
@@ -781,6 +791,7 @@ def CheckChangeHasBugField(input_api, output_api):
 
 def CheckJSONParseErrors(input_api, output_api, source_file_filter):
     """Check that JSON files do not contain syntax errors."""
+
     def FilterFile(affected_file):
         return (input_api.os_path.splitext(affected_file.LocalPath())[1]
                 == '.json' and source_file_filter(affected_file))
@@ -807,6 +818,7 @@ def CheckJSONParseErrors(input_api, output_api, source_file_filter):
 
 
 def RunPythonTests(input_api, output_api):
+
     def Join(*args):
         return input_api.os_path.join(input_api.PresubmitLocalPath(), *args)
 
@@ -817,10 +829,7 @@ def RunPythonTests(input_api, output_api):
         'process_perf_results_test.py',
     ]
 
-    test_directories = [
-        input_api.PresubmitLocalPath(),
-        Join('rtc_tools', 'py_event_log_analyzer'),
-    ] + [
+    test_directories = [input_api.PresubmitLocalPath()] + [
         root for root, _, files in os.walk(Join('tools_webrtc')) if any(
             f.endswith('_test.py') and f not in excluded_files for f in files)
     ]
@@ -901,6 +910,8 @@ def CommonChecks(input_api, output_api):
     results.extend(
         input_api.canned_checks.CheckLicense(input_api, output_api,
                                              _LicenseHeader(input_api)))
+    results.extend(
+        input_api.canned_checks.CheckSkillFiles(input_api, output_api))
 
     # TODO(bugs.webrtc.org/12114): Delete this filter and run pylint on
     # all python files. This is a temporary solution.
@@ -991,6 +1002,10 @@ def CommonChecks(input_api, output_api):
             bot_allowlist=[
                 'chromium-webrtc-autoroll@webrtc-ci.iam.gserviceaccount.com',
                 'webrtc-version-updater@webrtc-ci.iam.gserviceaccount.com',
+                ('swarming-tasks'
+                 '@owners-cleanup-prod.google.com.iam.gserviceaccount.com'),
+                ('chrome-cherry-picker'
+                 '@chops-service-accounts.iam.gserviceaccount.com'),
             ]))
     results.extend(
         input_api.canned_checks.CheckChangeTodoHasOwner(
@@ -998,6 +1013,7 @@ def CommonChecks(input_api, output_api):
     results.extend(
         input_api.canned_checks.CheckPatchFormatted(input_api, output_api))
     results.extend(CheckNativeApiHeaderChanges(input_api, output_api))
+    results.extend(CheckDeps(input_api, output_api))
     results.extend(
         CheckNoIOStreamInHeaders(input_api,
                                  output_api,
@@ -1361,6 +1377,7 @@ def CheckLFNewline(input_api, output_api, source_file_filter):
                     output_api.PresubmitError(error_msg.format(file_path)))
     return results
 
+
 def _ExtractAddRulesFromParsedDeps(parsed_deps):
     """Extract the rules that add dependencies from a parsed DEPS file.
 
@@ -1384,6 +1401,7 @@ def _ParseDeps(contents):
 
     # Stubs for handling special syntax in the root DEPS file.
     class VarImpl:
+
         def __init__(self, local_scope):
             self._local_scope = local_scope
 
@@ -1398,6 +1416,7 @@ def _ParseDeps(contents):
     local_scope = {}
     global_scope = {
         'Var': VarImpl(local_scope).Lookup,
+        'Str': str,
     }
     exec(contents, global_scope, local_scope)
     return local_scope

@@ -10,13 +10,20 @@
 #include "modules/remote_bitrate_estimator/remote_bitrate_estimator_unittest_helper.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <utility>
+#include <vector>
 
+#include "api/rtp_header_extension_id.h"
+#include "api/units/data_rate.h"
+#include "api/units/timestamp.h"
 #include "modules/rtp_rtcp/include/rtp_header_extension_map.h"
 #include "modules/rtp_rtcp/source/rtp_header_extensions.h"
 #include "modules/rtp_rtcp/source/rtp_packet_received.h"
 #include "rtc_base/checks.h"
+#include "test/gtest.h"
 
 namespace webrtc {
 
@@ -91,7 +98,7 @@ int64_t RtpStream::next_rtp_time() const {
 // Generates an RTCP packet.
 RtpStream::RtcpPacket* RtpStream::Rtcp(int64_t time_now_us) {
   if (time_now_us < next_rtcp_time_) {
-    return NULL;
+    return nullptr;
   }
   RtcpPacket* rtcp = new RtcpPacket;
   int64_t send_time_us = time_now_us + kSendSideOffsetUs;
@@ -233,7 +240,7 @@ void RemoteBitrateEstimatorTest::IncomingPacket(uint32_t ssrc,
                                                 uint32_t rtp_timestamp,
                                                 uint32_t absolute_send_time) {
   RtpHeaderExtensionMap extensions;
-  extensions.Register<AbsoluteSendTime>(1);
+  extensions.Register<AbsoluteSendTime>(RtpHeaderExtensionId(1));
   RtpPacketReceived rtp_packet(&extensions);
   rtp_packet.SetSsrc(ssrc);
   rtp_packet.SetTimestamp(rtp_timestamp);

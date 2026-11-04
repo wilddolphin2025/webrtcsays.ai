@@ -36,7 +36,7 @@ class AecDumpBasedSimulator final : public AudioProcessingSimulator {
  public:
   AecDumpBasedSimulator(
       const SimulationSettings& settings,
-      absl::Nonnull<scoped_refptr<AudioProcessing>> audio_processing);
+      absl_nonnull scoped_refptr<AudioProcessing> audio_processing);
 
   AecDumpBasedSimulator() = delete;
   AecDumpBasedSimulator(const AecDumpBasedSimulator&) = delete;
@@ -62,7 +62,6 @@ class AecDumpBasedSimulator final : public AudioProcessingSimulator {
   void PrepareProcessStreamCall(const webrtc::audioproc::Stream& msg);
   void PrepareReverseProcessStreamCall(
       const webrtc::audioproc::ReverseStream& msg);
-  void VerifyProcessStreamBitExactness(const webrtc::audioproc::Stream& msg);
   void MaybeOpenCallOrderFile();
   enum InterfaceType {
     kFixedInterface,

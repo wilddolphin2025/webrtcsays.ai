@@ -18,21 +18,25 @@ if ((is_linux || is_chromeos) && rtc_use_pipewire) {
     ]
   }
 
-  pkg_config("pipewire") {
-    packages = [ "libpipewire-0.3" ]
-    if (!rtc_link_pipewire) {
-      ignore_libs = true
+  if (rtc_link_pipewire) {
+    pkg_config("pipewire") {
+      packages = [ "libpipewire-0.3" ]
+    }
+  } else {
+    config("pipewire") {
+      configs = [ "//third_party/pipewire:pipewire_public_config" ]
     }
   }
 
   pkg_config("gbm") {
     packages = [ "gbm" ]
   }
+  pkg_config("gl") {
+    packages = [ "gl" ]
+    ignore_libs = true
+  }
   pkg_config("egl") {
     packages = [ "egl" ]
-  }
-  pkg_config("epoxy") {
-    packages = [ "epoxy" ]
     ignore_libs = true
   }
   pkg_config("libdrm") {
@@ -40,8 +44,8 @@ if ((is_linux || is_chromeos) && rtc_use_pipewire) {
   }
 
   if (!rtc_link_pipewire) {
-    # When libpipewire is not directly linked, use stubs to allow for dlopening of
-    # the binary.
+    # When libpipewire is not directly linked, use stubs to allow for dlopening
+    # of the binary.
     generate_stubs("pipewire_stubs") {
       configs = [
         "../../:common_config",
@@ -72,8 +76,8 @@ if ((is_linux || is_chromeos) && rtc_use_pipewire) {
     configs = [
       ":pipewire_base",
       ":gbm",
+      ":gl",
       ":egl",
-      ":epoxy",
       ":libdrm",
     ]
   }
@@ -93,6 +97,7 @@ if ((is_linux || is_chromeos) && rtc_use_pipewire) {
     sources = [
       "pipewire_utils.cc",
       "pipewire_utils.h",
+      "portal_guard.h",
       "portal_request_response.h",
       "scoped_glib.cc",
       "scoped_glib.h",
@@ -108,11 +113,15 @@ if ((is_linux || is_chromeos) && rtc_use_pipewire) {
     ]
 
     deps = [
+      "../../api:refcountedbase",
+      "../../api:scoped_refptr",
       "../../rtc_base:checks",
       "../../rtc_base:logging",
       "../../rtc_base:sanitizer",
+      "../../rtc_base:stringutils",
+      "../../rtc_base/synchronization:mutex",
       "../../rtc_base/system:rtc_export",
-      "//third_party/abseil-cpp/absl/strings:string_view",
+      "//third_party/abseil-cpp/absl/strings",
     ]
 
     if (!rtc_link_pipewire) {

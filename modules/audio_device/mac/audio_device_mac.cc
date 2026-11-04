@@ -15,46 +15,45 @@
 #include <sys/sysctl.h>  // sysctlbyname()
 
 #include <memory>
+#include <span>
 #include <vector>
 
-#include "modules/audio_device/audio_device_config.h"
-#include "modules/third_party/portaudio/pa_ringbuffer.h"
-#include "rtc_base/arraysize.h"
+#include "modules/audio_device/mac/audio_ring_buffer_mac.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/platform_thread.h"
 #include "rtc_base/system/arch.h"
 
 namespace webrtc {
 
-#define WEBRTC_CA_RETURN_ON_ERR(expr)                                \
-  do {                                                               \
-    err = expr;                                                      \
-    if (err != noErr) {                                              \
-      logCAMsg(rtc::LS_ERROR, "Error in " #expr, (const char*)&err); \
-      return -1;                                                     \
-    }                                                                \
+#define WEBRTC_CA_RETURN_ON_ERR(expr)                                     \
+  do {                                                                    \
+    err = expr;                                                           \
+    if (err != noErr) {                                                   \
+      logCAMsg(::webrtc::LS_ERROR, "Error in " #expr, (const char*)&err); \
+      return -1;                                                          \
+    }                                                                     \
   } while (0)
 
-#define WEBRTC_CA_LOG_ERR(expr)                                      \
-  do {                                                               \
-    err = expr;                                                      \
-    if (err != noErr) {                                              \
-      logCAMsg(rtc::LS_ERROR, "Error in " #expr, (const char*)&err); \
-    }                                                                \
+#define WEBRTC_CA_LOG_ERR(expr)                                           \
+  do {                                                                    \
+    err = expr;                                                           \
+    if (err != noErr) {                                                   \
+      logCAMsg(::webrtc::LS_ERROR, "Error in " #expr, (const char*)&err); \
+    }                                                                     \
   } while (0)
 
-#define WEBRTC_CA_LOG_WARN(expr)                                       \
-  do {                                                                 \
-    err = expr;                                                        \
-    if (err != noErr) {                                                \
-      logCAMsg(rtc::LS_WARNING, "Error in " #expr, (const char*)&err); \
-    }                                                                  \
+#define WEBRTC_CA_LOG_WARN(expr)                                            \
+  do {                                                                      \
+    err = expr;                                                             \
+    if (err != noErr) {                                                     \
+      logCAMsg(::webrtc::LS_WARNING, "Error in " #expr, (const char*)&err); \
+    }                                                                       \
   } while (0)
 
 enum { MaxNumberDevices = 64 };
 
 // CoreAudio errors are best interpreted as four character strings.
-void AudioDeviceMac::logCAMsg(const rtc::LoggingSeverity sev,
+void AudioDeviceMac::logCAMsg(const LoggingSeverity sev,
                               const char* msg,
                               const char* err) {
   RTC_DCHECK(msg != NULL);
@@ -62,14 +61,14 @@ void AudioDeviceMac::logCAMsg(const rtc::LoggingSeverity sev,
 
 #ifdef WEBRTC_ARCH_BIG_ENDIAN
   switch (sev) {
-    case rtc::LS_ERROR:
+    case LS_ERROR:
       RTC_LOG(LS_ERROR) << msg << ": " << err[0] << err[1] << err[2] << err[3];
       break;
-    case rtc::LS_WARNING:
+    case LS_WARNING:
       RTC_LOG(LS_WARNING) << msg << ": " << err[0] << err[1] << err[2]
                           << err[3];
       break;
-    case rtc::LS_VERBOSE:
+    case LS_VERBOSE:
       RTC_LOG(LS_VERBOSE) << msg << ": " << err[0] << err[1] << err[2]
                           << err[3];
       break;
@@ -79,14 +78,14 @@ void AudioDeviceMac::logCAMsg(const rtc::LoggingSeverity sev,
 #else
   // We need to flip the characters in this case.
   switch (sev) {
-    case rtc::LS_ERROR:
+    case LS_ERROR:
       RTC_LOG(LS_ERROR) << msg << ": " << err[3] << err[2] << err[1] << err[0];
       break;
-    case rtc::LS_WARNING:
+    case LS_WARNING:
       RTC_LOG(LS_WARNING) << msg << ": " << err[3] << err[2] << err[1]
                           << err[0];
       break;
-    case rtc::LS_VERBOSE:
+    case LS_VERBOSE:
       RTC_LOG(LS_VERBOSE) << msg << ": " << err[3] << err[2] << err[1]
                           << err[0];
       break;
@@ -107,8 +106,6 @@ AudioDeviceMac::AudioDeviceMac()
       _outputDeviceIsSpecified(false),
       _recChannels(N_REC_CHANNELS),
       _playChannels(N_PLAY_CHANNELS),
-      _captureBufData(NULL),
-      _renderBufData(NULL),
       _initialized(false),
       _isShutDown(false),
       _recording(false),
@@ -127,13 +124,12 @@ AudioDeviceMac::AudioDeviceMac()
       _captureDelayUs(0),
       _renderDelayUs(0),
       _renderDelayOffsetSamples(0),
-      _paCaptureBuffer(NULL),
-      _paRenderBuffer(NULL),
-      _captureBufSizeSamples(0),
-      _renderBufSizeSamples(0),
+      _captureBuffer(REC_BUF_SIZE_IN_SAMPLES),
+      _renderBuffer(PLAY_BUF_SIZE_IN_SAMPLES),
       prev_key_state_() {
   RTC_DLOG(LS_INFO) << __FUNCTION__ << " created";
 
+  memset(_captureConvertData, 0, sizeof(_captureConvertData));
   memset(_renderConvertData, 0, sizeof(_renderConvertData));
   memset(&_outStreamFormat, 0, sizeof(AudioStreamBasicDescription));
   memset(&_outDesiredFormat, 0, sizeof(AudioStreamBasicDescription));
@@ -150,26 +146,6 @@ AudioDeviceMac::~AudioDeviceMac() {
 
   RTC_DCHECK(capture_worker_thread_.empty());
   RTC_DCHECK(render_worker_thread_.empty());
-
-  if (_paRenderBuffer) {
-    delete _paRenderBuffer;
-    _paRenderBuffer = NULL;
-  }
-
-  if (_paCaptureBuffer) {
-    delete _paCaptureBuffer;
-    _paCaptureBuffer = NULL;
-  }
-
-  if (_renderBufData) {
-    delete[] _renderBufData;
-    _renderBufData = NULL;
-  }
-
-  if (_captureBufData) {
-    delete[] _captureBufData;
-    _captureBufData = NULL;
-  }
 
   kern_return_t kernErr = KERN_SUCCESS;
   kernErr = semaphore_destroy(mach_task_self(), _renderSemaphore);
@@ -216,47 +192,8 @@ AudioDeviceGeneric::InitStatus AudioDeviceMac::Init() {
 
   _isShutDown = false;
 
-  // PortAudio ring buffers require an elementCount which is a power of two.
-  if (_renderBufData == NULL) {
-    UInt32 powerOfTwo = 1;
-    while (powerOfTwo < PLAY_BUF_SIZE_IN_SAMPLES) {
-      powerOfTwo <<= 1;
-    }
-    _renderBufSizeSamples = powerOfTwo;
-    _renderBufData = new SInt16[_renderBufSizeSamples];
-  }
-
-  if (_paRenderBuffer == NULL) {
-    _paRenderBuffer = new PaUtilRingBuffer;
-    ring_buffer_size_t bufSize = -1;
-    bufSize = PaUtil_InitializeRingBuffer(
-        _paRenderBuffer, sizeof(SInt16), _renderBufSizeSamples, _renderBufData);
-    if (bufSize == -1) {
-      RTC_LOG(LS_ERROR) << "PaUtil_InitializeRingBuffer() error";
-      return InitStatus::PLAYOUT_ERROR;
-    }
-  }
-
-  if (_captureBufData == NULL) {
-    UInt32 powerOfTwo = 1;
-    while (powerOfTwo < REC_BUF_SIZE_IN_SAMPLES) {
-      powerOfTwo <<= 1;
-    }
-    _captureBufSizeSamples = powerOfTwo;
-    _captureBufData = new Float32[_captureBufSizeSamples];
-  }
-
-  if (_paCaptureBuffer == NULL) {
-    _paCaptureBuffer = new PaUtilRingBuffer;
-    ring_buffer_size_t bufSize = -1;
-    bufSize =
-        PaUtil_InitializeRingBuffer(_paCaptureBuffer, sizeof(Float32),
-                                    _captureBufSizeSamples, _captureBufData);
-    if (bufSize == -1) {
-      RTC_LOG(LS_ERROR) << "PaUtil_InitializeRingBuffer() error";
-      return InitStatus::RECORDING_ERROR;
-    }
-  }
+  _renderBuffer.Clear();
+  _captureBuffer.Clear();
 
   kern_return_t kernErr = KERN_SUCCESS;
   kernErr = semaphore_create(mach_task_self(), &_renderSemaphore,
@@ -346,8 +283,7 @@ int32_t AudioDeviceMac::Terminate() {
 
   err = AudioHardwareUnload();
   if (err != noErr) {
-    logCAMsg(rtc::LS_ERROR, "Error in AudioHardwareUnload()",
-             (const char*)&err);
+    logCAMsg(LS_ERROR, "Error in AudioHardwareUnload()", (const char*)&err);
     retVal = -1;
   }
 
@@ -837,7 +773,7 @@ int32_t AudioDeviceMac::PlayoutDeviceName(uint16_t index,
   }
 
   return GetDeviceName(kAudioDevicePropertyScopeOutput, index,
-                       rtc::ArrayView<char>(name, kAdmMaxDeviceNameSize));
+                       std::span<char>(name, kAdmMaxDeviceNameSize));
 }
 
 int32_t AudioDeviceMac::RecordingDeviceName(uint16_t index,
@@ -856,7 +792,7 @@ int32_t AudioDeviceMac::RecordingDeviceName(uint16_t index,
   }
 
   return GetDeviceName(kAudioDevicePropertyScopeInput, index,
-                       rtc::ArrayView<char>(name, kAdmMaxDeviceNameSize));
+                       std::span<char>(name, kAdmMaxDeviceNameSize));
 }
 
 int16_t AudioDeviceMac::RecordingDevices() {
@@ -970,7 +906,7 @@ int32_t AudioDeviceMac::InitPlayout() {
     }
   }
 
-  PaUtil_FlushRingBuffer(_paRenderBuffer);
+  _renderBuffer.Clear();
 
   OSStatus err = noErr;
   UInt32 size = 0;
@@ -1017,7 +953,7 @@ int32_t AudioDeviceMac::InitPlayout() {
       _outputDeviceID, &propertyAddress, 0, NULL, &size, &_outStreamFormat));
 
   if (_outStreamFormat.mFormatID != kAudioFormatLinearPCM) {
-    logCAMsg(rtc::LS_ERROR, "Unacceptable output stream format -> mFormatID",
+    logCAMsg(LS_ERROR, "Unacceptable output stream format -> mFormatID",
              (const char*)&_outStreamFormat.mFormatID);
     return -1;
   }
@@ -1047,8 +983,7 @@ int32_t AudioDeviceMac::InitPlayout() {
                       << ", mBitsPerChannel = "
                       << _outStreamFormat.mBitsPerChannel;
   RTC_LOG(LS_VERBOSE) << "mFormatFlags = " << _outStreamFormat.mFormatFlags;
-  logCAMsg(rtc::LS_VERBOSE, "mFormatID",
-           (const char*)&_outStreamFormat.mFormatID);
+  logCAMsg(LS_VERBOSE, "mFormatID", (const char*)&_outStreamFormat.mFormatID);
 
   // Our preferred format to work with.
   if (_outStreamFormat.mChannelsPerFrame < 2) {
@@ -1111,7 +1046,7 @@ int32_t AudioDeviceMac::InitRecording() {
   OSStatus err = noErr;
   UInt32 size = 0;
 
-  PaUtil_FlushRingBuffer(_paCaptureBuffer);
+  _captureBuffer.Clear();
 
   _captureDelayUs = 0;
   _captureLatencyUs = 0;
@@ -1127,7 +1062,7 @@ int32_t AudioDeviceMac::InitRecording() {
       _inputDeviceID, &propertyAddress, 0, NULL, &size, &_inStreamFormat));
 
   if (_inStreamFormat.mFormatID != kAudioFormatLinearPCM) {
-    logCAMsg(rtc::LS_ERROR, "Unacceptable input stream format -> mFormatID",
+    logCAMsg(LS_ERROR, "Unacceptable input stream format -> mFormatID",
              (const char*)&_inStreamFormat.mFormatID);
     return -1;
   }
@@ -1142,10 +1077,12 @@ int32_t AudioDeviceMac::InitRecording() {
   const int io_block_size_samples = _inStreamFormat.mChannelsPerFrame *
                                     _inStreamFormat.mSampleRate / 100 *
                                     N_BLOCKS_IO;
-  if (io_block_size_samples > _captureBufSizeSamples) {
+  const int capture_buf_size_samples =
+      static_cast<int>(_captureBuffer.capacity());
+  if (io_block_size_samples > capture_buf_size_samples) {
     RTC_LOG(LS_ERROR) << "Input IO block size (" << io_block_size_samples
                       << ") is larger than ring buffer ("
-                      << _captureBufSizeSamples << ")";
+                      << capture_buf_size_samples << ")";
     return -1;
   }
 
@@ -1160,8 +1097,7 @@ int32_t AudioDeviceMac::InitRecording() {
                       << ", mBitsPerChannel = "
                       << _inStreamFormat.mBitsPerChannel;
   RTC_LOG(LS_VERBOSE) << "mFormatFlags = " << _inStreamFormat.mFormatFlags;
-  logCAMsg(rtc::LS_VERBOSE, "mFormatID",
-           (const char*)&_inStreamFormat.mFormatID);
+  logCAMsg(LS_VERBOSE, "mFormatID", (const char*)&_inStreamFormat.mFormatID);
 
   // Our preferred format to work with
   if (_inStreamFormat.mChannelsPerFrame >= 2 && (_recChannels == 2)) {
@@ -1293,13 +1229,13 @@ int32_t AudioDeviceMac::StartRecording() {
   }
 
   RTC_DCHECK(capture_worker_thread_.empty());
-  capture_worker_thread_ = rtc::PlatformThread::SpawnJoinable(
+  capture_worker_thread_ = PlatformThread::SpawnJoinable(
       [this] {
         while (CaptureWorkerThread()) {
         }
       },
       "CaptureWorkerThread",
-      rtc::ThreadAttributes().SetPriority(rtc::ThreadPriority::kRealtime));
+      ThreadAttributes().SetPriority(ThreadPriority::kRealtime));
 
   OSStatus err = noErr;
   if (_twoDevices) {
@@ -1430,13 +1366,13 @@ int32_t AudioDeviceMac::StartPlayout() {
   }
 
   RTC_DCHECK(render_worker_thread_.empty());
-  render_worker_thread_ = rtc::PlatformThread::SpawnJoinable(
+  render_worker_thread_ = PlatformThread::SpawnJoinable(
       [this] {
         while (RenderWorkerThread()) {
         }
       },
       "RenderWorkerThread",
-      rtc::ThreadAttributes().SetPriority(rtc::ThreadPriority::kRealtime));
+      ThreadAttributes().SetPriority(ThreadPriority::kRealtime));
 
   if (_twoDevices || !_recording) {
     OSStatus err = noErr;
@@ -1649,7 +1585,7 @@ int32_t AudioDeviceMac::GetNumberDevices(const AudioObjectPropertyScope scope,
 
 int32_t AudioDeviceMac::GetDeviceName(const AudioObjectPropertyScope scope,
                                       const uint16_t index,
-                                      rtc::ArrayView<char> name) {
+                                      std::span<char> name) {
   OSStatus err = noErr;
   AudioDeviceID deviceIds[MaxNumberDevices];
 
@@ -1697,8 +1633,12 @@ int32_t AudioDeviceMac::GetDeviceName(const AudioObjectPropertyScope scope,
     WEBRTC_CA_RETURN_ON_ERR(AudioObjectGetPropertyData(
         usedID, &propertyAddress, 0, NULL, &len, devName.data()));
 
-    rtc::SimpleStringBuilder ss(name);
+    StringBuilder ss;
     ss.AppendFormat("default (%s)", devName.data());
+    const std::string& s = ss.str();
+    size_t chars_to_copy = std::min(s.size(), name.size() - 1);
+    std::copy_n(s.data(), chars_to_copy, name.data());
+    name[chars_to_copy] = '\0';
   } else {
     if (index < numberDevices) {
       usedID = deviceIds[index];
@@ -1802,8 +1742,10 @@ OSStatus AudioDeviceMac::SetDesiredPlayoutFormat() {
     _ptrAudioBuffer->SetPlayoutChannels((uint8_t)_playChannels);
   }
 
-  _renderDelayOffsetSamples =
-      _renderBufSizeSamples - N_BUFFERS_OUT * ENGINE_PLAY_BUF_SIZE_IN_SAMPLES *
+  const int render_buf_size_samples =
+      static_cast<int>(_renderBuffer.capacity());
+  _renderDelayOffsetSamples = render_buf_size_samples -
+                              N_BUFFERS_OUT * ENGINE_PLAY_BUF_SIZE_IN_SAMPLES *
                                   _outDesiredFormat.mChannelsPerFrame;
 
   _outDesiredFormat.mBytesPerPacket =
@@ -1943,7 +1885,7 @@ int32_t AudioDeviceMac::HandleDeviceChange() {
       _captureDeviceIsAlive = 0;
       _mixerManager.CloseMicrophone();
     } else if (err != noErr) {
-      logCAMsg(rtc::LS_ERROR, "Error in AudioDeviceGetProperty()",
+      logCAMsg(LS_ERROR, "Error in AudioDeviceGetProperty()",
                (const char*)&err);
       return -1;
     }
@@ -1962,7 +1904,7 @@ int32_t AudioDeviceMac::HandleDeviceChange() {
       _renderDeviceIsAlive = 0;
       _mixerManager.CloseSpeaker();
     } else if (err != noErr) {
-      logCAMsg(rtc::LS_ERROR, "Error in AudioDeviceGetProperty()",
+      logCAMsg(LS_ERROR, "Error in AudioDeviceGetProperty()",
                (const char*)&err);
       return -1;
     }
@@ -1989,7 +1931,7 @@ int32_t AudioDeviceMac::HandleStreamFormatChange(
       objectId, &propertyAddress, 0, NULL, &size, &streamFormat));
 
   if (streamFormat.mFormatID != kAudioFormatLinearPCM) {
-    logCAMsg(rtc::LS_ERROR, "Unacceptable input stream format -> mFormatID",
+    logCAMsg(LS_ERROR, "Unacceptable input stream format -> mFormatID",
              (const char*)&streamFormat.mFormatID);
     return -1;
   }
@@ -2016,16 +1958,18 @@ int32_t AudioDeviceMac::HandleStreamFormatChange(
   RTC_LOG(LS_VERBOSE) << "mBytesPerFrame = " << streamFormat.mBytesPerFrame
                       << ", mBitsPerChannel = " << streamFormat.mBitsPerChannel;
   RTC_LOG(LS_VERBOSE) << "mFormatFlags = " << streamFormat.mFormatFlags;
-  logCAMsg(rtc::LS_VERBOSE, "mFormatID", (const char*)&streamFormat.mFormatID);
+  logCAMsg(LS_VERBOSE, "mFormatID", (const char*)&streamFormat.mFormatID);
 
   if (propertyAddress.mScope == kAudioDevicePropertyScopeInput) {
     const int io_block_size_samples = streamFormat.mChannelsPerFrame *
                                       streamFormat.mSampleRate / 100 *
                                       N_BLOCKS_IO;
-    if (io_block_size_samples > _captureBufSizeSamples) {
+    const int capture_buf_size_samples =
+        static_cast<int>(_captureBuffer.capacity());
+    if (io_block_size_samples > capture_buf_size_samples) {
       RTC_LOG(LS_ERROR) << "Input IO block size (" << io_block_size_samples
                         << ") is larger than ring buffer ("
-                        << _captureBufSizeSamples << ")";
+                        << capture_buf_size_samples << ")";
       return -1;
     }
 
@@ -2218,14 +2162,13 @@ OSStatus AudioDeviceMac::implDeviceIOProc(const AudioBufferList* inputData,
       RTC_LOG(LS_ERROR) << "Error in AudioConverterFillComplexBuffer()";
       return 1;
     } else {
-      logCAMsg(rtc::LS_ERROR, "Error in AudioConverterFillComplexBuffer()",
+      logCAMsg(LS_ERROR, "Error in AudioConverterFillComplexBuffer()",
                (const char*)&err);
       return 1;
     }
   }
 
-  ring_buffer_size_t bufSizeSamples =
-      PaUtil_GetRingBufferReadAvailable(_paRenderBuffer);
+  size_t bufSizeSamples = _renderBuffer.AvailableToRead();
 
   int32_t renderDelayUs =
       static_cast<int32_t>(1e-3 * (outputTimeNs - nowNs) + 0.5);
@@ -2242,8 +2185,7 @@ OSStatus AudioDeviceMac::implDeviceIOProc(const AudioBufferList* inputData,
 OSStatus AudioDeviceMac::implOutConverterProc(UInt32* numberDataPackets,
                                               AudioBufferList* data) {
   RTC_DCHECK(data->mNumberBuffers == 1);
-  ring_buffer_size_t numSamples =
-      *numberDataPackets * _outDesiredFormat.mChannelsPerFrame;
+  size_t numSamples = *numberDataPackets * _outDesiredFormat.mChannelsPerFrame;
 
   data->mBuffers->mNumberChannels = _outDesiredFormat.mChannelsPerFrame;
   // Always give the converter as much as it wants, zero padding as required.
@@ -2252,7 +2194,7 @@ OSStatus AudioDeviceMac::implOutConverterProc(UInt32* numberDataPackets,
   data->mBuffers->mData = _renderConvertData;
   memset(_renderConvertData, 0, sizeof(_renderConvertData));
 
-  PaUtil_ReadRingBuffer(_paRenderBuffer, _renderConvertData, numSamples);
+  _renderBuffer.Read(std::span<SInt16>(_renderConvertData, numSamples));
 
   kern_return_t kernErr = semaphore_signal_all(_renderSemaphore);
   if (kernErr != KERN_SUCCESS) {
@@ -2293,8 +2235,7 @@ OSStatus AudioDeviceMac::implInDeviceIOProc(const AudioBufferList* inputData,
     return 0;
   }
 
-  ring_buffer_size_t bufSizeSamples =
-      PaUtil_GetRingBufferReadAvailable(_paCaptureBuffer);
+  size_t bufSizeSamples = _captureBuffer.AvailableToRead();
 
   int32_t captureDelayUs =
       static_cast<int32_t>(1e-3 * (nowNs - inputTimeNs) + 0.5);
@@ -2306,11 +2247,11 @@ OSStatus AudioDeviceMac::implInDeviceIOProc(const AudioBufferList* inputData,
   _captureDelayUs = captureDelayUs;
 
   RTC_DCHECK(inputData->mNumberBuffers == 1);
-  ring_buffer_size_t numSamples = inputData->mBuffers->mDataByteSize *
-                                  _inStreamFormat.mChannelsPerFrame /
-                                  _inStreamFormat.mBytesPerPacket;
-  PaUtil_WriteRingBuffer(_paCaptureBuffer, inputData->mBuffers->mData,
-                         numSamples);
+  size_t numSamples = inputData->mBuffers->mDataByteSize *
+                      _inStreamFormat.mChannelsPerFrame /
+                      _inStreamFormat.mBytesPerPacket;
+  _captureBuffer.Write(std::span<const Float32>(
+      static_cast<const Float32*>(inputData->mBuffers->mData), numSamples));
 
   kern_return_t kernErr = semaphore_signal_all(_captureSemaphore);
   if (kernErr != KERN_SUCCESS) {
@@ -2323,10 +2264,9 @@ OSStatus AudioDeviceMac::implInDeviceIOProc(const AudioBufferList* inputData,
 OSStatus AudioDeviceMac::implInConverterProc(UInt32* numberDataPackets,
                                              AudioBufferList* data) {
   RTC_DCHECK(data->mNumberBuffers == 1);
-  ring_buffer_size_t numSamples =
-      *numberDataPackets * _inStreamFormat.mChannelsPerFrame;
+  size_t numSamples = *numberDataPackets * _inStreamFormat.mChannelsPerFrame;
 
-  while (PaUtil_GetRingBufferReadAvailable(_paCaptureBuffer) < numSamples) {
+  while (_captureBuffer.AvailableToRead() < numSamples) {
     mach_timespec_t timeout;
     timeout.tv_sec = 0;
     timeout.tv_nsec = TIMER_PERIOD_MS;
@@ -2344,13 +2284,8 @@ OSStatus AudioDeviceMac::implInConverterProc(UInt32* numberDataPackets,
     }
   }
 
-  // Pass the read pointer directly to the converter to avoid a memcpy.
-  void* dummyPtr;
-  ring_buffer_size_t dummySize;
-  PaUtil_GetRingBufferReadRegions(_paCaptureBuffer, numSamples,
-                                  &data->mBuffers->mData, &numSamples,
-                                  &dummyPtr, &dummySize);
-  PaUtil_AdvanceRingBufferReadIndex(_paCaptureBuffer, numSamples);
+  data->mBuffers->mData = _captureConvertData;
+  _captureBuffer.Read(std::span<Float32>(_captureConvertData, numSamples));
 
   data->mBuffers->mNumberChannels = _inStreamFormat.mChannelsPerFrame;
   *numberDataPackets = numSamples / _inStreamFormat.mChannelsPerFrame;
@@ -2361,11 +2296,11 @@ OSStatus AudioDeviceMac::implInConverterProc(UInt32* numberDataPackets,
 }
 
 bool AudioDeviceMac::RenderWorkerThread() {
-  ring_buffer_size_t numSamples =
+  size_t numSamples =
       ENGINE_PLAY_BUF_SIZE_IN_SAMPLES * _outDesiredFormat.mChannelsPerFrame;
-  while (PaUtil_GetRingBufferWriteAvailable(_paRenderBuffer) -
+  while (static_cast<int32_t>(_renderBuffer.AvailableToWrite()) -
              _renderDelayOffsetSamples <
-         numSamples) {
+         static_cast<int32_t>(numSamples)) {
     mach_timespec_t timeout;
     timeout.tv_sec = 0;
     timeout.tv_nsec = TIMER_PERIOD_MS;
@@ -2420,7 +2355,7 @@ bool AudioDeviceMac::RenderWorkerThread() {
     }
   }
 
-  PaUtil_WriteRingBuffer(_paRenderBuffer, pPlayBuffer, nOutSamples);
+  _renderBuffer.Write(std::span<const SInt16>(pPlayBuffer, nOutSamples));
 
   return true;
 }
@@ -2446,7 +2381,7 @@ bool AudioDeviceMac::CaptureWorkerThread() {
       // This is our own error.
       return false;
     } else {
-      logCAMsg(rtc::LS_ERROR, "Error in AudioConverterFillComplexBuffer()",
+      logCAMsg(LS_ERROR, "Error in AudioConverterFillComplexBuffer()",
                (const char*)&err);
       return false;
     }
@@ -2488,7 +2423,7 @@ bool AudioDeviceMac::CaptureWorkerThread() {
 bool AudioDeviceMac::KeyPressed() {
   bool key_down = false;
   // Loop through all Mac virtual key constant values.
-  for (unsigned int key_index = 0; key_index < arraysize(prev_key_state_);
+  for (unsigned int key_index = 0; key_index < std::size(prev_key_state_);
        ++key_index) {
     bool keyState =
         CGEventSourceKeyState(kCGEventSourceStateHIDSystemState, key_index);

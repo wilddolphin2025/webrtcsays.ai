@@ -18,6 +18,7 @@
 #include "api/field_trials_view.h"
 #include "api/transport/network_types.h"
 #include "api/units/data_rate.h"
+#include "api/units/time_delta.h"
 #include "api/units/timestamp.h"
 #include "modules/congestion_controller/goog_cc/link_capacity_estimator.h"
 #include "modules/remote_bitrate_estimator/include/bwe_defines.h"
@@ -62,8 +63,7 @@ class AimdRateControl {
 
   // Returns the increase rate when used bandwidth is near the link capacity.
   double GetNearMaxIncreaseRateBpsPerSecond() const;
-  // Returns the expected time between overuse signals (assuming steady state).
-  TimeDelta GetExpectedBandwidthPeriod() const;
+
 
  private:
   enum class RateControlState { kRcHold, kRcIncrease, kRcDecrease };

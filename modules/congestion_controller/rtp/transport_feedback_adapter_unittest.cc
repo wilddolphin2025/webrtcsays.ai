@@ -10,14 +10,15 @@
 
 #include "modules/congestion_controller/rtp/transport_feedback_adapter.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
-#include "api/array_view.h"
 #include "api/transport/ecn_marking.h"
 #include "api/transport/network_types.h"
 #include "api/units/data_size.h"
@@ -33,12 +34,19 @@
 #include "system_wrappers/include/clock.h"
 #include "test/gmock.h"
 #include "test/gtest.h"
+#include "test/near_matcher.h"
 
 namespace webrtc {
 namespace {
 
+using ::testing::AllOf;
 using ::testing::Bool;
+using ::testing::Contains;
+using ::testing::Eq;
+using ::testing::Field;
+using ::testing::IsFalse;
 using ::testing::NotNull;
+using ::testing::Property;
 using ::testing::SizeIs;
 using ::testing::TestParamInfo;
 
@@ -51,6 +59,7 @@ struct PacketTemplate {
   RtpPacketMediaType media_type = RtpPacketMediaType::kVideo;
   DataSize packet_size = DataSize::Bytes(100);
 
+  bool send_as_ect1 = true;
   EcnMarking ecn = EcnMarking::kNotEct;
   Timestamp send_timestamp = Timestamp::Millis(0);
   PacedPacketInfo pacing_info;
@@ -112,6 +121,11 @@ void ComparePacketFeedbackVectors(const std::vector<PacketTemplate>& truth,
     EXPECT_EQ(truth[i].packet_size, input[i].sent_packet.size);
     EXPECT_EQ(truth[i].pacing_info, input[i].sent_packet.pacing_info);
     EXPECT_EQ(truth[i].is_audio, input[i].sent_packet.audio);
+    EXPECT_EQ(input[i].rtp_packet_info->rtp_sequence_number,
+              truth[i].rtp_sequence_number);
+    EXPECT_EQ(input[i].rtp_packet_info->ssrc, truth[i].ssrc);
+    EXPECT_EQ(input[i].rtp_packet_info->is_retransmission,
+              truth[i].media_type == RtpPacketMediaType::kRetransmission);
   }
 }
 
@@ -124,12 +138,15 @@ RtpPacketToSend CreatePacketToSend(PacketTemplate packet) {
   send_packet.set_transport_sequence_number(packet.transport_sequence_number);
   send_packet.set_packet_type(packet.is_audio ? RtpPacketMediaType::kAudio
                                               : RtpPacketMediaType::kVideo);
+  if (packet.send_as_ect1) {
+    send_packet.set_send_as_ect1();
+  }
 
   return send_packet;
 }
 
 rtcp::TransportFeedback BuildRtcpTransportFeedbackPacket(
-    rtc::ArrayView<const PacketTemplate> packets) {
+    std::span<const PacketTemplate> packets) {
   rtcp::TransportFeedback feedback;
   feedback.SetBase(packets[0].transport_sequence_number,
                    packets[0].receive_timestamp);
@@ -144,10 +161,10 @@ rtcp::TransportFeedback BuildRtcpTransportFeedbackPacket(
 }
 
 rtcp::CongestionControlFeedback BuildRtcpCongestionControlFeedbackPacket(
-    rtc::ArrayView<const PacketTemplate> packets) {
+    std::span<const PacketTemplate> packets) {
   // Assume the feedback was sent when the last packet was received.
   Timestamp feedback_sent_time = Timestamp::MinusInfinity();
-  for (auto it = packets.crbegin(); it != packets.crend(); ++it) {
+  for (auto it = packets.rbegin(); it != packets.rend(); ++it) {
     if (it->receive_timestamp.IsFinite()) {
       feedback_sent_time = it->receive_timestamp;
       break;
@@ -177,6 +194,21 @@ Timestamp TimeNow() {
   return Timestamp::Millis(1234);
 }
 
+// Returns feedback matching transport sequence number.
+std::optional<PacketResult> FindFeedback(
+    const std::optional<TransportPacketsFeedback>& report,
+    int64_t transport_sequence_number) {
+  if (!report.has_value()) {
+    return std::nullopt;
+  }
+  for (const PacketResult& packet_info : report->packet_feedbacks) {
+    if (packet_info.sent_packet.sequence_number == transport_sequence_number) {
+      return packet_info;
+    }
+  }
+  return std::nullopt;
+}
+
 }  // namespace
 
 class TransportFeedbackAdapterTest : public ::testing::TestWithParam<bool> {
@@ -184,16 +216,19 @@ class TransportFeedbackAdapterTest : public ::testing::TestWithParam<bool> {
   bool UseRfc8888CongestionControlFeedback() const { return GetParam(); }
 
   std::optional<TransportPacketsFeedback> CreateAndProcessFeedback(
-      rtc::ArrayView<const PacketTemplate> packets,
-      TransportFeedbackAdapter& adapter) {
+      std::span<const PacketTemplate> packets,
+      TransportFeedbackAdapter& adapter,
+      std::optional<Timestamp> feedback_receive_time = std::nullopt) {
+    Timestamp receive_time = feedback_receive_time.value_or(TimeNow());
     if (UseRfc8888CongestionControlFeedback()) {
       rtcp::CongestionControlFeedback rtcp_feedback =
           BuildRtcpCongestionControlFeedbackPacket(packets);
-      return adapter.ProcessCongestionControlFeedback(rtcp_feedback, TimeNow());
+      return adapter.ProcessCongestionControlFeedback(rtcp_feedback,
+                                                      receive_time);
     } else {
       rtcp::TransportFeedback rtcp_feedback =
           BuildRtcpTransportFeedbackPacket(packets);
-      return adapter.ProcessTransportFeedback(rtcp_feedback, TimeNow());
+      return adapter.ProcessTransportFeedback(rtcp_feedback, receive_time);
     }
   }
 };
@@ -216,8 +251,8 @@ TEST_P(TransportFeedbackAdapterTest, AdaptsFeedbackAndPopulatesSendTimes) {
   for (const PacketTemplate& packet : packets) {
     adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
                       /*overhead=*/0u, TimeNow());
-    adapter.ProcessSentPacket(rtc::SentPacket(packet.transport_sequence_number,
-                                              packet.send_timestamp.ms()));
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
   }
 
   std::optional<TransportPacketsFeedback> adapted_feedback =
@@ -234,8 +269,8 @@ TEST_P(TransportFeedbackAdapterTest, FeedbackVectorReportsUnreceived) {
   for (const PacketTemplate& packet : sent_packets) {
     adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
                       /*overhead=*/0u, TimeNow());
-    adapter.ProcessSentPacket(rtc::SentPacket(packet.transport_sequence_number,
-                                              packet.send_timestamp.ms()));
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
   }
 
   // Note: Important to include the last packet per SSRC, as only unreceived
@@ -268,8 +303,8 @@ TEST_P(TransportFeedbackAdapterTest, HandlesDroppedPackets) {
   for (const PacketTemplate& packet : sent_packets) {
     adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
                       /*overhead=*/0u, TimeNow());
-    adapter.ProcessSentPacket(rtc::SentPacket(packet.transport_sequence_number,
-                                              packet.send_timestamp.ms()));
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
   }
 
   std::vector<PacketTemplate> received_packets;
@@ -291,6 +326,53 @@ TEST_P(TransportFeedbackAdapterTest, HandlesDroppedPackets) {
                                adapted_feedback->packet_feedbacks);
 }
 
+// Send packets on two SSRCs, and drop all packets on one of them.
+// Expect TransportFeedbackAdapter to detect such missing packets.
+// This test is trivial for TransportFeedback RTCP message where packets are
+// identified by transport sequence number, and missing numbers is the primary
+// way to report and track dropped packets.
+// However for CongestionControl RTCP message that is not natural - when no
+// packets are received on certain SSRC, such SSRC is not included into the
+// report, yet TransportFeedbackAdapter still can treat such packets as lost.
+TEST_P(TransportFeedbackAdapterTest, HandlesDroppedPacketsFromAnSsrc) {
+  constexpr uint32_t kSsrc1 = 123;
+  constexpr uint32_t kSsrc2 = 456;
+  TransportFeedbackAdapter adapter;
+
+  std::vector<PacketTemplate> packets = {
+      {.ssrc = kSsrc1,
+       .transport_sequence_number = 1,
+       .rtp_sequence_number = 101,
+       .send_timestamp = Timestamp::Millis(1'200),
+       .receive_timestamp = Timestamp::Millis(100)},
+      {.ssrc = kSsrc2,
+       .transport_sequence_number = 2,
+       .rtp_sequence_number = 201,
+       .send_timestamp = Timestamp::Millis(1'210)},
+      {.ssrc = kSsrc2,
+       .transport_sequence_number = 3,
+       .rtp_sequence_number = 202,
+       .send_timestamp = Timestamp::Millis(1'220)},
+      {.ssrc = kSsrc1,
+       .transport_sequence_number = 4,
+       .rtp_sequence_number = 102,
+       .send_timestamp = Timestamp::Millis(1'230),
+       .receive_timestamp = Timestamp::Millis(130)}};
+
+  for (const PacketTemplate& packet : packets) {
+    adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
+                      /*overhead=*/0u, TimeNow());
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
+  }
+
+  std::array<PacketTemplate, 2> received_packets = {packets[0], packets[3]};
+  std::optional<TransportPacketsFeedback> adapted_feedback =
+      CreateAndProcessFeedback(received_packets, adapter);
+
+  ComparePacketFeedbackVectors(packets, adapted_feedback->packet_feedbacks);
+}
+
 TEST_P(TransportFeedbackAdapterTest, FeedbackReportsIfPacketIsAudio) {
   TransportFeedbackAdapter adapter;
 
@@ -300,8 +382,8 @@ TEST_P(TransportFeedbackAdapterTest, FeedbackReportsIfPacketIsAudio) {
 
   adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
                     /*overhead=*/0u, TimeNow());
-  adapter.ProcessSentPacket(rtc::SentPacket(packet.transport_sequence_number,
-                                            packet.send_timestamp.ms()));
+  adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                           packet.send_timestamp.ms()));
 
   std::optional<TransportPacketsFeedback> adapted_feedback =
       CreateAndProcessFeedback(packets, adapter);
@@ -331,8 +413,8 @@ TEST_P(TransportFeedbackAdapterTest, ReceiveTimeWrapsBothWays) {
   for (const PacketTemplate& packet : packets) {
     adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
                       /*overhead=*/0u, TimeNow());
-    adapter.ProcessSentPacket(rtc::SentPacket(packet.transport_sequence_number,
-                                              packet.send_timestamp.ms()));
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
   }
 
   for (size_t i = 0; i < packets.size(); ++i) {
@@ -342,7 +424,7 @@ TEST_P(TransportFeedbackAdapterTest, ReceiveTimeWrapsBothWays) {
     if (UseRfc8888CongestionControlFeedback()) {
       rtcp::CongestionControlFeedback feedback =
           BuildRtcpCongestionControlFeedbackPacket(received_packets);
-      rtc::Buffer raw_packet = feedback.Build();
+      Buffer raw_packet = feedback.Build();
       rtcp::CommonHeader header;
       ASSERT_TRUE(header.Parse(raw_packet.data(), raw_packet.size()));
       rtcp::CongestionControlFeedback parsed_feedback;
@@ -352,7 +434,7 @@ TEST_P(TransportFeedbackAdapterTest, ReceiveTimeWrapsBothWays) {
     } else {
       rtcp::TransportFeedback feedback =
           BuildRtcpTransportFeedbackPacket(received_packets);
-      rtc::Buffer raw_packet = feedback.Build();
+      Buffer raw_packet = feedback.Build();
       std::unique_ptr<rtcp::TransportFeedback> parsed_feedback =
           rtcp::TransportFeedback::ParseFrom(raw_packet.data(),
                                              raw_packet.size());
@@ -384,8 +466,8 @@ TEST_P(TransportFeedbackAdapterTest, HandlesArrivalReordering) {
   for (const PacketTemplate& packet : packets) {
     adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
                       /*overhead=*/0u, TimeNow());
-    adapter.ProcessSentPacket(rtc::SentPacket(packet.transport_sequence_number,
-                                              packet.send_timestamp.ms()));
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
   }
 
   // Adapter keeps the packets ordered by sequence number (which is itself
@@ -404,15 +486,15 @@ TEST_P(TransportFeedbackAdapterTest, IgnoreDuplicatePacketSentCalls) {
   adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info, 0u,
                     TimeNow());
   std::optional<SentPacket> sent_packet = adapter.ProcessSentPacket(
-      rtc::SentPacket(packet.transport_sequence_number,
-                      packet.send_timestamp.ms(), rtc::PacketInfo()));
+      SentPacketInfo(packet.transport_sequence_number,
+                     packet.send_timestamp.ms(), PacketInfo()));
   EXPECT_TRUE(sent_packet.has_value());
 
   // Call ProcessSentPacket() again with the same sequence number. This packet
   // has already been marked as sent and the call should be ignored.
   std::optional<SentPacket> duplicate_packet = adapter.ProcessSentPacket(
-      rtc::SentPacket(packet.transport_sequence_number,
-                      packet.send_timestamp.ms(), rtc::PacketInfo()));
+      SentPacketInfo(packet.transport_sequence_number,
+                     packet.send_timestamp.ms(), PacketInfo()));
   EXPECT_FALSE(duplicate_packet.has_value());
 }
 
@@ -435,8 +517,8 @@ TEST_P(TransportFeedbackAdapterTest,
     adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
                       /*overhead=*/0u, TimeNow());
 
-    adapter.ProcessSentPacket(rtc::SentPacket(packet.transport_sequence_number,
-                                              packet.send_timestamp.ms()));
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
   }
 
   std::optional<TransportPacketsFeedback> adapted_feedback_1 =
@@ -448,7 +530,7 @@ TEST_P(TransportFeedbackAdapterTest,
 
   ASSERT_EQ(adapted_feedback_1->packet_feedbacks.size(),
             adapted_feedback_2->packet_feedbacks.size());
-  ASSERT_THAT(adapted_feedback_1->packet_feedbacks, testing::SizeIs(1));
+  ASSERT_THAT(adapted_feedback_1->packet_feedbacks, SizeIs(1));
   EXPECT_EQ((adapted_feedback_1->packet_feedbacks[0].receive_time -
              adapted_feedback_1->packet_feedbacks[0].sent_packet.send_time)
                 .RoundTo(TimeDelta::Millis(1)),
@@ -467,7 +549,7 @@ TEST_P(TransportFeedbackAdapterTest, ProcessSentPacketIncreaseOutstandingData) {
   adapter.AddPacket(CreatePacketToSend(packet_1), packet_1.pacing_info,
                     /*overhead=*/0u, TimeNow());
   std::optional<SentPacket> sent_packet_1 =
-      adapter.ProcessSentPacket(rtc::SentPacket(
+      adapter.ProcessSentPacket(SentPacketInfo(
           packet_1.transport_sequence_number, packet_1.send_timestamp.ms()));
 
   ASSERT_TRUE(sent_packet_1.has_value());
@@ -479,7 +561,7 @@ TEST_P(TransportFeedbackAdapterTest, ProcessSentPacketIncreaseOutstandingData) {
   adapter.AddPacket(CreatePacketToSend(packet_2), packet_2.pacing_info,
                     /*overhead=*/0u, TimeNow());
   std::optional<SentPacket> sent_packet_2 =
-      adapter.ProcessSentPacket(rtc::SentPacket(
+      adapter.ProcessSentPacket(SentPacketInfo(
           packet_2.transport_sequence_number, packet_2.send_timestamp.ms()));
 
   ASSERT_TRUE(sent_packet_2.has_value());
@@ -516,16 +598,115 @@ TEST_P(TransportFeedbackAdapterTest, TransportPacketFeedbackHasDataInFlight) {
     adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
                       /*overhead=*/0u, TimeNow());
 
-    adapter.ProcessSentPacket(rtc::SentPacket(packet.transport_sequence_number,
-                                              packet.send_timestamp.ms()));
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
   }
 
   std::optional<TransportPacketsFeedback> adapted_feedback_1 =
-      CreateAndProcessFeedback(rtc::MakeArrayView(&packets[0], 1), adapter);
+      CreateAndProcessFeedback(std::span(&packets[0], 1), adapter);
   std::optional<TransportPacketsFeedback> adapted_feedback_2 =
-      CreateAndProcessFeedback(rtc::MakeArrayView(&packets[1], 1), adapter);
+      CreateAndProcessFeedback(std::span(&packets[1], 1), adapter);
   EXPECT_EQ(adapted_feedback_1->data_in_flight, packets[1].packet_size);
   EXPECT_EQ(adapted_feedback_2->data_in_flight, DataSize::Zero());
+}
+
+TEST_P(TransportFeedbackAdapterTest,
+       PacketsInLostFeedbackAreNotReportedAsLost) {
+  TransportFeedbackAdapter adapter;
+
+  std::vector<PacketTemplate> packets = {
+      {.transport_sequence_number = 1,
+       .rtp_sequence_number = 101,
+       .send_timestamp = Timestamp::Millis(100),
+       .receive_timestamp = Timestamp::Millis(120)},
+      {.transport_sequence_number = 2,
+       .rtp_sequence_number = 102,
+       .send_timestamp = Timestamp::Millis(110),
+       .receive_timestamp = Timestamp::Millis(130)},
+      {.transport_sequence_number = 3,
+       .rtp_sequence_number = 103,
+       .send_timestamp = Timestamp::Millis(120),
+       .receive_timestamp = Timestamp::Millis(140)},
+      {.transport_sequence_number = 4,
+       .rtp_sequence_number = 104,
+       .send_timestamp = Timestamp::Millis(130),
+       .receive_timestamp = Timestamp::Millis(150)}};
+
+  for (const PacketTemplate& packet : packets) {
+    adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
+                      /*overhead=*/0u, TimeNow());
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
+  }
+
+  // Feedback 1: Covers packet 1
+  std::vector<PacketTemplate> feedback1_packets = {packets[0]};
+  CreateAndProcessFeedback(feedback1_packets, adapter);
+
+  // Feedback 2 (Lost network packet, never processed): would cover packet 2.
+
+  // Feedback 3: Covers packet 3
+  std::vector<PacketTemplate> feedback3_packets = {packets[2]};
+  std::optional<TransportPacketsFeedback> adapted_feedback3 =
+      CreateAndProcessFeedback(feedback3_packets, adapter);
+
+  // Packet 2 is not reported as lost.
+  EXPECT_FALSE(FindFeedback(adapted_feedback3, 2).has_value());
+
+  // Feedback 4: Covers packet 4
+  std::vector<PacketTemplate> feedback4_packets = {packets[3]};
+  std::optional<TransportPacketsFeedback> adapted_feedback4 =
+      CreateAndProcessFeedback(feedback4_packets, adapter);
+
+  // Both CCFB and TWCC never infer packet 2 as lost unless explicitly skipped
+  // within the sequence number range of a single received feedback packet.
+  EXPECT_FALSE(FindFeedback(adapted_feedback4, 2).has_value());
+}
+
+TEST_P(TransportFeedbackAdapterTest, HandlesReorderedFeedbackPackets) {
+  TransportFeedbackAdapter adapter;
+
+  PacketTemplate packet_1 = {.transport_sequence_number = 1,
+                             .rtp_sequence_number = 101,
+                             .send_timestamp = Timestamp::Millis(100),
+                             .receive_timestamp = Timestamp::Millis(120)};
+
+  PacketTemplate packet_2 = {.transport_sequence_number = 2,
+                             .rtp_sequence_number = 102,
+                             .send_timestamp = Timestamp::Millis(110),
+                             .receive_timestamp = Timestamp::Millis(130)};
+
+  adapter.AddPacket(CreatePacketToSend(packet_1), packet_1.pacing_info,
+                    /*overhead=*/0u, TimeNow());
+  adapter.ProcessSentPacket(SentPacketInfo(packet_1.transport_sequence_number,
+                                           packet_1.send_timestamp.ms()));
+  adapter.AddPacket(CreatePacketToSend(packet_2), packet_2.pacing_info,
+                    /*overhead=*/0u, TimeNow());
+  adapter.ProcessSentPacket(SentPacketInfo(packet_2.transport_sequence_number,
+                                           packet_2.send_timestamp.ms()));
+
+  // Process the later feedback packet first (reordered)
+  std::optional<TransportPacketsFeedback> adapted_feedback2 =
+      CreateAndProcessFeedback(
+          {{packet_2}}, adapter,
+          /*feedback_receive_time=*/Timestamp::Millis(1000));
+  ASSERT_THAT(adapted_feedback2->packet_feedbacks, SizeIs(1));
+
+  // Process the earlier feedback packet 10ms later due to reordering.
+  std::optional<TransportPacketsFeedback> adapted_feedback1 =
+      CreateAndProcessFeedback(
+          {{packet_1}}, adapter,
+          /*feedback_receive_time=*/Timestamp::Millis(1010));
+  ASSERT_THAT(adapted_feedback1->packet_feedbacks, SizeIs(1));
+
+  const PacketResult& result2 = adapted_feedback2->packet_feedbacks[0];
+  const PacketResult& result1 = adapted_feedback1->packet_feedbacks[0];
+
+  // Even though processed out-of-order, the offset between send and receive
+  // time should be identical within 1ms (due to compact NTP fractional tick
+  // precision limits).
+  EXPECT_THAT(result2.receive_time - result2.sent_packet.send_time,
+              Near(result1.receive_time - result1.sent_packet.send_time));
 }
 
 TEST(TransportFeedbackAdapterCongestionFeedbackTest,
@@ -552,8 +733,8 @@ TEST(TransportFeedbackAdapterCongestionFeedbackTest,
     adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
                       /*overhead=*/0u, TimeNow());
 
-    adapter.ProcessSentPacket(rtc::SentPacket(packet.transport_sequence_number,
-                                              packet.send_timestamp.ms()));
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
   }
 
   rtcp::CongestionControlFeedback rtcp_feedback =
@@ -564,11 +745,45 @@ TEST(TransportFeedbackAdapterCongestionFeedbackTest,
   ASSERT_THAT(adapted_feedback->packet_feedbacks, SizeIs(2));
   EXPECT_THAT(adapted_feedback->packet_feedbacks[0].ecn, EcnMarking::kCe);
   EXPECT_THAT(adapted_feedback->packet_feedbacks[1].ecn, EcnMarking::kEct1);
-  EXPECT_TRUE(adapted_feedback->transport_supports_ecn);
+  EXPECT_FALSE(adapted_feedback->HasPacketWithBleachedEct1());
 }
 
 TEST(TransportFeedbackAdapterCongestionFeedbackTest,
-     ReportTransportDoesNotSupportEcnIfFeedbackContainNotEctPacket) {
+     CongestionControlFeedbackResultPassSentWithEct1PerPacket) {
+  TransportFeedbackAdapter adapter;
+
+  const PacketTemplate packets[] = {
+      {.transport_sequence_number = 1,
+       .rtp_sequence_number = 101,
+       .send_as_ect1 = true,
+       .send_timestamp = Timestamp::Millis(100),
+       .receive_timestamp = Timestamp::Millis(200)},
+      {.transport_sequence_number = 2,
+       .rtp_sequence_number = 102,
+       .send_as_ect1 = false,
+       .send_timestamp = Timestamp::Millis(110),
+       .receive_timestamp = Timestamp::Millis(210)}};
+
+  for (const PacketTemplate& packet : packets) {
+    adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
+                      /*overhead=*/0u, TimeNow());
+
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
+  }
+
+  rtcp::CongestionControlFeedback rtcp_feedback =
+      BuildRtcpCongestionControlFeedbackPacket(packets);
+  std::optional<TransportPacketsFeedback> adapted_feedback =
+      adapter.ProcessCongestionControlFeedback(rtcp_feedback, TimeNow());
+
+  ASSERT_THAT(adapted_feedback->packet_feedbacks, SizeIs(2));
+  EXPECT_TRUE(adapted_feedback->packet_feedbacks[0].sent_with_ect1);
+  EXPECT_FALSE(adapted_feedback->packet_feedbacks[1].sent_with_ect1);
+}
+
+TEST(TransportFeedbackAdapterCongestionFeedbackTest,
+     ReportBleachedEct1IfEct1PacketIsReceivedAsNotEct) {
   TransportFeedbackAdapter adapter;
 
   const PacketTemplate packets[] = {
@@ -591,16 +806,468 @@ TEST(TransportFeedbackAdapterCongestionFeedbackTest,
     adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
                       /*overhead=*/0u, TimeNow());
 
-    adapter.ProcessSentPacket(rtc::SentPacket(packet.transport_sequence_number,
-                                              packet.send_timestamp.ms()));
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
   }
 
   rtcp::CongestionControlFeedback rtcp_feedback =
       BuildRtcpCongestionControlFeedbackPacket(packets);
   std::optional<TransportPacketsFeedback> adapted_feedback =
       adapter.ProcessCongestionControlFeedback(rtcp_feedback, TimeNow());
-  EXPECT_FALSE(adapted_feedback->transport_supports_ecn);
+  EXPECT_TRUE(adapted_feedback->HasPacketWithBleachedEct1());
   ASSERT_THAT(adapted_feedback->packet_feedbacks, SizeIs(2));
+}
+
+TEST(TransportFeedbackAdapterCongestionFeedbackTest,
+     DoesNotReportBleachedEct1IfNotEctPacketIsReceivedAsNotEct) {
+  TransportFeedbackAdapter adapter;
+
+  // A packet that was sent as Not-ECT is expected to be received as Not-ECT.
+  // That says nothing about whether the path bleaches ECT(1).
+  const PacketTemplate packets[] = {{
+      .transport_sequence_number = 1,
+      .rtp_sequence_number = 101,
+      .send_as_ect1 = false,
+      .ecn = EcnMarking::kNotEct,
+      .send_timestamp = Timestamp::Millis(100),
+      .receive_timestamp = Timestamp::Millis(200),
+  }};
+
+  for (const PacketTemplate& packet : packets) {
+    adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
+                      /*overhead=*/0u, TimeNow());
+
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
+  }
+
+  rtcp::CongestionControlFeedback rtcp_feedback =
+      BuildRtcpCongestionControlFeedbackPacket(packets);
+  std::optional<TransportPacketsFeedback> adapted_feedback =
+      adapter.ProcessCongestionControlFeedback(rtcp_feedback, TimeNow());
+  ASSERT_THAT(adapted_feedback->packet_feedbacks, SizeIs(1));
+  EXPECT_FALSE(adapted_feedback->HasPacketWithBleachedEct1());
+}
+
+TEST(TransportFeedbackAdapterCongestionFeedbackTest,
+     DoesNotReportBleachedEct1IfEct1PacketIsLost) {
+  TransportFeedbackAdapter adapter;
+
+  // A lost packet is reported with a defaulted Not-ECT marking. Treating that
+  // as bleaching would turn every burst of loss into a permanent verdict that
+  // the path does not support ECN.
+  const PacketTemplate packets[] = {
+      {
+          .transport_sequence_number = 1,
+          .rtp_sequence_number = 101,
+          .send_as_ect1 = true,
+          .ecn = EcnMarking::kEct1,
+          .send_timestamp = Timestamp::Millis(100),
+          .receive_timestamp = Timestamp::Millis(200),
+      },
+      {
+          .transport_sequence_number = 2,
+          .rtp_sequence_number = 102,
+          .send_as_ect1 = true,
+          .send_timestamp = Timestamp::Millis(110),
+          .receive_timestamp = Timestamp::PlusInfinity(),
+      }};
+
+  for (const PacketTemplate& packet : packets) {
+    adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
+                      /*overhead=*/0u, TimeNow());
+
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
+  }
+
+  rtcp::CongestionControlFeedback rtcp_feedback =
+      BuildRtcpCongestionControlFeedbackPacket(packets);
+  std::optional<TransportPacketsFeedback> adapted_feedback =
+      adapter.ProcessCongestionControlFeedback(rtcp_feedback, TimeNow());
+  ASSERT_THAT(adapted_feedback->packet_feedbacks, SizeIs(2));
+  ASSERT_FALSE(adapted_feedback->packet_feedbacks[1].IsReceived());
+  EXPECT_FALSE(adapted_feedback->HasPacketWithBleachedEct1());
+}
+
+TEST(TransportFeedbackAdapterCongestionFeedbackTest,
+     CongestionControlFeedbackResultReportsLostPacketOnce) {
+  TransportFeedbackAdapter adapter;
+
+  const PacketTemplate packets[] = {
+      {.transport_sequence_number = 1,
+       .rtp_sequence_number = 101,
+       .send_timestamp = Timestamp::Millis(100),
+       .receive_timestamp = Timestamp::Millis(200)},
+      {.transport_sequence_number = 2,
+       .rtp_sequence_number = 102,
+       .send_timestamp = Timestamp::Millis(110),
+       .receive_timestamp = Timestamp::MinusInfinity()},
+      {.transport_sequence_number = 3,
+       .rtp_sequence_number = 103,
+       .send_timestamp = Timestamp::Millis(120),
+       .receive_timestamp = Timestamp::Millis(210)}};
+
+  for (const PacketTemplate& packet : packets) {
+    adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
+                      /*overhead=*/0u, TimeNow());
+
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
+  }
+
+  rtcp::CongestionControlFeedback rtcp_feedback =
+      BuildRtcpCongestionControlFeedbackPacket(packets);
+  std::optional<PacketResult> packet_feedback = FindFeedback(
+      adapter.ProcessCongestionControlFeedback(rtcp_feedback, TimeNow()),
+      /*transport_sequence_number=*/2);
+  ASSERT_TRUE(packet_feedback.has_value());
+  EXPECT_FALSE(packet_feedback->IsReceived());
+  EXPECT_TRUE(packet_feedback->reported_lost_for_the_first_time);
+
+  // Process the same report again.
+  packet_feedback = FindFeedback(
+      adapter.ProcessCongestionControlFeedback(rtcp_feedback, TimeNow()),
+      /*transport_sequence_number=*/2);
+  ASSERT_TRUE(packet_feedback.has_value());
+  EXPECT_FALSE(packet_feedback->IsReceived());
+  EXPECT_FALSE(packet_feedback->reported_lost_for_the_first_time);
+}
+
+TEST(TransportFeedbackAdapterCongestionFeedbackTest,
+     CongestionControlFeedbackResultReportsImplicitlyLostPacketOnce) {
+  TransportFeedbackAdapter adapter;
+
+  PacketTemplate packets[] = {{.ssrc = 1,
+                               .transport_sequence_number = 1,
+                               .rtp_sequence_number = 101,
+                               .send_timestamp = Timestamp::Millis(100)},
+                              {.ssrc = 2,
+                               .transport_sequence_number = 2,
+                               .rtp_sequence_number = 201,
+                               .send_timestamp = Timestamp::Millis(110)},
+                              {.ssrc = 1,
+                               .transport_sequence_number = 3,
+                               .rtp_sequence_number = 102,
+                               .send_timestamp = Timestamp::Millis(120)},
+                              {.ssrc = 2,
+                               .transport_sequence_number = 4,
+                               .rtp_sequence_number = 202,
+                               .send_timestamp = Timestamp::Millis(120)}};
+
+  for (const PacketTemplate& packet : packets) {
+    adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
+                      /*overhead=*/0u, TimeNow());
+
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
+  }
+
+  // Produce feedback where 2nd packet is lost.
+  packets[0].receive_timestamp = Timestamp::Millis(200);
+  packets[2].receive_timestamp = Timestamp::Millis(220);
+  std::vector<PacketTemplate> feedback_1 = {packets[0], packets[2]};
+  std::optional<PacketResult> packet_feedback = FindFeedback(
+      adapter.ProcessCongestionControlFeedback(
+          BuildRtcpCongestionControlFeedbackPacket(feedback_1), TimeNow()),
+      /*transport_sequence_number=*/2);
+  ASSERT_TRUE(packet_feedback.has_value());
+  EXPECT_FALSE(packet_feedback->IsReceived());
+
+  // Produce feedback where 2nd packet is reported lost and 4th packet is
+  // received.
+  packets[3].receive_timestamp = Timestamp::Millis(240);
+  std::vector<PacketTemplate> feedback_2 = {packets[1], packets[3]};
+  rtcp::CongestionControlFeedback rtcp_feedback =
+      BuildRtcpCongestionControlFeedbackPacket(feedback_2);
+  // 2nd packet is still lost.
+  packet_feedback = FindFeedback(
+      adapter.ProcessCongestionControlFeedback(rtcp_feedback, TimeNow()),
+      /*transport_sequence_number=*/2);
+  ASSERT_TRUE(packet_feedback.has_value());
+  EXPECT_FALSE(packet_feedback->IsReceived());
+  EXPECT_FALSE(packet_feedback->reported_lost_for_the_first_time);
+}
+
+TEST(TransportFeedbackAdapterCongestionFeedbackTest,
+     CongestionControlFeedbackResultReportsRecoveredPacketOnce) {
+  TransportFeedbackAdapter adapter;
+
+  PacketTemplate packets[] = {{.transport_sequence_number = 1,
+                               .rtp_sequence_number = 101,
+                               .send_timestamp = Timestamp::Millis(100)},
+                              {.transport_sequence_number = 2,
+                               .rtp_sequence_number = 102,
+                               .send_timestamp = Timestamp::Millis(110)},
+                              {.transport_sequence_number = 3,
+                               .rtp_sequence_number = 103,
+                               .send_timestamp = Timestamp::Millis(120)}};
+
+  for (const PacketTemplate& packet : packets) {
+    adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
+                      /*overhead=*/0u, TimeNow());
+
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
+  }
+
+  // Produce feedback where 2nd packet is lost.
+  packets[0].receive_timestamp = Timestamp::Millis(200);
+  packets[2].receive_timestamp = Timestamp::Millis(220);
+  std::optional<PacketResult> packet_feedback = FindFeedback(
+      adapter.ProcessCongestionControlFeedback(
+          BuildRtcpCongestionControlFeedbackPacket(packets), TimeNow()),
+      /*transport_sequence_number=*/2);
+  ASSERT_TRUE(packet_feedback.has_value());
+  EXPECT_FALSE(packet_feedback->IsReceived());
+
+  // Produce feedback where 2nd packet is received.
+  packets[1].receive_timestamp = Timestamp::Millis(240);
+  rtcp::CongestionControlFeedback rtcp_feedback =
+      BuildRtcpCongestionControlFeedbackPacket(packets);
+  packet_feedback = FindFeedback(
+      adapter.ProcessCongestionControlFeedback(rtcp_feedback, TimeNow()),
+      /*transport_sequence_number=*/2);
+  ASSERT_TRUE(packet_feedback.has_value());
+  EXPECT_TRUE(packet_feedback->IsReceived());
+  EXPECT_TRUE(packet_feedback->reported_recovered_for_the_first_time);
+
+  // Process the same report again.
+  // Packet either shouldn't be reported again, or, if reported, shouldn't be
+  // set as recovered again.
+  packet_feedback = FindFeedback(
+      adapter.ProcessCongestionControlFeedback(rtcp_feedback, TimeNow()),
+      /*transport_sequence_number=*/2);
+  if (packet_feedback.has_value()) {
+    EXPECT_TRUE(packet_feedback->IsReceived());
+    EXPECT_FALSE(packet_feedback->reported_recovered_for_the_first_time);
+  }
+}
+
+TEST(TransportFeedbackAdapterCongestionFeedbackTest,
+     ClampsExcessiveArrivalTimeOffsetToMaxExpectedAto) {
+  SimulatedClock clock(Timestamp::Millis(1000));
+  TransportFeedbackAdapter adapter;
+
+  std::vector<PacketTemplate> packets = {
+      {.ssrc = 1234,
+       .transport_sequence_number = 1,
+       .rtp_sequence_number = 101,
+       .send_timestamp = Timestamp::Millis(100),
+       .receive_timestamp = Timestamp::Millis(150)},
+      {.ssrc = 1234,
+       .transport_sequence_number = 2,
+       .rtp_sequence_number = 102,
+       .send_timestamp = Timestamp::Millis(120),
+       .receive_timestamp = Timestamp::Millis(180)},
+  };
+
+  for (const auto& packet : packets) {
+    adapter.AddPacket(CreatePacketToSend(packet), packet.pacing_info,
+                      /*overhead_bytes=*/0u, TimeNow());
+    adapter.ProcessSentPacket(SentPacketInfo(packet.transport_sequence_number,
+                                             packet.send_timestamp.ms()));
+  }
+
+  // First feedback at t = 200ms with report timestamp 150ms.
+  std::vector<PacketTemplate> feedback_1 = {packets[0]};
+  adapter.ProcessCongestionControlFeedback(
+      BuildRtcpCongestionControlFeedbackPacket(feedback_1),
+      Timestamp::Millis(200));
+
+  // Second feedback at t = 230ms with report timestamp 180ms (feedback_delta =
+  // 30ms). But reported arrival_time_offset is 400ms (exceeding
+  // feedback_delta).
+  rtcp::CongestionControlFeedback::PacketInfo packet_info = {
+      .ssrc = 1234,
+      .sequence_number = 102,
+      .arrival_time_offset = TimeDelta::Millis(400),
+      .ecn = EcnMarking::kNotEct};
+  uint32_t compact_ntp =
+      CompactNtp(clock.ConvertTimestampToNtpTime(Timestamp::Millis(180)));
+  rtcp::CongestionControlFeedback feedback_2({packet_info}, compact_ntp);
+
+  std::optional<TransportPacketsFeedback> result =
+      adapter.ProcessCongestionControlFeedback(feedback_2,
+                                               Timestamp::Millis(230));
+  ASSERT_TRUE(result.has_value());
+  std::optional<PacketResult> packet_feedback =
+      FindFeedback(result, /*transport_sequence_number=*/2);
+  ASSERT_TRUE(packet_feedback.has_value());
+  ASSERT_TRUE(packet_feedback->arrival_time_offset.has_value());
+  // The arrival_time_offset should be clamped to max expected ATO
+  // (feedback_delta + 1ms = 31ms) rather than remaining 400ms.
+  EXPECT_LE(*packet_feedback->arrival_time_offset, TimeDelta::Millis(31));
+  EXPECT_FALSE(packet_feedback->ambiguous_receive_time);
+}
+
+TEST(TransportFeedbackAdapterTest,
+     AmbiguousReceiveTimeForRetransmissionWithoutRtx) {
+  SimulatedClock clock(Timestamp::Millis(100));
+  TransportFeedbackAdapter adapter;
+
+  // Packet 1: Original audio packet
+  PacketTemplate packet_1 = {
+      .ssrc = 1234,
+      .transport_sequence_number = 1,
+      .rtp_sequence_number = 101,
+      .send_timestamp = Timestamp::Millis(100),
+      .receive_timestamp = Timestamp::Millis(120),
+      .is_audio = true,
+  };
+  adapter.AddPacket(CreatePacketToSend(packet_1), packet_1.pacing_info,
+                    /*overhead_bytes=*/0u, TimeNow());
+  adapter.ProcessSentPacket(SentPacketInfo(packet_1.transport_sequence_number,
+                                           packet_1.send_timestamp.ms()));
+
+  // Packet 2: Retransmission of packet 1 without RTX (same SSRC and sequence
+  // number)
+  PacketTemplate packet_2 = packet_1;
+  packet_2.transport_sequence_number = 2;
+  packet_2.send_timestamp = Timestamp::Millis(150);
+  RtpPacketToSend resend_packet = CreatePacketToSend(packet_2);
+  resend_packet.set_packet_type(RtpPacketMediaType::kRetransmission);
+  adapter.AddPacket(resend_packet, packet_2.pacing_info,
+                    /*overhead_bytes=*/0u, TimeNow());
+  adapter.ProcessSentPacket(SentPacketInfo(packet_2.transport_sequence_number,
+                                           packet_2.send_timestamp.ms()));
+
+  // Feedback received for the RTP packet
+  rtcp::CongestionControlFeedback::PacketInfo packet_info = {
+      .ssrc = 1234,
+      .sequence_number = 101,
+      .arrival_time_offset = TimeDelta::Millis(10),
+      .ecn = EcnMarking::kNotEct};
+  uint32_t compact_ntp =
+      CompactNtp(clock.ConvertTimestampToNtpTime(Timestamp::Millis(160)));
+  rtcp::CongestionControlFeedback feedback({packet_info}, compact_ntp);
+
+  std::optional<TransportPacketsFeedback> result =
+      adapter.ProcessCongestionControlFeedback(feedback,
+                                               Timestamp::Millis(200));
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->packet_feedbacks.size(), 1u);
+  EXPECT_TRUE(result->packet_feedbacks[0].ambiguous_receive_time);
+}
+
+TEST(TransportFeedbackAdapterTest,
+     AmbiguousReceiveTimeForRetransmissionWhenOriginalAlreadyAcked) {
+  SimulatedClock clock(Timestamp::Millis(100));
+  TransportFeedbackAdapter adapter;
+
+  // Packet 1: Original audio packet.
+  PacketTemplate packet_1 = {
+      .ssrc = 1234,
+      .transport_sequence_number = 1,
+      .rtp_sequence_number = 101,
+      .send_timestamp = clock.CurrentTime(),
+      .receive_timestamp = clock.CurrentTime() + TimeDelta::Millis(20),
+      .is_audio = true,
+  };
+  adapter.AddPacket(CreatePacketToSend(packet_1), packet_1.pacing_info,
+                    /*overhead_bytes=*/0u, clock.CurrentTime());
+  adapter.ProcessSentPacket(SentPacketInfo(packet_1.transport_sequence_number,
+                                           packet_1.send_timestamp.ms()));
+
+  // Feedback received for packet 1.
+  clock.AdvanceTime(TimeDelta::Millis(30));
+  rtcp::CongestionControlFeedback::PacketInfo packet_info_1 = {
+      .ssrc = 1234,
+      .sequence_number = 101,
+      .arrival_time_offset = TimeDelta::Millis(10),
+      .ecn = EcnMarking::kNotEct};
+  uint32_t compact_ntp_1 =
+      CompactNtp(clock.ConvertTimestampToNtpTime(clock.CurrentTime()));
+  rtcp::CongestionControlFeedback feedback_1({packet_info_1}, compact_ntp_1);
+  std::optional<TransportPacketsFeedback> result_1 =
+      adapter.ProcessCongestionControlFeedback(feedback_1, clock.CurrentTime());
+  ASSERT_TRUE(result_1.has_value());
+  EXPECT_FALSE(result_1->packet_feedbacks[0].ambiguous_receive_time);
+
+  // 1ms later, a queued/spurious retransmission of packet 1 without RTX is
+  // sent.
+  clock.AdvanceTime(TimeDelta::Millis(1));
+  PacketTemplate packet_2 = packet_1;
+  packet_2.transport_sequence_number = 2;
+  packet_2.send_timestamp = clock.CurrentTime();
+  RtpPacketToSend resend_packet = CreatePacketToSend(packet_2);
+  resend_packet.set_packet_type(RtpPacketMediaType::kRetransmission);
+  resend_packet.set_original_ssrc(1234);
+  adapter.AddPacket(resend_packet, packet_2.pacing_info,
+                    /*overhead_bytes=*/0u, clock.CurrentTime());
+  adapter.ProcessSentPacket(SentPacketInfo(packet_2.transport_sequence_number,
+                                           packet_2.send_timestamp.ms()));
+
+  // Feedback received for the retransmission.
+  clock.AdvanceTime(TimeDelta::Millis(30));
+  rtcp::CongestionControlFeedback::PacketInfo packet_info_2 = {
+      .ssrc = 1234,
+      .sequence_number = 101,
+      .arrival_time_offset = TimeDelta::Millis(10),
+      .ecn = EcnMarking::kNotEct};
+  uint32_t compact_ntp_2 =
+      CompactNtp(clock.ConvertTimestampToNtpTime(clock.CurrentTime()));
+  rtcp::CongestionControlFeedback feedback_2({packet_info_2}, compact_ntp_2);
+  std::optional<TransportPacketsFeedback> result_2 =
+      adapter.ProcessCongestionControlFeedback(feedback_2, clock.CurrentTime());
+  ASSERT_TRUE(result_2.has_value());
+  ASSERT_EQ(result_2->packet_feedbacks.size(), 1u);
+  EXPECT_TRUE(result_2->packet_feedbacks[0].ambiguous_receive_time);
+}
+
+TEST(TransportFeedbackAdapterTest, VideoRtxIsNotAmbiguous) {
+  SimulatedClock clock(Timestamp::Millis(100));
+  TransportFeedbackAdapter adapter;
+
+  // Video packet
+  PacketTemplate packet_1 = {
+      .ssrc = 1234,
+      .transport_sequence_number = 1,
+      .rtp_sequence_number = 101,
+      .send_timestamp = Timestamp::Millis(100),
+      .receive_timestamp = Timestamp::Millis(120),
+      .is_audio = false,
+  };
+  adapter.AddPacket(CreatePacketToSend(packet_1), packet_1.pacing_info,
+                    /*overhead_bytes=*/0u, TimeNow());
+  adapter.ProcessSentPacket(SentPacketInfo(packet_1.transport_sequence_number,
+                                           packet_1.send_timestamp.ms()));
+
+  // RTX packet sent on RTX SSRC 5678 with sequence number 501
+  PacketTemplate rtx_template = {
+      .ssrc = 5678,
+      .transport_sequence_number = 2,
+      .rtp_sequence_number = 501,
+      .send_timestamp = Timestamp::Millis(150),
+      .receive_timestamp = Timestamp::Millis(170),
+      .is_audio = false,
+  };
+  RtpPacketToSend rtx_packet = CreatePacketToSend(rtx_template);
+  rtx_packet.set_packet_type(RtpPacketMediaType::kRetransmission);
+  rtx_packet.set_original_ssrc(1234);
+  rtx_packet.set_retransmitted_sequence_number(101);
+  adapter.AddPacket(rtx_packet, rtx_template.pacing_info,
+                    /*overhead_bytes=*/0u, TimeNow());
+  adapter.ProcessSentPacket(
+      SentPacketInfo(rtx_template.transport_sequence_number,
+                     rtx_template.send_timestamp.ms()));
+
+  // Feedback received for RTX packet on RTX SSRC
+  rtcp::CongestionControlFeedback::PacketInfo rtx_feedback_info = {
+      .ssrc = 5678,
+      .sequence_number = 501,
+      .arrival_time_offset = TimeDelta::Millis(10),
+      .ecn = EcnMarking::kNotEct};
+  uint32_t compact_ntp =
+      CompactNtp(clock.ConvertTimestampToNtpTime(Timestamp::Millis(180)));
+  rtcp::CongestionControlFeedback feedback({rtx_feedback_info}, compact_ntp);
+
+  std::optional<TransportPacketsFeedback> result =
+      adapter.ProcessCongestionControlFeedback(feedback,
+                                               Timestamp::Millis(200));
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->packet_feedbacks.size(), 1u);
+  EXPECT_FALSE(result->packet_feedbacks[0].ambiguous_receive_time);
 }
 
 }  // namespace webrtc

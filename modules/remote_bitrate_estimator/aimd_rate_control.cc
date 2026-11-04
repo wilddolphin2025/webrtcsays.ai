@@ -10,22 +10,23 @@
 
 #include "modules/remote_bitrate_estimator/aimd_rate_control.h"
 
-#include <inttypes.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <string>
 
-#include "absl/strings/match.h"
+#include "api/field_trials_view.h"
+#include "api/transport/bandwidth_usage.h"
 #include "api/transport/network_types.h"
 #include "api/units/data_rate.h"
+#include "api/units/data_size.h"
+#include "api/units/time_delta.h"
+#include "api/units/timestamp.h"
 #include "modules/remote_bitrate_estimator/include/bwe_defines.h"
-#include "modules/remote_bitrate_estimator/overuse_detector.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/experiments/field_trial_parser.h"
 #include "rtc_base/logging.h"
-#include "rtc_base/numerics/safe_minmax.h"
 
 namespace webrtc {
 namespace {
@@ -112,13 +113,13 @@ TimeDelta AimdRateControl::GetFeedbackInterval() const {
   const TimeDelta interval = kRtcpSize / rtcp_bitrate;
   const TimeDelta kMinFeedbackInterval = TimeDelta::Millis(200);
   const TimeDelta kMaxFeedbackInterval = TimeDelta::Millis(1000);
-  return interval.Clamped(kMinFeedbackInterval, kMaxFeedbackInterval);
+  return std::clamp(interval, kMinFeedbackInterval, kMaxFeedbackInterval);
 }
 
 bool AimdRateControl::TimeToReduceFurther(Timestamp at_time,
                                           DataRate estimated_throughput) const {
   const TimeDelta bitrate_reduction_interval =
-      rtt_.Clamped(TimeDelta::Millis(10), TimeDelta::Millis(200));
+      std::clamp(rtt_, TimeDelta::Millis(10), TimeDelta::Millis(200));
   if (at_time - time_last_bitrate_change_ >= bitrate_reduction_interval) {
     return true;
   }
@@ -205,19 +206,6 @@ double AimdRateControl::GetNearMaxIncreaseRateBpsPerSecond() const {
   return std::max(kMinIncreaseRateBpsPerSecond, increase_rate_bps_per_second);
 }
 
-TimeDelta AimdRateControl::GetExpectedBandwidthPeriod() const {
-  const TimeDelta kMinPeriod = TimeDelta::Seconds(2);
-  const TimeDelta kDefaultPeriod = TimeDelta::Seconds(3);
-  const TimeDelta kMaxPeriod = TimeDelta::Seconds(50);
-
-  double increase_rate_bps_per_second = GetNearMaxIncreaseRateBpsPerSecond();
-  if (!last_decrease_)
-    return kDefaultPeriod;
-  double time_to_recover_decrease_seconds =
-      last_decrease_->bps() / increase_rate_bps_per_second;
-  TimeDelta period = TimeDelta::Seconds(time_to_recover_decrease_seconds);
-  return period.Clamped(kMinPeriod, kMaxPeriod);
-}
 
 void AimdRateControl::ChangeBitrate(const RateControlInput& input,
                                     Timestamp at_time) {

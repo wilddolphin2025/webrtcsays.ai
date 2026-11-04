@@ -10,20 +10,16 @@
 
 #include "api/audio_codecs/g711/audio_encoder_g711.h"
 
-#include <stddef.h>
-
+#include <cstddef>
 #include <initializer_list>
 #include <map>
 #include <memory>
 #include <optional>
-#include <utility>
 #include <vector>
 
 #include "absl/strings/match.h"
-#include "api/audio_codecs/audio_codec_pair_id.h"
 #include "api/audio_codecs/audio_encoder.h"
 #include "api/audio_codecs/audio_format.h"
-#include "api/field_trials_view.h"
 #include "modules/audio_coding/codecs/g711/audio_encoder_pcm.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/numerics/safe_conversions.h"
@@ -40,13 +36,13 @@ std::optional<AudioEncoderG711::Config> AudioEncoderG711::SdpToConfig(
       (is_pcmu || is_pcma)) {
     Config config;
     config.type = is_pcmu ? Config::Type::kPcmU : Config::Type::kPcmA;
-    config.num_channels = rtc::dchecked_cast<int>(format.num_channels);
+    config.num_channels = dchecked_cast<int>(format.num_channels);
     config.frame_size_ms = 20;
     auto ptime_iter = format.parameters.find("ptime");
     if (ptime_iter != format.parameters.end()) {
-      const auto ptime = rtc::StringToNumber<int>(ptime_iter->second);
+      const auto ptime = StringToNumber<int>(ptime_iter->second);
       if (ptime && *ptime > 0) {
-        config.frame_size_ms = rtc::SafeClamp(10 * (*ptime / 10), 10, 60);
+        config.frame_size_ms = SafeClamp(10 * (*ptime / 10), 10, 60);
       }
     }
     if (!config.IsOk()) {
@@ -62,21 +58,19 @@ std::optional<AudioEncoderG711::Config> AudioEncoderG711::SdpToConfig(
 void AudioEncoderG711::AppendSupportedEncoders(
     std::vector<AudioCodecSpec>* specs) {
   for (const char* type : {"PCMU", "PCMA"}) {
-    specs->push_back({{type, 8000, 1}, {8000, 1, 64000}});
+    specs->push_back({.format = {type, 8000, 1}, .info = {8000, 1, 64000}});
   }
 }
 
 AudioCodecInfo AudioEncoderG711::QueryAudioEncoder(const Config& config) {
   RTC_DCHECK(config.IsOk());
-  return {8000, rtc::dchecked_cast<size_t>(config.num_channels),
+  return {8000, dchecked_cast<size_t>(config.num_channels),
           64000 * config.num_channels};
 }
 
 std::unique_ptr<AudioEncoder> AudioEncoderG711::MakeAudioEncoder(
     const Config& config,
-    int payload_type,
-    std::optional<AudioCodecPairId> /*codec_pair_id*/,
-    const FieldTrialsView* /* field_trials */) {
+    int payload_type) {
   if (!config.IsOk()) {
     RTC_DCHECK_NOTREACHED();
     return nullptr;

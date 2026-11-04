@@ -12,19 +12,31 @@
 #define VIDEO_SEND_STATISTICS_PROXY_H_
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
-#include "api/field_trials_view.h"
+#include "api/environment/environment.h"
+#include "api/units/time_delta.h"
+#include "api/units/timestamp.h"
+#include "api/video/video_adaptation_counters.h"
+#include "api/video/video_adaptation_reason.h"
+#include "api/video/video_bitrate_allocation.h"
 #include "api/video/video_codec_constants.h"
+#include "api/video_codecs/video_codec.h"
+#include "call/rtp_config.h"
 #include "call/video_send_stream.h"
+#include "common_video/frame_counts.h"
 #include "modules/include/module_common_types_public.h"
 #include "modules/rtp_rtcp/include/report_block_data.h"
+#include "modules/rtp_rtcp/include/rtcp_statistics.h"
+#include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
 #include "modules/video_coding/include/video_codec_interface.h"
-#include "modules/video_coding/include/video_coding_defines.h"
 #include "rtc_base/numerics/exp_filter.h"
 #include "rtc_base/rate_tracker.h"
 #include "rtc_base/synchronization/mutex.h"
@@ -49,14 +61,15 @@ class SendStatisticsProxy : public VideoStreamEncoderObserver,
   // Number of required samples to be collected before a metric is added
   // to a rtc histogram.
   static const int kMinRequiredMetricsSamples = 200;
+  static const int kMinRequiredPsnrSamples = 5;
 
-  SendStatisticsProxy(Clock* clock,
+  SendStatisticsProxy(const Environment& env,
                       const VideoSendStream::Config& config,
-                      VideoEncoderConfig::ContentType content_type,
-                      const FieldTrialsView& field_trials);
+                      VideoEncoderConfig::ContentType content_type);
   ~SendStatisticsProxy() override;
 
   virtual VideoSendStream::Stats GetStats();
+  void SetStats(const VideoSendStream::Stats& stats);
 
   void OnSendEncodedImage(const EncodedImage& encoded_image,
                           const CodecSpecificInfo* codec_info) override;
@@ -116,6 +129,7 @@ class SendStatisticsProxy : public VideoStreamEncoderObserver,
       uint32_t ssrc,
       const RtcpPacketTypeCounter& packet_counter) override;
   // From StreamDataCountersCallback.
+  StreamDataCounters GetDataCounters(uint32_t ssrc) const override;
   void DataCountersUpdated(const StreamDataCounters& counters,
                            uint32_t ssrc) override;
 
@@ -154,6 +168,17 @@ class SendStatisticsProxy : public VideoStreamEncoderObserver,
     int64_t sum;
     int64_t num_samples;
   };
+  class FloatSampleCounter {
+   public:
+    FloatSampleCounter() : sum_(0), num_samples_(0) {}
+    ~FloatSampleCounter() {}
+    void Add(float sample);
+    std::optional<float> Avg(int64_t min_required_samples) const;
+
+   private:
+    double sum_;
+    int64_t num_samples_;
+  };
   struct TargetRateUpdates {
     TargetRateUpdates()
         : pause_resume_events(0), last_paused_or_resumed(false), last_ms(-1) {}
@@ -185,10 +210,17 @@ class SendStatisticsProxy : public VideoStreamEncoderObserver,
     SampleCounter vp8;   // QP range: 0-127.
     SampleCounter vp9;   // QP range: 0-255.
     SampleCounter h264;  // QP range: 0-51.
+    SampleCounter av1;   // QP range: 0-255.
+    SampleCounter h265;  // QP range: 0-51 (up to 0-63 for 12bpp).
   };
   struct AdaptChanges {
     int down = 0;
     int up = 0;
+  };
+  struct PsnrCounters {
+    FloatSampleCounter psnr_y;
+    FloatSampleCounter psnr_u;
+    FloatSampleCounter psnr_v;
   };
 
   // Map holding encoded frames (mapped by timestamp).
@@ -213,7 +245,7 @@ class SendStatisticsProxy : public VideoStreamEncoderObserver,
   };
   typedef std::map<uint32_t, Frame, TimestampOlderThan> EncodedFrameMap;
 
-  void PurgeOldStats() RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+  void PurgeOldStats(Timestamp now) RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
   VideoSendStream::StreamStats* GetStatsEntry(uint32_t ssrc)
       RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
@@ -259,7 +291,7 @@ class SendStatisticsProxy : public VideoStreamEncoderObserver,
     void AddSendDelay(Timestamp now, TimeDelta send_delay);
 
     Timestamp resolution_update = Timestamp::MinusInfinity();
-    rtc::RateTracker encoded_frame_rate;
+    RateTracker encoded_frame_rate;
 
     std::deque<SendDelayEntry> send_delays;
 
@@ -288,20 +320,20 @@ class SendStatisticsProxy : public VideoStreamEncoderObserver,
                                    int simulcast_index)
       RTC_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
-  Clock* const clock_;
+  const Environment env_;
   const std::string payload_name_;
   const RtpConfig rtp_config_;
   const std::optional<int> fallback_max_pixels_;
   const std::optional<int> fallback_max_pixels_disabled_;
   mutable Mutex mutex_;
   VideoEncoderConfig::ContentType content_type_ RTC_GUARDED_BY(mutex_);
-  const int64_t start_ms_;
+  const Timestamp start_;
   VideoSendStream::Stats stats_ RTC_GUARDED_BY(mutex_);
-  rtc::ExpFilter encode_time_ RTC_GUARDED_BY(mutex_);
+  ExpFilter encode_time_ RTC_GUARDED_BY(mutex_);
   QualityLimitationReasonTracker quality_limitation_reason_tracker_
       RTC_GUARDED_BY(mutex_);
-  rtc::RateTracker media_byte_rate_tracker_ RTC_GUARDED_BY(mutex_);
-  rtc::RateTracker encoded_frame_rate_tracker_ RTC_GUARDED_BY(mutex_);
+  RateTracker media_byte_rate_tracker_ RTC_GUARDED_BY(mutex_);
+  RateTracker encoded_frame_rate_tracker_ RTC_GUARDED_BY(mutex_);
   // Trackers mapped by ssrc.
   std::map<uint32_t, Trackers> trackers_ RTC_GUARDED_BY(mutex_);
 
@@ -344,6 +376,9 @@ class SendStatisticsProxy : public VideoStreamEncoderObserver,
                             int simulcast_idx);
     void RemoveOld(int64_t now_ms);
 
+    void LogPsnrValues(const PsnrCounters& psnr_counters,
+                       std::optional<int> spatial_id);
+
     const std::string uma_prefix_;
     Clock* const clock_;
     SampleCounter input_width_counter_;
@@ -359,7 +394,7 @@ class SendStatisticsProxy : public VideoStreamEncoderObserver,
     SampleCounter bw_resolutions_disabled_counter_;
     SampleCounter delay_counter_;
     SampleCounter max_delay_counter_;
-    rtc::RateTracker input_frame_rate_tracker_;
+    RateTracker input_frame_rate_tracker_;
     RateCounter input_fps_counter_;
     RateCounter sent_fps_counter_;
     RateAccCounter total_byte_counter_;
@@ -386,6 +421,8 @@ class SendStatisticsProxy : public VideoStreamEncoderObserver,
 
     std::map<int, QpCounters>
         qp_counters_;  // QP counters mapped by spatial idx.
+    std::map<int, PsnrCounters>
+        psnr_counters_;  // PSNR counters mapped by spatial idx.
   };
 
   std::unique_ptr<UmaSamplesContainer> uma_container_ RTC_GUARDED_BY(mutex_);

@@ -10,54 +10,59 @@
 
 #include "modules/video_coding/include/video_codec_initializer.h"
 
-#include <stddef.h>
-#include <stdint.h>
-
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "api/environment/environment.h"
-#include "api/environment/environment_factory.h"
+#include "api/make_ref_counted.h"
 #include "api/scoped_refptr.h"
 #include "api/test/mock_fec_controller_override.h"
 #include "api/video/builtin_video_bitrate_allocator_factory.h"
 #include "api/video/video_bitrate_allocation.h"
 #include "api/video/video_bitrate_allocator.h"
 #include "api/video/video_bitrate_allocator_factory.h"
+#include "api/video/video_codec_type.h"
+#include "api/video_codecs/scalability_mode.h"
+#include "api/video_codecs/video_codec.h"
 #include "api/video_codecs/video_encoder.h"
-#include "api/video_codecs/vp8_temporal_layers.h"
+#include "api/video_codecs/vp8_frame_buffer_controller.h"
 #include "api/video_codecs/vp8_temporal_layers_factory.h"
 #include "modules/video_coding/codecs/vp9/include/vp9_globals.h"
 #include "rtc_base/checks.h"
-#include "test/explicit_key_value_config.h"
-#include "test/gmock.h"
+#include "test/create_test_environment.h"
 #include "test/gtest.h"
+#include "video/config/video_encoder_config.h"
 
 namespace webrtc {
 
 namespace {
-static const int kDefaultWidth = 1280;
-static const int kDefaultHeight = 720;
-static const int kDefaultFrameRate = 30;
-static const uint32_t kDefaultMinBitrateBps = 60000;
-static const uint32_t kDefaultTargetBitrateBps = 2000000;
-static const uint32_t kDefaultMaxBitrateBps = 2000000;
-static const uint32_t kDefaultMinTransmitBitrateBps = 400000;
-static const int kDefaultMaxQp = 48;
-static const uint32_t kScreenshareTl0BitrateBps = 120000;
-static const uint32_t kScreenshareConferenceTl0BitrateBps = 200000;
-static const uint32_t kScreenshareCodecTargetBitrateBps = 200000;
-static const uint32_t kScreenshareDefaultFramerate = 5;
+constexpr int kDefaultWidth = 1280;
+constexpr int kDefaultHeight = 720;
+constexpr int kDefaultFrameRate = 30;
+constexpr uint32_t kDefaultMinBitrateBps = 60000;
+constexpr uint32_t kDefaultTargetBitrateBps = 2000000;
+constexpr uint32_t kDefaultMaxBitrateBps = 2000000;
+constexpr uint32_t kDefaultMinTransmitBitrateBps = 400000;
+constexpr int kDefaultMaxQp = 48;
+constexpr uint32_t kScreenshareTl0BitrateBps = 120000;
+constexpr uint32_t kScreenshareConferenceTl0BitrateBps = 200000;
+constexpr uint32_t kScreenshareCodecTargetBitrateBps = 200000;
+constexpr uint32_t kScreenshareDefaultFramerate = 5;
 // Bitrates for the temporal layers of the higher screenshare simulcast stream.
-static const uint32_t kHighScreenshareTl0Bps = 800000;
-static const uint32_t kHighScreenshareTl1Bps = 1200000;
+constexpr uint32_t kHighScreenshareTl0Bps = 800000;
+constexpr uint32_t kHighScreenshareTl1Bps = 1200000;
+// Mirrors kEncoderMinBitrateKbps in video_codec_initializer.cc.
+constexpr uint32_t kEncoderMinBitrateKbps = 30;
 }  // namespace
 
 // TODO(sprang): Extend coverage to handle the rest of the codec initializer.
 class VideoCodecInitializerTest : public ::testing::Test {
  public:
   VideoCodecInitializerTest() {}
-  virtual ~VideoCodecInitializerTest() {}
+  ~VideoCodecInitializerTest() override {}
 
  protected:
   void SetUpFor(VideoCodecType type,
@@ -80,15 +85,17 @@ class VideoCodecInitializerTest : public ::testing::Test {
       ASSERT_FALSE(num_spatial_streams.has_value());
       VideoCodecVP8 vp8_settings = VideoEncoder::GetDefaultVp8Settings();
       vp8_settings.numberOfTemporalLayers = num_temporal_streams;
-      config_.encoder_specific_settings = rtc::make_ref_counted<
-          webrtc::VideoEncoderConfig::Vp8EncoderSpecificSettings>(vp8_settings);
+      config_.encoder_specific_settings =
+          make_ref_counted<VideoEncoderConfig::Vp8EncoderSpecificSettings>(
+              vp8_settings);
     } else if (type == VideoCodecType::kVideoCodecVP9) {
       ASSERT_TRUE(num_spatial_streams.has_value());
       VideoCodecVP9 vp9_settings = VideoEncoder::GetDefaultVp9Settings();
       vp9_settings.numberOfSpatialLayers = num_spatial_streams.value();
       vp9_settings.numberOfTemporalLayers = num_temporal_streams;
-      config_.encoder_specific_settings = rtc::make_ref_counted<
-          webrtc::VideoEncoderConfig::Vp9EncoderSpecificSettings>(vp9_settings);
+      config_.encoder_specific_settings =
+          make_ref_counted<VideoEncoderConfig::Vp9EncoderSpecificSettings>(
+              vp9_settings);
     }
   }
 
@@ -106,7 +113,7 @@ class VideoCodecInitializerTest : public ::testing::Test {
       const VideoEncoder::Settings settings(VideoEncoder::Capabilities(false),
                                             1, 1000);
       frame_buffer_controller_ =
-          factory.Create(codec_out_, settings, &fec_controller_override_);
+          factory.Create(env_, codec_out_, settings, &fec_controller_override_);
     }
   }
 
@@ -139,7 +146,7 @@ class VideoCodecInitializerTest : public ::testing::Test {
     return stream;
   }
 
-  const Environment env_ = CreateEnvironment();
+  const Environment env_ = CreateTestEnvironment();
   MockFecControllerOverride fec_controller_override_;
 
   // Input settings.
@@ -750,5 +757,88 @@ TEST_F(VideoCodecInitializerTest,
   EXPECT_EQ(codec.simulcastStream[1].numberOfTemporalLayers, 1);
 }
 #endif
+
+TEST_F(VideoCodecInitializerTest,
+       SimulcastInconsistentScalabilityModesWithFirstInactive) {
+  VideoEncoderConfig config;
+  config.simulcast_layers.resize(3);
+  config.simulcast_layers[0].active = false;
+  config.simulcast_layers[1].active = true;
+  config.simulcast_layers[2].active = true;
+  config.codec_type = VideoCodecType::kVideoCodecVP8;
+
+  streams_ = {DefaultStream(), DefaultStream(), DefaultStream()};
+  streams_[0].active = false;
+  streams_[0].scalability_mode = ScalabilityMode::kL1T3;
+  streams_[1].active = true;
+  streams_[1].scalability_mode = ScalabilityMode::kL1T2;
+  streams_[2].active = true;
+  streams_[2].scalability_mode = ScalabilityMode::kL1T1;
+
+  VideoCodec codec =
+      VideoCodecInitializer::SetupCodec(env_.field_trials(), config, streams_);
+
+  // Top level scalability mode should be cleared since active streams have
+  // different scalability modes.
+  EXPECT_EQ(codec.GetScalabilityMode(), std::nullopt);
+}
+
+TEST_F(VideoCodecInitializerTest,
+       SimulcastConsistentScalabilityModesWithFirstInactive) {
+  VideoEncoderConfig config;
+  config.simulcast_layers.resize(3);
+  config.simulcast_layers[0].active = false;
+  config.simulcast_layers[1].active = true;
+  config.simulcast_layers[2].active = true;
+  config.codec_type = VideoCodecType::kVideoCodecVP8;
+
+  streams_ = {DefaultStream(), DefaultStream(), DefaultStream()};
+  streams_[0].active = false;
+  streams_[0].scalability_mode = ScalabilityMode::kL1T3;
+  streams_[1].active = true;
+  streams_[1].scalability_mode = ScalabilityMode::kL1T2;
+  streams_[2].active = true;
+  streams_[2].scalability_mode = ScalabilityMode::kL1T2;
+
+  VideoCodec codec =
+      VideoCodecInitializer::SetupCodec(env_.field_trials(), config, streams_);
+
+  // Top level scalability mode should be kL1T2 since active streams have the
+  // same scalability mode.
+  EXPECT_EQ(codec.GetScalabilityMode(), ScalabilityMode::kL1T2);
+}
+
+// `VideoCodec::maxBitrate` is the sum of the per-stream maximums in kbps, so it
+// is zero when the configured maximums are zero or round down to zero. A
+// configured zero means the application asked for no bitrate and must not be
+// uncapped, see
+// https://w3c.github.io/webrtc-pc/#dom-rtcrtpencodingparameters-maxbitrate
+// The "unset max bitrate -> cap to one bit per pixel" fallback below must
+// therefore not kick in; today it is inert anyway because it reads
+// `video_codec.maxFramerate` before that field is assigned.
+TEST_F(VideoCodecInitializerTest, ZeroMaxBitrateIsNotUncapped) {
+  SetUpFor(VideoCodecType::kVideoCodecVP8, 1, std::nullopt, 1, false);
+  VideoStream stream = DefaultStream();
+  stream.min_bitrate_bps = 0;
+  stream.target_bitrate_bps = 0;
+  stream.max_bitrate_bps = 0;
+  streams_.push_back(stream);
+  InitializeCodec();
+
+  // A working one-bit-per-pixel fallback would give 1280 * 720 * 30 / 1000.
+  EXPECT_EQ(codec_out_.maxBitrate, kEncoderMinBitrateKbps);
+}
+
+TEST_F(VideoCodecInitializerTest, SubKilobitMaxBitrateIsNotUncapped) {
+  SetUpFor(VideoCodecType::kVideoCodecVP8, 1, std::nullopt, 1, false);
+  VideoStream stream = DefaultStream();
+  stream.min_bitrate_bps = 0;
+  stream.target_bitrate_bps = 0;
+  stream.max_bitrate_bps = 500;
+  streams_.push_back(stream);
+  InitializeCodec();
+
+  EXPECT_EQ(codec_out_.maxBitrate, kEncoderMinBitrateKbps);
+}
 
 }  // namespace webrtc

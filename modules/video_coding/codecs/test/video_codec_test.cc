@@ -8,28 +8,38 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <algorithm>
+#include <cstdint>
+#include <iterator>
+#include <limits>
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include "absl/flags/flag.h"
-#include "absl/functional/any_invocable.h"
 #include "api/environment/environment.h"
-#include "api/environment/environment_factory.h"
 #include "api/test/metrics/global_metrics_logger_and_exporter.h"
 #include "api/units/data_rate.h"
 #include "api/units/frequency.h"
 #include "api/video/resolution.h"
 #include "api/video_codecs/builtin_video_decoder_factory.h"
 #include "api/video_codecs/builtin_video_encoder_factory.h"
+#include "api/video_codecs/scalability_mode.h"
+#include "api/video_codecs/sdp_video_format.h"
+#include "api/video_codecs/video_decoder_factory.h"
+#include "api/video_codecs/video_encoder_factory.h"
+#include "rtc_base/checks.h"
 #if defined(WEBRTC_ANDROID)
 #include "modules/video_coding/codecs/test/android_codec_factory_helper.h"
 #endif
 #include "modules/video_coding/svc/scalability_mode_util.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/strings/string_builder.h"
-#include "test/explicit_key_value_config.h"
-#include "test/field_trial.h"
+#include "test/create_test_environment.h"
 #include "test/gtest.h"
 #include "test/test_flags.h"
 #include "test/testsupport/file_utils.h"
@@ -71,13 +81,13 @@ ABSL_FLAG(int,
           std::numeric_limits<int>::max(),
           "Keyframe interval in frames.");
 ABSL_FLAG(int, num_frames, 300, "Number of frames to encode and/or decode.");
-ABSL_FLAG(std::string, field_trials, "", "Field trials to apply.");
 ABSL_FLAG(std::string, test_name, "", "Test name.");
 ABSL_FLAG(bool, dump_decoder_input, false, "Dump decoder input.");
 ABSL_FLAG(bool, dump_decoder_output, false, "Dump decoder output.");
 ABSL_FLAG(bool, dump_encoder_input, false, "Dump encoder input.");
 ABSL_FLAG(bool, dump_encoder_output, false, "Dump encoder output.");
 ABSL_FLAG(bool, write_csv, false, "Write metrics to a CSV file.");
+ABSL_FLAG(int, num_cores, 1, "The maximum number of cores codec can use.");
 
 namespace webrtc {
 namespace test {
@@ -102,7 +112,7 @@ VideoInfo kFourPeople_1280x720_30 = {
     .resolution = {.width = 1280, .height = 720},
     .framerate = Frequency::Hertz(30)};
 
-static constexpr Frequency k90kHz = Frequency::Hertz(90000);
+constexpr Frequency k90kHz = Frequency::Hertz(90000);
 
 VideoSourceSettings ToSourceSettings(VideoInfo video_info) {
   return VideoSourceSettings{.file_path = ResourcePath(video_info.name, "yuv"),
@@ -172,7 +182,7 @@ std::string TestName() {
 
 std::string TestOutputPath() {
   std::string output_path =
-      (rtc::StringBuilder() << OutputPath() << TestName()).str();
+      (StringBuilder() << OutputPath() << TestName()).str();
   std::string output_dir = DirName(output_path);
   bool result = CreateDir(output_dir);
   RTC_CHECK(result) << "Cannot create " << output_dir;
@@ -193,7 +203,8 @@ std::unique_ptr<VideoCodecStats> RunEncodeDecodeTest(
       CreateEncoderFactory(encoder_impl);
   if (!encoder_factory
            ->QueryCodecSupport(sdp_video_format,
-                               /*scalability_mode=*/std::nullopt)
+                               /*scalability_mode=*/std::nullopt,
+                               /*resolution=*/std::nullopt)
            .is_supported) {
     RTC_LOG(LS_WARNING) << "No " << encoder_impl << " encoder for video format "
                         << sdp_video_format.ToString();
@@ -204,7 +215,8 @@ std::unique_ptr<VideoCodecStats> RunEncodeDecodeTest(
       CreateDecoderFactory(decoder_impl);
   if (!decoder_factory
            ->QueryCodecSupport(sdp_video_format,
-                               /*reference_scaling=*/false)
+                               /*reference_scaling=*/false,
+                               /*resolution=*/std::nullopt)
            .is_supported) {
     RTC_LOG(LS_WARNING) << "No " << decoder_impl << " decoder for video format "
                         << sdp_video_format.ToString()
@@ -214,7 +226,8 @@ std::unique_ptr<VideoCodecStats> RunEncodeDecodeTest(
     decoder_factory = CreateDecoderFactory("builtin");
     if (!decoder_factory
              ->QueryCodecSupport(sdp_video_format,
-                                 /*reference_scaling=*/false)
+                                 /*reference_scaling=*/false,
+                                 /*resolution=*/std::nullopt)
              .is_supported) {
       RTC_LOG(LS_WARNING) << "No " << decoder_impl
                           << " decoder for video format "
@@ -234,6 +247,7 @@ std::unique_ptr<VideoCodecStats> RunEncodeDecodeTest(
   if (absl::GetFlag(FLAGS_dump_encoder_output)) {
     encoder_settings.encoder_output_base_path = output_path + "_enc_output";
   }
+  encoder_settings.num_cores = absl::GetFlag(FLAGS_num_cores);
 
   VideoCodecTester::DecoderSettings decoder_settings;
   decoder_settings.pacing_settings.mode =
@@ -244,6 +258,7 @@ std::unique_ptr<VideoCodecStats> RunEncodeDecodeTest(
   if (absl::GetFlag(FLAGS_dump_decoder_output)) {
     decoder_settings.decoder_output_base_path = output_path + "_dec_output";
   }
+  decoder_settings.num_cores = absl::GetFlag(FLAGS_num_cores);
 
   return VideoCodecTester::RunEncodeDecodeTest(
       env, source_settings, encoder_factory.get(), decoder_factory.get(),
@@ -262,7 +277,8 @@ std::unique_ptr<VideoCodecStats> RunEncodeTest(
       CreateEncoderFactory(encoder_impl);
   if (!encoder_factory
            ->QueryCodecSupport(sdp_video_format,
-                               /*scalability_mode=*/std::nullopt)
+                               /*scalability_mode=*/std::nullopt,
+                               /*resolution=*/std::nullopt)
            .is_supported) {
     RTC_LOG(LS_WARNING) << "No encoder for video format "
                         << sdp_video_format.ToString();
@@ -279,6 +295,7 @@ std::unique_ptr<VideoCodecStats> RunEncodeTest(
   if (absl::GetFlag(FLAGS_dump_encoder_output)) {
     encoder_settings.encoder_output_base_path = output_path + "_enc_output";
   }
+  encoder_settings.num_cores = absl::GetFlag(FLAGS_num_cores);
 
   return VideoCodecTester::RunEncodeTest(env, source_settings,
                                          encoder_factory.get(),
@@ -308,7 +325,7 @@ class SpatialQualityTest : public ::testing::TestWithParam<std::tuple<
 };
 
 TEST_P(SpatialQualityTest, SpatialQuality) {
-  const Environment env = CreateEnvironment();
+  const Environment env = CreateTestEnvironment();
   auto [codec_type, codec_impl, video_info, coding_settings] = GetParam();
   auto [width, height, framerate_fps, bitrate_kbps, expected_min_psnr] =
       coding_settings;
@@ -318,7 +335,7 @@ TEST_P(SpatialQualityTest, SpatialQuality) {
   VideoSourceSettings source_settings = ToSourceSettings(video_info);
 
   EncodingSettings encoding_settings = VideoCodecTester::CreateEncodingSettings(
-      env, codec_type, /*scalability_mode=*/"L1T1", width, height,
+      env, codec_type, /*scalability_name=*/"L1T1", width, height,
       {DataRate::KilobitsPerSec(bitrate_kbps)},
       Frequency::Hertz(framerate_fps));
 
@@ -344,6 +361,12 @@ TEST_P(SpatialQualityTest, SpatialQuality) {
       {{"video_name", video_info.name},
        {"codec_type", codec_type},
        {"codec_impl", codec_impl}});
+
+  if (absl::GetFlag(FLAGS_write_csv)) {
+    stats->LogMetrics((StringBuilder() << TestOutputPath() << ".csv").str(),
+                      stats->Slice(Filter{}, /*merge=*/false), /*metadata=*/
+                      {{"test_name", TestName()}});
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -357,7 +380,7 @@ INSTANTIATE_TEST_SUITE_P(
 #endif
             Values(kFourPeople_1280x720_30),
             Values(std::make_tuple(320, 180, 30, 32, 26),
-                   std::make_tuple(320, 180, 30, 64, 29),
+                   std::make_tuple(320, 180, 30, 64, 27),
                    std::make_tuple(320, 180, 30, 128, 32),
                    std::make_tuple(320, 180, 30, 256, 36),
                    std::make_tuple(640, 360, 30, 128, 29),
@@ -388,7 +411,7 @@ class BitrateAdaptationTest
 
 TEST_P(BitrateAdaptationTest, BitrateAdaptation) {
   auto [codec_type, codec_impl, video_info, bitrate_kbps] = GetParam();
-  const Environment env = CreateEnvironment();
+  const Environment env = CreateTestEnvironment();
 
   int duration_s = 10;  // Duration of fixed rate interval.
   int num_frames =
@@ -397,14 +420,14 @@ TEST_P(BitrateAdaptationTest, BitrateAdaptation) {
   VideoSourceSettings source_settings = ToSourceSettings(video_info);
 
   EncodingSettings encoding_settings = VideoCodecTester::CreateEncodingSettings(
-      env, codec_type, /*scalability_mode=*/"L1T1",
+      env, codec_type, /*scalability_name=*/"L1T1",
       /*width=*/640, /*height=*/360,
       {DataRate::KilobitsPerSec(bitrate_kbps.first)},
       /*framerate=*/Frequency::Hertz(30));
 
   EncodingSettings encoding_settings2 =
       VideoCodecTester::CreateEncodingSettings(
-          env, codec_type, /*scalability_mode=*/"L1T1",
+          env, codec_type, /*scalability_name=*/"L1T1",
           /*width=*/640, /*height=*/360,
           {DataRate::KilobitsPerSec(bitrate_kbps.second)},
           /*framerate=*/Frequency::Hertz(30));
@@ -442,6 +465,12 @@ TEST_P(BitrateAdaptationTest, BitrateAdaptation) {
        {"video_name", video_info.name},
        {"rate_profile", std::to_string(bitrate_kbps.first) + "," +
                             std::to_string(bitrate_kbps.second)}});
+
+  if (absl::GetFlag(FLAGS_write_csv)) {
+    stats->LogMetrics((StringBuilder() << TestOutputPath() << ".csv").str(),
+                      stats->Slice(Filter{}, /*merge=*/false), /*metadata=*/
+                      {{"test_name", TestName()}});
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(All,
@@ -476,21 +505,21 @@ class FramerateAdaptationTest
 
 TEST_P(FramerateAdaptationTest, FramerateAdaptation) {
   auto [codec_type, codec_impl, video_info, framerate_fps] = GetParam();
-  const Environment env = CreateEnvironment();
+  const Environment env = CreateTestEnvironment();
 
   int duration_s = 10;  // Duration of fixed rate interval.
 
   VideoSourceSettings source_settings = ToSourceSettings(video_info);
 
   EncodingSettings encoding_settings = VideoCodecTester::CreateEncodingSettings(
-      env, codec_type, /*scalability_mode=*/"L1T1",
+      env, codec_type, /*scalability_name=*/"L1T1",
       /*width=*/640, /*height=*/360,
       /*bitrate=*/{DataRate::KilobitsPerSec(512)},
       Frequency::Hertz(framerate_fps.first));
 
   EncodingSettings encoding_settings2 =
       VideoCodecTester::CreateEncodingSettings(
-          env, codec_type, /*scalability_mode=*/"L1T1",
+          env, codec_type, /*scalability_name=*/"L1T1",
           /*width=*/640, /*height=*/360,
           /*bitrate=*/{DataRate::KilobitsPerSec(512)},
           Frequency::Hertz(framerate_fps.second));
@@ -531,6 +560,12 @@ TEST_P(FramerateAdaptationTest, FramerateAdaptation) {
        {"video_name", video_info.name},
        {"rate_profile", std::to_string(framerate_fps.first) + "," +
                             std::to_string(framerate_fps.second)}});
+
+  if (absl::GetFlag(FLAGS_write_csv)) {
+    stats->LogMetrics((StringBuilder() << TestOutputPath() << ".csv").str(),
+                      stats->Slice(Filter{}, /*merge=*/false), /*metadata=*/
+                      {{"test_name", TestName()}});
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(All,
@@ -546,10 +581,7 @@ INSTANTIATE_TEST_SUITE_P(All,
                          FramerateAdaptationTest::TestParamsToString);
 
 TEST(VideoCodecTest, DISABLED_EncodeDecode) {
-  ScopedFieldTrials field_trials(absl::GetFlag(FLAGS_field_trials));
-  const Environment env =
-      CreateEnvironment(std::make_unique<ExplicitKeyValueConfig>(
-          absl::GetFlag(FLAGS_field_trials)));
+  const Environment env = CreateTestEnvironment();
 
   VideoSourceSettings source_settings{
       .file_path = absl::GetFlag(FLAGS_input_path),
@@ -618,7 +650,7 @@ TEST(VideoCodecTest, DISABLED_EncodeDecode) {
   for (int sidx = 0; sidx < num_spatial_layers; ++sidx) {
     for (int tidx = 0; tidx < num_temporal_layers; ++tidx) {
       std::string metric_name_prefix =
-          (rtc::StringBuilder() << "s" << sidx << "t" << tidx << "_").str();
+          (StringBuilder() << "s" << sidx << "t" << tidx << "_").str();
       stream = stats->Aggregate(
           {.layer_id = {{.spatial_idx = sidx, .temporal_idx = tidx}}});
       stream.LogMetrics(GetGlobalMetricsLogger(), TestName(),
@@ -628,10 +660,9 @@ TEST(VideoCodecTest, DISABLED_EncodeDecode) {
   }
 
   if (absl::GetFlag(FLAGS_write_csv)) {
-    stats->LogMetrics(
-        (rtc::StringBuilder() << TestOutputPath() << ".csv").str(),
-        stats->Slice(Filter{}, /*merge=*/false), /*metadata=*/
-        {{"test_name", TestName()}});
+    stats->LogMetrics((StringBuilder() << TestOutputPath() << ".csv").str(),
+                      stats->Slice(Filter{}, /*merge=*/false), /*metadata=*/
+                      {{"test_name", TestName()}});
   }
 }
 

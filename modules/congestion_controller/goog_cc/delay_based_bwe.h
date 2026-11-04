@@ -82,7 +82,6 @@ class DelayBasedBwe {
   bool LatestEstimate(std::vector<uint32_t>* ssrcs, DataRate* bitrate) const;
   void SetStartBitrate(DataRate start_bitrate);
   void SetMinBitrate(DataRate min_bitrate);
-  TimeDelta GetExpectedBwePeriod() const;
   DataRate TriggerOveruse(Timestamp at_time,
                           std::optional<DataRate> link_capacity);
   DataRate last_estimate() const { return prev_bitrate_; }
@@ -104,7 +103,7 @@ class DelayBasedBwe {
                       std::optional<DataRate> acked_bitrate,
                       DataRate* target_rate);
 
-  rtc::RaceChecker network_race_;
+  RaceChecker network_race_;
   RtcEventLog* const event_log_;
   const FieldTrialsView* const key_value_config_;
 

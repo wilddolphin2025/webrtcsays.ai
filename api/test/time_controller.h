@@ -10,13 +10,13 @@
 #ifndef API_TEST_TIME_CONTROLLER_H_
 #define API_TEST_TIME_CONTROLLER_H_
 
-#include <functional>
 #include <memory>
 #include <string>
 
+#include "absl/strings/string_view.h"
+#include "api/function_view.h"
 #include "api/task_queue/task_queue_factory.h"
 #include "api/units/time_delta.h"
-#include "api/units/timestamp.h"
 #include "rtc_base/socket_server.h"
 #include "rtc_base/thread.h"
 #include "system_wrappers/include/clock.h"
@@ -40,16 +40,22 @@ class TimeController {
   // is destroyed.
   std::unique_ptr<TaskQueueFactory> CreateTaskQueueFactory();
 
-  // Creates an rtc::Thread instance. If `socket_server` is nullptr, a default
-  // noop socket server is created.
-  // Returned thread is not null and started.
-  virtual std::unique_ptr<rtc::Thread> CreateThread(
+  // Creates an Thread instance. If `socket_server` is nullptr, a
+  // default noop socket server is created. Returned thread is not null and
+  // started.
+  virtual std::unique_ptr<Thread> CreateThread(
       const std::string& name,
-      std::unique_ptr<rtc::SocketServer> socket_server = nullptr) = 0;
+      std::unique_ptr<SocketServer> socket_server = nullptr) = 0;
 
-  // Creates an rtc::Thread instance that ensure that it's set as the current
+  // Creates a Thread instance that uses the provided `socket_server`.
+  // The `socket_server` must outlive the returned thread.
+  virtual std::unique_ptr<Thread> CreateThreadWithSocketServer(
+      absl::string_view name,
+      SocketServer* socket_server) = 0;
+
+  // Creates an Thread instance that ensure that it's set as the current
   // thread.
-  virtual rtc::Thread* GetMainThread() = 0;
+  virtual Thread* GetMainThread() = 0;
   // Allow task queues and process threads created by this instance to execute
   // for the given `duration`.
   virtual void AdvanceTime(TimeDelta duration) = 0;
@@ -58,7 +64,7 @@ class TimeController {
   // intervals.
   // Returns true if condition() was evaluated to true before `max_duration`
   // elapsed and false otherwise.
-  bool Wait(const std::function<bool()>& condition,
+  bool Wait(FunctionView<bool()> condition,
             TimeDelta max_duration = TimeDelta::Seconds(5));
 };
 

@@ -11,18 +11,25 @@
 #ifndef MODULES_RTP_RTCP_MOCKS_MOCK_RTP_RTCP_H_
 #define MODULES_RTP_RTCP_MOCKS_MOCK_RTP_RTCP_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
-#include <set>
-#include <string>
-#include <utility>
+#include <span>
 #include <vector>
 
 #include "absl/strings/string_view.h"
-#include "api/video/video_bitrate_allocation.h"
+#include "api/rtp_header_extension_id.h"
+#include "api/rtp_headers.h"
+#include "api/transport/network_types.h"
+#include "api/units/time_delta.h"
+#include "modules/include/module_fec_types.h"
+#include "modules/rtp_rtcp/include/report_block_data.h"
 #include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
+#include "modules/rtp_rtcp/source/rtcp_packet.h"
 #include "modules/rtp_rtcp/source/rtp_packet_to_send.h"
 #include "modules/rtp_rtcp/source/rtp_rtcp_interface.h"
+#include "modules/rtp_rtcp/source/rtp_sequence_number_map.h"
 #include "test/gmock.h"
 
 namespace webrtc {
@@ -31,10 +38,9 @@ class MockRtpRtcpInterface : public RtpRtcpInterface {
  public:
   MOCK_METHOD(void,
               IncomingRtcpPacket,
-              (rtc::ArrayView<const uint8_t> packet),
+              (std::span<const uint8_t> packet),
               (override));
   MOCK_METHOD(void, SetRemoteSSRC, (uint32_t ssrc), (override));
-  MOCK_METHOD(void, SetLocalSsrc, (uint32_t ssrc), (override));
   MOCK_METHOD(void, SetMaxRtpPacketSize, (size_t size), (override));
   MOCK_METHOD(size_t, MaxRtpPacketSize, (), (const, override));
   MOCK_METHOD(void,
@@ -48,7 +54,7 @@ class MockRtpRtcpInterface : public RtpRtcpInterface {
   MOCK_METHOD(void, SetExtmapAllowMixed, (bool extmap_allow_mixed), (override));
   MOCK_METHOD(void,
               RegisterRtpHeaderExtension,
-              (absl::string_view uri, int id),
+              (absl::string_view uri, RtpHeaderExtensionId id),
               (override));
   MOCK_METHOD(void,
               DeregisterSendRtpHeaderExtension,
@@ -113,11 +119,11 @@ class MockRtpRtcpInterface : public RtpRtcpInterface {
               (override));
   MOCK_METHOD(void,
               OnAbortedRetransmissions,
-              (rtc::ArrayView<const uint16_t>),
+              (std::span<const uint16_t>),
               (override));
   MOCK_METHOD(void,
               OnPacketsAcknowledged,
-              (rtc::ArrayView<const uint16_t>),
+              (std::span<const uint16_t>),
               (override));
   MOCK_METHOD(std::vector<std::unique_ptr<RtpPacketToSend>>,
               GeneratePadding,
@@ -125,7 +131,7 @@ class MockRtpRtcpInterface : public RtpRtcpInterface {
               (override));
   MOCK_METHOD(std::vector<RtpSequenceNumberMap::Info>,
               GetSentRtpPacketInfos,
-              (rtc::ArrayView<const uint16_t> sequence_numbers),
+              (std::span<const uint16_t> sequence_numbers),
               (const, override));
   MOCK_METHOD(size_t, ExpectedPerPacketOverhead, (), (const, override));
   MOCK_METHOD(void, OnPacketSendingThreadSwitched, (), (override));
@@ -178,10 +184,6 @@ class MockRtpRtcpInterface : public RtpRtcpInterface {
                uint16_t last_received_seq_num,
                bool decodability_flag,
                bool buffering_allowed),
-              (override));
-  MOCK_METHOD(void,
-              SetVideoBitrateAllocation,
-              (const VideoBitrateAllocation&),
               (override));
   MOCK_METHOD(RTPSender*, RtpSender, (), (override));
   MOCK_METHOD(const RTPSender*, RtpSender, (), (const, override));

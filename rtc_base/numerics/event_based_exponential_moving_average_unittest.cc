@@ -16,14 +16,14 @@
 
 #include "test/gtest.h"
 
+namespace webrtc {
+
 namespace {
 
 constexpr int kHalfTime = 500;
 constexpr double kError = 0.1;
 
 }  // namespace
-
-namespace rtc {
 
 TEST(EventBasedExponentialMovingAverageTest, NoValue) {
   EventBasedExponentialMovingAverage average(kHalfTime);
@@ -226,4 +226,4 @@ TEST(EventBasedExponentialMovingAverageTest, SimultaneousSamples) {
   average.AddSample(time, value);
 }
 
-}  // namespace rtc
+}  // namespace webrtc

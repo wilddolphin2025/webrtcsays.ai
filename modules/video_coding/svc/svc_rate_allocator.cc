@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <numeric>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "absl/container/inlined_vector.h"
@@ -97,9 +98,9 @@ std::vector<DataRate> AdjustAndVerify(
   return adjusted_spatial_layer_rates;
 }
 
-static std::vector<DataRate> SplitBitrate(size_t num_layers,
-                                          DataRate total_bitrate,
-                                          float rate_scaling_factor) {
+std::vector<DataRate> SplitBitrate(size_t num_layers,
+                                   DataRate total_bitrate,
+                                   float rate_scaling_factor) {
   std::vector<DataRate> bitrates;
 
   double denominator = 0.0;
@@ -128,16 +129,16 @@ static std::vector<DataRate> SplitBitrate(size_t num_layers,
 }
 
 VideoBitrateAllocation DistributeAllocationToTemporalLayers(
-    std::vector<DataRate> spatial_layer_birates,
+    std::span<const DataRate> spatial_layer_bitrates,
     size_t first_active_layer,
     size_t num_temporal_layers) {
   // Distribute rate across temporal layers. Allocate more bits to lower
   // layers since they are used for prediction of higher layers and their
   // references are far apart.
   VideoBitrateAllocation bitrate_allocation;
-  for (size_t sl_idx = 0; sl_idx < spatial_layer_birates.size(); ++sl_idx) {
+  for (size_t sl_idx = 0; sl_idx < spatial_layer_bitrates.size(); ++sl_idx) {
     std::vector<DataRate> temporal_layer_bitrates =
-        SplitBitrate(num_temporal_layers, spatial_layer_birates[sl_idx],
+        SplitBitrate(num_temporal_layers, spatial_layer_bitrates[sl_idx],
                      kTemporalLayeringRateScalingFactor);
 
     if (num_temporal_layers == 1) {
@@ -249,7 +250,6 @@ SvcRateAllocator::SvcRateAllocator(const VideoCodec& codec,
                                    const FieldTrialsView& field_trials)
     : codec_(codec),
       num_layers_(GetNumLayers(codec)),
-      experiment_settings_(field_trials),
       cumulative_layer_start_bitrates_(GetLayerStartBitrates(codec)),
       last_active_layer_count_(0) {
   RTC_DCHECK_GT(num_layers_.spatial, 0);
@@ -295,29 +295,7 @@ VideoBitrateAllocation SvcRateAllocator::Allocate(
   }
 
   // Figure out how many spatial layers should be active.
-  if (experiment_settings_.IsEnabled() &&
-      parameters.stable_bitrate > DataRate::Zero()) {
-    double hysteresis_factor;
-    if (codec_.mode == VideoCodecMode::kScreensharing) {
-      hysteresis_factor = experiment_settings_.GetScreenshareHysteresisFactor();
-    } else {
-      hysteresis_factor = experiment_settings_.GetVideoHysteresisFactor();
-    }
-
-    DataRate stable_rate = std::min(total_bitrate, parameters.stable_bitrate);
-    // First check if bitrate has grown large enough to enable new layers.
-    size_t num_enabled_with_hysteresis =
-        FindNumEnabledLayers(stable_rate / hysteresis_factor);
-    if (num_enabled_with_hysteresis >= last_active_layer_count_) {
-      num_spatial_layers = num_enabled_with_hysteresis;
-    } else {
-      // We could not enable new layers, check if any should be disabled.
-      num_spatial_layers =
-          std::min(last_active_layer_count_, FindNumEnabledLayers(stable_rate));
-    }
-  } else {
-    num_spatial_layers = FindNumEnabledLayers(total_bitrate);
-  }
+  num_spatial_layers = FindNumEnabledLayers(total_bitrate);
   last_active_layer_count_ = num_spatial_layers;
 
   std::vector<DataRate> spatial_layer_bitrates;

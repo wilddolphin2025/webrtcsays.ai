@@ -10,16 +10,15 @@
 #ifndef NET_DCSCTP_TX_SEND_QUEUE_H_
 #define NET_DCSCTP_TX_SEND_QUEUE_H_
 
-#include <cstdint>
-#include <limits>
+#include <cstddef>
 #include <optional>
 #include <utility>
 #include <vector>
 
-#include "api/array_view.h"
 #include "api/units/timestamp.h"
 #include "net/dcsctp/common/internal_types.h"
 #include "net/dcsctp/packet/data.h"
+#include "net/dcsctp/public/dcsctp_handover_state.h"
 #include "net/dcsctp/public/types.h"
 
 namespace dcsctp {
@@ -140,6 +139,14 @@ class SendQueue {
   // disabled, but can later change it when the capabilities of the connection
   // have been negotiated. This affects the behavior of the `Produce` method.
   virtual void EnableMessageInterleaving(bool enabled) = 0;
+
+  // Adds handover state to `state`.
+  virtual void AddHandoverState(webrtc::Timestamp now,
+                                DcSctpSocketHandoverState& state) const = 0;
+
+  // Restores state from `state`.
+  virtual void RestoreFromState(webrtc::Timestamp now,
+                                const DcSctpSocketHandoverState& state) = 0;
 };
 }  // namespace dcsctp
 

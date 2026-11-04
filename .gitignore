@@ -25,6 +25,7 @@
 *_proto.xml
 *_proto_cpp.xml
 *~
+\#*#
 .*.sw?
 .cache
 .cipd
@@ -33,11 +34,13 @@
 .cproject
 .gdb_history
 .gdbinit
+.gemini
 .landmines
 .metadata
 .project
 .pydevproject
 .settings
+.siso_failed_targets
 .sw?
 /Makefile
 /base
@@ -72,3 +75,4 @@
 /xcodebuild
 /.vscode
 !webrtc/*
+rust-project.json

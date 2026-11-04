@@ -22,13 +22,9 @@ struct VideoBitrateAllocationParameters {
   VideoBitrateAllocationParameters(uint32_t total_bitrate_bps,
                                    uint32_t framerate);
   VideoBitrateAllocationParameters(DataRate total_bitrate, double framerate);
-  VideoBitrateAllocationParameters(DataRate total_bitrate,
-                                   DataRate stable_bitrate,
-                                   double framerate);
   ~VideoBitrateAllocationParameters();
 
   DataRate total_bitrate;
-  DataRate stable_bitrate;
   double framerate;
 };
 
@@ -46,15 +42,6 @@ class VideoBitrateAllocator {
   // Deprecated: Only used to work around issues with the legacy conference
   // screenshare mode and shouldn't be needed by any subclasses.
   virtual void SetLegacyConferenceMode(bool enabled);
-};
-
-class VideoBitrateAllocationObserver {
- public:
-  VideoBitrateAllocationObserver() {}
-  virtual ~VideoBitrateAllocationObserver() {}
-
-  virtual void OnBitrateAllocationUpdated(
-      const VideoBitrateAllocation& allocation) = 0;
 };
 
 }  // namespace webrtc

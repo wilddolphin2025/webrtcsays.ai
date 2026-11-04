@@ -9,17 +9,14 @@
  */
 #include "net/dcsctp/packet/error_cause/protocol_violation_cause.h"
 
-#include <stdint.h>
-
+#include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
-#include <type_traits>
 #include <vector>
 
-#include "api/array_view.h"
 #include "net/dcsctp/packet/bounded_byte_reader.h"
 #include "net/dcsctp/packet/bounded_byte_writer.h"
-#include "net/dcsctp/packet/tlv_trait.h"
 #include "rtc_base/strings/string_builder.h"
 
 namespace dcsctp {
@@ -34,10 +31,9 @@ namespace dcsctp {
 //  /                    Additional Information                     /
 //  \                                                               \
 //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-constexpr int ProtocolViolationCause::kType;
 
 std::optional<ProtocolViolationCause> ProtocolViolationCause::Parse(
-    rtc::ArrayView<const uint8_t> data) {
+    std::span<const uint8_t> data) {
   std::optional<BoundedByteReader<kHeaderSize>> reader = ParseTLV(data);
   if (!reader.has_value()) {
     return std::nullopt;
@@ -50,13 +46,13 @@ std::optional<ProtocolViolationCause> ProtocolViolationCause::Parse(
 void ProtocolViolationCause::SerializeTo(std::vector<uint8_t>& out) const {
   BoundedByteWriter<kHeaderSize> writer =
       AllocateTLV(out, additional_information_.size());
-  writer.CopyToVariableData(rtc::MakeArrayView(
+  writer.CopyToVariableData(std::span(
       reinterpret_cast<const uint8_t*>(additional_information_.data()),
       additional_information_.size()));
 }
 
 std::string ProtocolViolationCause::ToString() const {
-  rtc::StringBuilder sb;
+  webrtc::StringBuilder sb;
   sb << "Protocol Violation, additional_information="
      << additional_information_;
   return sb.Release();

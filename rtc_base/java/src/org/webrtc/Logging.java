@@ -16,6 +16,7 @@ import java.io.StringWriter;
 import java.util.EnumSet;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import org.jni_zero.NativeMethods;
 import org.webrtc.Loggable;
 
 /**
@@ -24,8 +25,8 @@ import org.webrtc.Loggable;
  * log messages will then be redirected to the injected Loggable, except those with a severity lower
  * than the specified severity, which will be discarded.
  *
- * It is also possible to switch to native logging (rtc::LogMessage) if one of the following static
- * functions are called from the app:
+ * It is also possible to switch to native logging (webrtc::LogMessage) if one
+ * of the following static functions are called from the app:
  * - Logging.enableLogThreads
  * - Logging.enableLogTimeStamps
  * - Logging.enableLogToDebugOutput
@@ -62,45 +63,16 @@ public class Logging {
     loggable = null;
   }
 
-  // TODO(solenberg): Remove once dependent projects updated.
-  @Deprecated
-  public enum TraceLevel {
-    TRACE_NONE(0x0000),
-    TRACE_STATEINFO(0x0001),
-    TRACE_WARNING(0x0002),
-    TRACE_ERROR(0x0004),
-    TRACE_CRITICAL(0x0008),
-    TRACE_APICALL(0x0010),
-    TRACE_DEFAULT(0x00ff),
-    TRACE_MODULECALL(0x0020),
-    TRACE_MEMORY(0x0100),
-    TRACE_TIMER(0x0200),
-    TRACE_STREAM(0x0400),
-    TRACE_DEBUG(0x0800),
-    TRACE_INFO(0x1000),
-    TRACE_TERSEINFO(0x2000),
-    TRACE_ALL(0xffff);
-
-    public final int level;
-    TraceLevel(int level) {
-      this.level = level;
-    }
-  }
-
   // Keep in sync with webrtc/rtc_base/logging.h:LoggingSeverity.
   public enum Severity { LS_VERBOSE, LS_INFO, LS_WARNING, LS_ERROR, LS_NONE }
 
   public static void enableLogThreads() {
-    nativeEnableLogThreads();
+    LoggingJni.get().enableLogThreads();
   }
 
   public static void enableLogTimeStamps() {
-    nativeEnableLogTimeStamps();
+    LoggingJni.get().enableLogTimeStamps();
   }
-
-  // TODO(solenberg): Remove once dependent projects updated.
-  @Deprecated
-  public static void enableTracing(String path, EnumSet<TraceLevel> levels) {}
 
   // Enable diagnostic logging for messages of `severity` to the platform debug
   // output. On Android, the output will be directed to Logcat.
@@ -113,7 +85,7 @@ public class Logging {
           "Logging to native debug output not supported while Loggable is injected. "
           + "Delete the Loggable before calling this method.");
     }
-    nativeEnableLogToDebugOutput(severity.ordinal());
+    LoggingJni.get().enableLogToDebugOutput(severity.ordinal());
     loggingEnabled = true;
   }
 
@@ -133,7 +105,7 @@ public class Logging {
 
     // Try native logging if no loggable is injected.
     if (loggingEnabled) {
-      nativeLog(severity.ordinal(), tag, message);
+      LoggingJni.get().log(severity.ordinal(), tag, message);
       return;
     }
 
@@ -195,8 +167,14 @@ public class Logging {
     return sw.toString();
   }
 
-  private static native void nativeEnableLogToDebugOutput(int nativeSeverity);
-  private static native void nativeEnableLogThreads();
-  private static native void nativeEnableLogTimeStamps();
-  private static native void nativeLog(int severity, String tag, String message);
+  @NativeMethods
+  interface Natives {
+    void enableLogToDebugOutput(int nativeSeverity);
+
+    void enableLogThreads();
+
+    void enableLogTimeStamps();
+
+    void log(int severity, String tag, String message);
+  }
 }

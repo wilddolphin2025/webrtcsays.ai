@@ -10,21 +10,33 @@
 
 #include "sdk/android/src/jni/video_decoder_wrapper.h"
 
+#include <jni.h>
+
+#include <cstdint>
+#include <memory>
+#include <optional>
+
 #include "absl/memory/memory.h"
-#include "api/environment/environment.h"
+#include "api/sequence_checker.h"
 #include "api/video/render_resolution.h"
+#include "api/video/video_codec_type.h"
 #include "api/video/video_frame.h"
 #include "api/video_codecs/video_decoder.h"
-#include "modules/video_coding/include/video_codec_interface.h"
+#include "modules/video_coding/include/video_error_codes.h"
 #include "modules/video_coding/utility/vp8_header_parser.h"
 #include "modules/video_coding/utility/vp9_uncompressed_header_parser.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/numerics/safe_conversions.h"
+#include "rtc_base/race_checker.h"
+#include "rtc_base/synchronization/mutex.h"
 #include "rtc_base/time_utils.h"
 #include "sdk/android/generated_video_jni/VideoDecoderWrapper_jni.h"
 #include "sdk/android/generated_video_jni/VideoDecoder_jni.h"
 #include "sdk/android/native_api/jni/java_types.h"
+#include "sdk/android/native_api/jni/scoped_java_ref.h"
 #include "sdk/android/src/jni/encoded_image.h"
+#include "sdk/android/src/jni/jni_helpers.h"
+#include "sdk/android/src/jni/jvm.h"
 #include "sdk/android/src/jni/video_codec_status.h"
 #include "sdk/android/src/jni/video_frame.h"
 
@@ -33,11 +45,11 @@ namespace jni {
 
 namespace {
 // RTP timestamps are 90 kHz.
-const int64_t kNumRtpTicksPerMillisec = 90000 / rtc::kNumMillisecsPerSec;
+const int64_t kNumRtpTicksPerMillisec = 90000 / kNumMillisecsPerSec;
 
 template <typename Dst, typename Src>
 inline std::optional<Dst> cast_optional(const std::optional<Src>& value) {
-  return value ? std::optional<Dst>(rtc::dchecked_cast<Dst, Src>(*value))
+  return value ? std::optional<Dst>(dchecked_cast<Dst, Src>(*value))
                : std::nullopt;
 }
 }  // namespace
@@ -106,7 +118,7 @@ int32_t VideoDecoderWrapper::Decode(const EncodedImage& image_param,
 
   FrameExtraInfo frame_extra_info;
   frame_extra_info.timestamp_ns =
-      input_image.capture_time_ms_ * rtc::kNumNanosecsPerMillisec;
+      input_image.capture_time_ms_ * kNumNanosecsPerMillisec;
   frame_extra_info.timestamp_rtp = input_image.RtpTimestamp();
   frame_extra_info.timestamp_ntp = input_image.ntp_time_ms_;
   frame_extra_info.qp =
@@ -284,3 +296,6 @@ std::unique_ptr<VideoDecoder> JavaToNativeVideoDecoder(
 
 }  // namespace jni
 }  // namespace webrtc
+
+DEFINE_JNI(VideoDecoderWrapper)
+DEFINE_JNI(VideoDecoder)

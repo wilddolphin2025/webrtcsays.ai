@@ -11,21 +11,32 @@
 #include "pc/sctp_transport.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <memory>
 #include <optional>
 #include <utility>
 
 #include "api/dtls_transport_interface.h"
 #include "api/priority.h"
+#include "api/rtc_error.h"
+#include "api/scoped_refptr.h"
+#include "api/sctp_transport_interface.h"
 #include "api/sequence_checker.h"
+#include "api/transport/data_channel_transport_interface.h"
+#include "media/sctp/sctp_transport_internal.h"
+#include "p2p/dtls/dtls_transport_internal.h"
+#include "pc/dtls_transport.h"
 #include "rtc_base/checks.h"
+#include "rtc_base/copy_on_write_buffer.h"
 #include "rtc_base/logging.h"
+#include "rtc_base/ssl_stream_adapter.h"
+#include "rtc_base/thread.h"
 
 namespace webrtc {
 
-SctpTransport::SctpTransport(
-    std::unique_ptr<cricket::SctpTransportInternal> internal,
-    rtc::scoped_refptr<DtlsTransport> dtls_transport)
-    : owner_thread_(rtc::Thread::Current()),
+SctpTransport::SctpTransport(std::unique_ptr<SctpTransportInternal> internal,
+                             scoped_refptr<DtlsTransport> dtls_transport)
+    : owner_thread_(Thread::Current()),
       info_(SctpTransportState::kConnecting,
             dtls_transport,
             /*max_message_size=*/std::nullopt,
@@ -33,15 +44,14 @@ SctpTransport::SctpTransport(
       internal_sctp_transport_(std::move(internal)),
       dtls_transport_(dtls_transport) {
   RTC_DCHECK(internal_sctp_transport_.get());
+  RTC_DCHECK(internal_sctp_transport_->dtls_transport());
   RTC_DCHECK(dtls_transport_.get());
 
-  dtls_transport_->internal()->SubscribeDtlsTransportState(
-      [this](cricket::DtlsTransportInternal* transport,
-             DtlsTransportState state) {
+  internal_sctp_transport_->dtls_transport()->SubscribeDtlsTransportState(
+      this, [this](DtlsTransportInternal* transport, DtlsTransportState state) {
         OnDtlsStateChange(transport, state);
       });
 
-  internal_sctp_transport_->SetDtlsTransport(dtls_transport->internal());
   internal_sctp_transport_->SetOnConnectedCallback(
       [this]() { OnAssociationChangeCommunicationUp(); });
 }
@@ -85,7 +95,7 @@ RTCError SctpTransport::OpenChannel(int channel_id, PriorityValue priority) {
 
 RTCError SctpTransport::SendData(int channel_id,
                                  const SendDataParams& params,
-                                 const rtc::CopyOnWriteBuffer& buffer) {
+                                 const CopyOnWriteBuffer& buffer) {
   RTC_DCHECK_RUN_ON(owner_thread_);
   return internal_sctp_transport_->SendData(channel_id, params, buffer);
 }
@@ -126,8 +136,25 @@ void SctpTransport::SetBufferedAmountLowThreshold(int channel_id,
   internal_sctp_transport_->SetBufferedAmountLowThreshold(channel_id, bytes);
 }
 
-rtc::scoped_refptr<DtlsTransportInterface> SctpTransport::dtls_transport()
-    const {
+std::optional<int> SctpTransport::MaxChannels() {
+  RTC_DCHECK_RUN_ON(owner_thread_);
+  return info_.MaxChannels();
+}
+
+std::optional<SSLRole> SctpTransport::DtlsRole() {
+  RTC_DCHECK_RUN_ON(owner_thread_);
+  if (!internal_sctp_transport_ ||
+      !internal_sctp_transport_->dtls_transport()) {
+    return std::nullopt;
+  }
+  SSLRole role;
+  if (internal_sctp_transport_->dtls_transport()->GetDtlsRole(&role)) {
+    return role;
+  }
+  return std::nullopt;
+}
+
+scoped_refptr<DtlsTransportInterface> SctpTransport::dtls_transport() const {
   RTC_DCHECK_RUN_ON(owner_thread_);
   return dtls_transport_;
 }
@@ -135,25 +162,27 @@ rtc::scoped_refptr<DtlsTransportInterface> SctpTransport::dtls_transport()
 // Internal functions
 void SctpTransport::Clear() {
   RTC_DCHECK_RUN_ON(owner_thread_);
-  RTC_DCHECK(internal());
   // Note that we delete internal_sctp_transport_, but
   // only drop the reference to dtls_transport_.
+  internal_sctp_transport_->dtls_transport()->UnsubscribeDtlsTransportState(
+      this);
   dtls_transport_ = nullptr;
   internal_sctp_transport_ = nullptr;
   UpdateInformation(SctpTransportState::kClosed);
 }
 
-void SctpTransport::Start(int local_port,
-                          int remote_port,
-                          int max_message_size) {
+bool SctpTransport::Start(const SctpOptions& options) {
   RTC_DCHECK_RUN_ON(owner_thread_);
-  info_ = SctpTransportInformation(info_.state(), info_.dtls_transport(),
-                                   max_message_size, info_.MaxChannels());
+  info_ =
+      SctpTransportInformation(info_.state(), info_.dtls_transport(),
+                               options.max_message_size, info_.MaxChannels());
 
-  if (!internal()->Start(local_port, remote_port, max_message_size)) {
+  if (!internal()->Start(options)) {
     RTC_LOG(LS_ERROR) << "Failed to push down SCTP parameters, closing.";
     UpdateInformation(SctpTransportState::kClosed);
+    return false;
   }
+  return true;
 }
 
 void SctpTransport::UpdateInformation(SctpTransportState state) {
@@ -190,10 +219,9 @@ void SctpTransport::OnAssociationChangeCommunicationUp() {
   UpdateInformation(SctpTransportState::kConnected);
 }
 
-void SctpTransport::OnDtlsStateChange(cricket::DtlsTransportInternal* transport,
+void SctpTransport::OnDtlsStateChange(DtlsTransportInternal* transport,
                                       DtlsTransportState state) {
   RTC_DCHECK_RUN_ON(owner_thread_);
-  RTC_CHECK(transport == dtls_transport_->internal());
   if (state == DtlsTransportState::kClosed ||
       state == DtlsTransportState::kFailed) {
     UpdateInformation(SctpTransportState::kClosed);

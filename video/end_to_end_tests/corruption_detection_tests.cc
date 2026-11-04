@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "api/environment/environment.h"
+#include "api/rtp_header_extension_id.h"
 #include "api/rtp_parameters.h"
 #include "api/task_queue/task_queue_base.h"
 #include "api/test/video/function_video_decoder_factory.h"
@@ -23,7 +24,7 @@
 #include "modules/video_coding/codecs/vp8/include/vp8.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/task_queue_for_test.h"
-#include "system_wrappers/include/sleep.h"
+#include "rtc_base/thread.h"
 #include "test/call_test.h"
 #include "test/gtest.h"
 #include "test/video_test_constants.h"
@@ -33,8 +34,8 @@ namespace webrtc {
 namespace {
 RtpExtension GetCorruptionExtension() {
   return RtpExtension(RtpExtension::kCorruptionDetectionUri,
-                      /*extension_id=*/1,
-                      /*encrypted=*/true);
+                      RtpHeaderExtensionId(1),
+                      /*encrypt=*/true);
 }
 }  // namespace
 
@@ -91,7 +92,7 @@ TEST_F(
       constexpr int kMaxIterations = 200;
       bool corruption_score_reported = false;
       for (int i = 0; i < kMaxIterations; ++i) {
-        SleepMs(10);
+        Thread::SleepMs(10);
         VideoReceiveStreamInterface::Stats stats;
         SendTask(task_queue_, [&]() {
           ASSERT_EQ(receive_streams_.size(), 1u);

@@ -83,13 +83,3 @@ grep -m1 "Ending call (media" "$LOG/callee.log" | sed 's/^/      /'
 kill -KILL $CALLER 2>/dev/null; wait $CALLER 2>/dev/null
 kill -TERM $CALLEE; wait $CALLEE
 echo "PASS 4: frozen caller -> callee hung up on media loss"
-
-# 4. Frozen peer: TCP stays open, only media liveness can detect it.
-start_callee
-start_caller frozen
-kill -STOP $CALLER
-wait_log "$LOG/callee.log" "Ending call (media" 30 || fail "4: callee kept a frozen call"
-grep -m1 "Ending call (media" "$LOG/callee.log" | sed 's/^/      /'
-kill -KILL $CALLER 2>/dev/null; wait $CALLER 2>/dev/null
-kill -TERM $CALLEE; wait $CALLEE
-echo "PASS 4: frozen caller -> callee hung up on media loss"

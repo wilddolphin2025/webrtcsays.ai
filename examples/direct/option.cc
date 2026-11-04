@@ -193,6 +193,7 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --call_setup_timeout_ms=<ms>       Abort a call not connected within this time (default: 45000)\n"
       "  --media_grace_ms=<ms>              Hang up after media stays disconnected this long (default: 10000)\n"
       "  --hangup_ack_timeout_ms=<ms>       Wait this long for 200 OK after BYE (default: 2000)\n"
+      "  --tts_voice=<clip>                 Personalized TTS voice: reference clip in POCKET_TTS_VOICES_DIR\n"
       "  --help                             Show this help message\n\n"
       "Examples (callee called first, encryption is recommended):\n"
       "  directcall --config settings.json\n"
@@ -211,7 +212,7 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--llama_llava_yuv", "--turns", "--vpn", "--camera", "--bonjour_name",
     "--user_name", "--target_name", "--room_name",
     "--websocket_signaling", "--no-websocket_signaling", "--websocket_port",
-    "--call_setup_timeout_ms", "--media_grace_ms", "--hangup_ack_timeout_ms",
+    "--call_setup_timeout_ms", "--media_grace_ms", "--hangup_ack_timeout_ms", "--tts_voice",
     "--help"
   };
 
@@ -438,6 +439,10 @@ Options parseOptions(const std::vector<std::string>& args) {
           }
         }
 
+        if (config_json.isMember("tts_voice") && config_json["tts_voice"].isString()) {
+          opts.tts_voice = config_json["tts_voice"].asString();
+        }
+
         RTC_LOG(LS_INFO) << "Loaded options from config file: " << opts.config_path;
       } else {
         RTC_LOG(LS_ERROR) << "Failed to parse config file " << opts.config_path << " from buffer: " << errs;
@@ -526,6 +531,8 @@ Options parseOptions(const std::vector<std::string>& args) {
         opts.media_grace_ms = std::stoi(arg.substr(17));
     } else if (arg.find("--hangup_ack_timeout_ms=") == 0) {
         opts.hangup_ack_timeout_ms = std::stoi(arg.substr(24));
+    } else if (arg.find("--tts_voice=") == 0) {
+        opts.tts_voice = arg.substr(12);
     }
     // Handle flags
     if (arg == "--encryption") {

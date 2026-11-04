@@ -532,6 +532,18 @@ void DirectPeer::Start() {
 
 #include "rtc_base/base64.h"
 
+// Value of a top-level string field in the small INVITE JSON, or "".
+[[maybe_unused]] static std::string ExtractJsonStringField(const std::string& json, const std::string& key) {
+  size_t pos = json.find("\"" + key + "\"");
+  if (pos == std::string::npos) return "";
+  pos = json.find(':', pos);
+  if (pos == std::string::npos) return "";
+  size_t start = json.find('"', pos + 1);
+  if (start == std::string::npos) return "";
+  size_t end = json.find('"', start + 1);
+  if (end == std::string::npos) return "";
+  return json.substr(start + 1, end - start - 1);
+}
 
 void DirectPeer::HandleMessage(webrtc::AsyncPacketSocket* socket,
                              const std::string& message,
@@ -561,6 +573,14 @@ void DirectPeer::HandleMessage(webrtc::AsyncPacketSocket* socket,
           }
         }
 
+#if defined(WEBRTC_SPEECH_DEVICES)
+        if (message.size() > kPrefixLen + 1) {
+          std::string voice = ExtractJsonStringField(message.substr(kPrefixLen + 1), "voice");
+          if (!voice.empty()) {
+            webrtc::SpeechAudioDeviceFactory::SetTTSVoice(voice);
+          }
+        }
+#endif
         if (!is_caller()) {
           Start();
         } else {
@@ -603,6 +623,14 @@ void DirectPeer::HandleMessage(webrtc::AsyncPacketSocket* socket,
       }
 #else
       RTC_LOG(LS_WARNING) << "FACE command ignored: build has no WEBRTC_SPEECH_DEVICES";
+#endif
+    } else if (message.find(Msg::kVoicePrefix) == 0) {
+      // The TTS server validates the name against its voices directory.
+      std::string voice = message.substr(sizeof(Msg::kVoicePrefix) - 1);
+#if defined(WEBRTC_SPEECH_DEVICES)
+      webrtc::SpeechAudioDeviceFactory::SetTTSVoice(voice);
+#else
+      RTC_LOG(LS_WARNING) << "VOICE ignored: build has no WEBRTC_SPEECH_DEVICES";
 #endif
     } else if (message.find(Msg::kIcePrefix) == 0) {
       std::string payload = message.substr(sizeof(Msg::kIcePrefix) - 1);

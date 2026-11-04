@@ -81,6 +81,10 @@ class SpeechAudioDeviceFactory {
   static void SetWhisperThreads(int n) { _whisperThreads = n; }
   static void SetLlamaThreads(int n) { _llamaThreads = n; }
   static void SetTTSThreads(int n) { _ttsThreads = n; }
+  // Personalized TTS voice (a reference clip name on the TTS server). Takes
+  // effect immediately when TTS is running, else when it starts.
+  static void SetTTSVoice(const std::string& voice);
+  static void ApplyTTSVoice();
   static int GetWhisperThreads() { return _whisperThreads; }
   static int GetLlamaThreads() { return _llamaThreads; }
   static int GetTTSThreads() { return _ttsThreads; }
@@ -121,6 +125,7 @@ class SpeechAudioDeviceFactory {
   static int _whisperThreads;
   static int _llamaThreads;
   static int _ttsThreads;
+  static inline std::string _ttsVoice;
 
   // This is a whisper device, to send to whisper
   static std::unique_ptr<WhillatsTranscriber> _whisperDevice;

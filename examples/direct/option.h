@@ -113,6 +113,7 @@ struct Options {
     int call_setup_timeout_ms = 45000;  // INVITE -> media connected
     int media_grace_ms = 10000;         // tolerated PeerConnection "disconnected"
     int hangup_ack_timeout_ms = 2000;   // BYE -> 200 OK before force-close
+    std::string tts_voice{};            // default cloned voice (Pocket TTS clip name)
 };
 
 // Function to parse command line string to above options

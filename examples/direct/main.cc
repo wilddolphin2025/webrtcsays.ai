@@ -371,6 +371,11 @@ class DirectWebSocketProxy {
       return "ICE:" + std::to_string(mline) + ":" + candidate;
     }
     if (type == "hangup") return "BYE";
+    if (type == "voice") {
+      std::string name;
+      ExtractJsonString(in, "name", name);
+      return name.empty() ? "" : ("VOICE:" + name);
+    }
     if (type == "cancel") return "CANCEL";
     if (type == "face") {
       std::string data;

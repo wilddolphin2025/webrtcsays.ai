@@ -285,6 +285,10 @@ bool DirectApplication::CreatePeerConnection() {
       opts_.llama_llava_yuv_width, opts_.llama_llava_yuv_height);
   }
 
+  if (!opts_.tts_voice.empty()) {
+    webrtc::SpeechAudioDeviceFactory::SetTTSVoice(opts_.tts_voice);
+  }
+
   if (!opts_.talking_face.empty()) {
     if (!webrtc::SpeechAudioDeviceFactory::talkingFace()) {
       webrtc::SpeechAudioDeviceFactory::SetTalkingFaceImage(opts_.talking_face);

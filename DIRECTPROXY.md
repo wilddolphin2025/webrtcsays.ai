@@ -51,6 +51,7 @@ Optional/legacy side messages still recognized by protocol family:
 - `WHISPER[xx]<text>`
 - `LLAMA[xx]<text>`
 - `FACE:<base64 image>` — replace the talking-face avatar
+- `VOICE:<clip>` — switch the robot's TTS voice mid-call (see below)
 
 ## Ending a Call
 
@@ -83,6 +84,19 @@ a WebSocket close frame (1000, or 1001 during shutdown).
 `scripts/ci/test_direct_shutdown.sh` and `scripts/ci/test_ws_bridge.py` exercise
 these paths end to end on loopback.
 
+## Personalized Voices
+
+With a whillats build that has `WHILLATS_POCKET_TTS`, the robot speaks with a
+voice cloned from a 6–15 s reference clip (Kyutai Pocket TTS). Clips live in
+`POCKET_TTS_VOICES_DIR` on the server; peers can only pick clips by bare file
+name, never by path.
+
+- Per call: `INVITE:{"agent":"audio","voice":"grandpa.wav"}`
+- Mid-call: `VOICE:grandpa.wav` (JSON bridge: `{"type":"voice","name":"grandpa.wav"}`)
+- Default: `--tts_voice=grandpa.wav` or `"tts_voice"` in the config file
+
+Only clone voices you have the speaker's documented consent for, and tell
+listeners that the voice is synthetic (Kyutai's acceptable-use policy).
 
 ## Browser Call Flow (Expected Sequence)
 

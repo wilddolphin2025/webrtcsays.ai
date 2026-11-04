@@ -372,13 +372,19 @@ void WhisperAudioDevice::interruptLlama() {
   // 2. Drop pending LLaMa sentences (the recording thread owns the ring tail)
   _llamaDropPending.store(true, std::memory_order_release);
 
-  // 3. Clear TTS text queue
+  // 3. Stop the synthesizer first so audio already in flight does not refill
+  //    the buffer cleared below.
+  if (_tts) {
+    _tts->interrupt();
+  }
+
+  // 4. Clear TTS text queue
   {
     absl::MutexLock lock(&_queueMutex);
     std::queue<std::string> empty;
     std::swap(_textQueue, empty);
 
-    // 4. Clear TTS audio buffer
+    // 5. Clear TTS audio buffer
     _ttsBuffer.clear();
     _ttsIndex = 0;
     _isSpeaking.store(false, std::memory_order_relaxed);
@@ -386,7 +392,7 @@ void WhisperAudioDevice::interruptLlama() {
 
   RTC_LOG(LS_INFO) << "Interrupted: LLaMa stopped, TTS queue and buffer cleared";
 
-  // 5. Restart LLaMa so it can accept new requests
+  // 6. Restart LLaMa so it can accept new requests
   if (_llama_device) {
     _llama_device->start();
   }
@@ -568,6 +574,7 @@ int32_t WhisperAudioDevice::InitPlayout() {
 
   _tts = SpeechAudioDeviceFactory::CreateWhillatsTTS(_ttsCallback);
   if(_tts && _tts->start()) {
+    SpeechAudioDeviceFactory::ApplyTTSVoice();
     _tts_enabled = true;
     RTC_LOG(LS_INFO) << "TTS enabled...";
   }

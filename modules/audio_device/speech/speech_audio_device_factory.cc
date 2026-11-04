@@ -112,6 +112,7 @@ void SpeechAudioDeviceFactory::NotifyText(const std::string& text, const std::st
     if(tts) {
       // Starting TTS via notifications, avoiding audio processor. Valuable for iOS.
       tts->start(false);
+      ApplyTTSVoice();
     }
   }
   if(_ttsDevice)
@@ -197,6 +198,22 @@ AudioDeviceGeneric* SpeechAudioDeviceFactory::CreateSpeechAudioDevice() {
   }
 
   return static_cast<AudioDeviceGeneric*>(whisper_audio_device);
+}
+
+}  // namespace webrtc
+
+namespace webrtc {
+
+void SpeechAudioDeviceFactory::SetTTSVoice(const std::string& voice) {
+  _ttsVoice = voice;
+  ApplyTTSVoice();
+}
+
+void SpeechAudioDeviceFactory::ApplyTTSVoice() {
+  if (_ttsDevice && !_ttsVoice.empty() && !_ttsDevice->setVoice(_ttsVoice.c_str())) {
+    RTC_LOG(LS_WARNING) << "TTS backend has no voice cloning; ignoring voice "
+                        << _ttsVoice;
+  }
 }
 
 }  // namespace webrtc

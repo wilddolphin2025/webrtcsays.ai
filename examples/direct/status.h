@@ -67,6 +67,9 @@ inline constexpr const char kUsersPrefix[] = "USERS:";   // targeted USERS:<user
 // Talking face image upload
 inline constexpr const char kFacePrefix[]  = "FACE:";
 
+// Personalized TTS voice: VOICE:<clip name known to the TTS server>
+inline constexpr const char kVoicePrefix[] = "VOICE:";
+
 } // namespace Msg
 
 #endif // EXAMPLES_DIRECT_STATUS_H_ 

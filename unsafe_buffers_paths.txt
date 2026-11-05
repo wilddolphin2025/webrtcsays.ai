@@ -12,6 +12,7 @@
 -third_party/
 
 # Directory-level exceptions, to be worked on
+-examples/direct/
 -examples/objc/
 -modules/audio_device/mac/
 -modules/audio_device/speech/

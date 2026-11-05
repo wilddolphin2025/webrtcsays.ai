@@ -165,9 +165,9 @@ public:
     explicit DirectCallerClient(const Options& opts);
     ~DirectCallerClient();
 
-    bool Initialize();
+    bool Initialize() override;
     bool Connect();
-    void Disconnect();
+    void Disconnect() override;
     bool IsConnected() const;
     void RunOnBackgroundThread();
     bool WaitUntilConnectionClosed(int timeout_ms = 5000);
@@ -223,7 +223,7 @@ public:
     // Forward signalling-line (LLAMA:, WHISPER:, etc.) to caller via WebSocket.
     bool SendMessage(const std::string& message) override;
 
-    bool Initialize();
+    bool Initialize() override;
     bool StartListening();
     void StopListening();
     bool IsListening() const;
@@ -231,7 +231,7 @@ public:
     void RunOnBackgroundThread();
     bool WaitUntilConnectionClosed(int timeout_ms = 5000);
     void ResetConnectionClosedEvent();
-    void SignalQuit();
+    void SignalQuit() override;
     
 private:
     void onIncomingCall(const std::string& peer_id, const std::string& sdp);

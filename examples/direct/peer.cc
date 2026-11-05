@@ -186,7 +186,9 @@ class TalkingFaceRenderer {
 };
 
 // One avatar per process: the callee serves a single call at a time.
-static std::unique_ptr<TalkingFaceRenderer> s_talking_face_renderer;
+// A raw pointer, not a unique_ptr: a global unique_ptr has an exit-time
+// destructor, which this build rejects.
+static TalkingFaceRenderer* s_talking_face_renderer = nullptr;
 
 void StopTalkingFaceRenderer();
 
@@ -204,7 +206,7 @@ CreateTalkingFaceVideoSource(DirectPeer* owner) {
   auto track_source = FakeVideoTrackSource::Create(false);
   track_source->SetState(MediaSourceInterface::kLive);
 
-  s_talking_face_renderer = std::make_unique<TalkingFaceRenderer>(track_source, face, 24);
+  s_talking_face_renderer = new TalkingFaceRenderer(track_source, face, 24);
   s_talking_face_renderer->Start();
 
   RTC_LOG(LS_INFO) << "TalkingFace video source created (640x480@24fps)";
@@ -214,7 +216,8 @@ CreateTalkingFaceVideoSource(DirectPeer* owner) {
 
 void StopTalkingFaceRenderer() {
 #if defined(WEBRTC_SPEECH_DEVICES)
-  s_talking_face_renderer.reset();
+  delete s_talking_face_renderer;
+  s_talking_face_renderer = nullptr;
 #endif
 }
 

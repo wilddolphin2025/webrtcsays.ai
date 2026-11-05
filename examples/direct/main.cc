@@ -51,7 +51,11 @@ constexpr int kShutdownDeadlineMs = 10000;
 // Only async-signal-safe calls in here: write(2) and _exit(2).
 extern "C" void signalHandler(int /*signal*/) {
     g_shutdown = 1;
-    if (++g_shutdown_count >= 2) {
+    // C++20 deprecates ++ on a volatile. A plain read and write of
+    // sig_atomic_t is the signal-safe form.
+    const sig_atomic_t n = g_shutdown_count + 1;
+    g_shutdown_count = n;
+    if (n >= 2) {
         static const char kMsg[] = "\nSecond termination signal, exiting now\n";
         (void)!write(STDERR_FILENO, kMsg, sizeof(kMsg) - 1);
         _exit(130);

@@ -486,6 +486,9 @@ build_whillats() {
     # WHILLATS_TTS_FLAGS="-DWHILLATS_STYLETTS2=ON" etc. picks other engines.
     TTS_FLAGS="${WHILLATS_TTS_FLAGS:--DWHILLATS_PIPER=ON -DWHILLATS_POCKET_TTS=ON}"
     echo "[build-whillats] TTS flags: $TTS_FLAGS"
+    # pocket-tts-raven fetches dr_libs with GIT_SHALLOW and a commit pin.
+    # A shallow clone only has the default-branch tip, so the pin is missing.
+    perl -0pi -e 's/(GIT_TAG cd99e2cca5ccb48f8d000f1cd844424dcdbbaf59 # dr_libs pinned\n)\s*GIT_SHALLOW TRUE\n/$1/'         "$WHILLATS_DIR/third_party/pocket-tts-raven/CMakeLists.txt" 2>/dev/null || true
     timeout 1200 cmake -S . -B build -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE $GPU_FLAGS $TTS_FLAGS || {
         echo "[build-whillats] CMake configuration failed. Retrying with verbose output..."
         cmake -S . -B build -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE $GPU_FLAGS $TTS_FLAGS -DCMAKE_VERBOSE_MAKEFILE=ON

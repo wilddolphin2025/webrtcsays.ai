@@ -125,7 +125,7 @@ class SpeechAudioDeviceFactory {
   static int _whisperThreads;
   static int _llamaThreads;
   static int _ttsThreads;
-  static inline std::string _ttsVoice;
+  static std::string _ttsVoice;
 
   // This is a whisper device, to send to whisper
   static std::unique_ptr<WhillatsTranscriber> _whisperDevice;

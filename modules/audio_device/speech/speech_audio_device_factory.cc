@@ -44,6 +44,7 @@ bool SpeechAudioDeviceFactory::_llamaEnabled = false;
 int SpeechAudioDeviceFactory::_whisperThreads = 0;
 int SpeechAudioDeviceFactory::_llamaThreads = 0;
 int SpeechAudioDeviceFactory::_ttsThreads = 0;
+std::string SpeechAudioDeviceFactory::_ttsVoice;
 
 // Static queue and mutex for enqueued TTS text tasks
 std::unique_ptr<TaskQueueBase, TaskQueueDeleter> SpeechAudioDeviceFactory::_textToSpeakQueue;

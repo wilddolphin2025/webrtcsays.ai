@@ -203,7 +203,15 @@ git -C src checkout -B "$SRC_GIT_REF" FETCH_HEAD 2>/dev/null ||
 git -C src submodule update --init --recursive --depth=1 modules/third_party/whillats
 
 echo "Syncing dependencies for $(git -C src rev-parse --short HEAD) ..."
-gclient sync -D --force --no-history --shallow -j "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+gclient sync -D --force --nohooks --no-history --shallow -j "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+# Hooks, gn and ninja must use the depot_tools this DEPS pins: an older
+# ~/depot_tools cannot parse newer vpython.toml files ("requires-python").
+if [ -x "src/third_party/depot_tools/gclient" ]; then
+    PATH="$REPO_ROOT/src/third_party/depot_tools:$PATH"
+    export DEPOT_TOOLS_UPDATE=0
+    echo "Using pinned depot_tools from src/third_party/depot_tools"
+fi
+gclient runhooks
 if [ ! -f "src/build/dotfile_settings.gni" ] ||
    ! grep -q expand_directory_allowlist src/build/dotfile_settings.gni; then
     echo "ERROR: src/build does not match src/DEPS after gclient sync."

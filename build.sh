@@ -208,8 +208,14 @@ gclient sync -D --force --nohooks --no-history --shallow -j "$(getconf _NPROCESS
 # ~/depot_tools cannot parse newer vpython.toml files ("requires-python").
 if [ -x "src/third_party/depot_tools/gclient" ]; then
     PATH="$REPO_ROOT/src/third_party/depot_tools:$PATH"
-    export DEPOT_TOOLS_UPDATE=0
     echo "Using pinned depot_tools from src/third_party/depot_tools"
+    # DEPOT_TOOLS_UPDATE=0 skips this, and gn then fails with
+    # "python3_bin_reldir.txt not found".
+    if [ ! -f "src/third_party/depot_tools/python3_bin_reldir.txt" ]; then
+        echo "Bootstrapping pinned depot_tools ..."
+        ( cd src/third_party/depot_tools && DEPOT_TOOLS_UPDATE=1 ./ensure_bootstrap )
+    fi
+    export DEPOT_TOOLS_UPDATE=0
 fi
 gclient runhooks
 if [ ! -f "src/build/dotfile_settings.gni" ] ||

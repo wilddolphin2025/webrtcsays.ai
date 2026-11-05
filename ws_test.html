@@ -101,9 +101,8 @@
       const out = [];
       currentMedia = "";
       for (const line of lines) {
-        if (line.startsWith("a=ssrc:")) continue;
-        if (line.startsWith("a=ssrc-group:")) continue;
-        if (line.startsWith("a=msid:")) continue;
+        // Keep a=ssrc and a=msid. Without them the robot treats remote audio as
+        // unsignaled and never starts playout, so TTS and the talking face stay idle.
         if (/ulpfec|flexfec|rtx|red/i.test(line)) continue;
 
         if (line.startsWith("m=audio ") || line.startsWith("m=video ")) {

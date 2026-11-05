@@ -14,7 +14,6 @@
 #include <cstdio>
 #include <thread>
 #include <iomanip>
-#include <filesystem>
 #include <memory>
 #include <cstring>
 #include <algorithm>
@@ -266,6 +265,13 @@ bool WhisperAudioDevice::MicrophoneIsInitialized() const {
 }
 
 int32_t WhisperAudioDevice::StartRecording() {
+  {
+    MutexLock lock(&mutex_);
+    // The send path is what the browser hears. Start TTS here so the greeting
+    // and later answers are spoken even if remote audio has not arrived yet.
+    StartSpeechEngines();
+  }
+
   _recording = true;
 
   // Allocate recording buffer
@@ -287,13 +293,7 @@ int32_t WhisperAudioDevice::StartRecording() {
   }
   #endif // defined(PLAY_WAV_ON_RECORD)
 
-  // Speak the llama model name
-  std::filesystem::path llama_model_path = std::filesystem::path(SpeechAudioDeviceFactory::GetLlamaModelFilename());
-  std::string llama_model_name = llama_model_path.stem().string();
-  if(!llama_model_name.empty())
-    speakText(llama_model_name + " ready to chat");
-  else
-    speakText("Whisper speech synthesis ready to chat");
+  speakText("Hello, I am ready.");
 
   _ptrThreadRec = webrtc::PlatformThread::SpawnJoinable(
       [this] {
@@ -508,17 +508,17 @@ bool WhisperAudioDevice::RecThreadProcess() {
     }
 
     _lastCallRecordMillis = currentTime;
-  } else {
-    // Pacing for the next 10ms chunk
-    int64_t sleepTime = 10 - (webrtc::TimeMillis() - currentTime);
-    if (sleepTime > 0) {
-      mutex_.Unlock();
-      webrtc::Thread::SleepMs(sleepTime);
-      mutex_.Lock();
-    }
   }
 
   mutex_.Unlock();
+
+  // Sleep out the rest of this 10ms period. Sleeping in the next iteration
+  // added a full extra 10ms, so the sender ran at about half rate and the
+  // receiver heard gaps where the missing samples should have been.
+  int64_t deltaTimeMillis = webrtc::TimeMillis() - currentTime;
+  if (deltaTimeMillis < 10) {
+    webrtc::Thread::SleepMs(10 - deltaTimeMillis);
+  }
   return true;
 }
 
@@ -565,12 +565,11 @@ int32_t WhisperAudioDevice::SetPlayoutDevice(
   return -1;
 }
 
-int32_t WhisperAudioDevice::InitPlayout() {
-  MutexLock lock(&mutex_);
-
-  if (_playing) {
-    return -1;
+void WhisperAudioDevice::StartSpeechEngines() {
+  if (_engines_started) {
+    return;
   }
+  _engines_started = true;
 
   _tts = SpeechAudioDeviceFactory::CreateWhillatsTTS(_ttsCallback);
   if(_tts && _tts->start()) {
@@ -594,6 +593,16 @@ int32_t WhisperAudioDevice::InitPlayout() {
     _llama_enabled = true;
     RTC_LOG(LS_INFO) << "Llama enabled, model: " << SpeechAudioDeviceFactory::GetLlamaModelFilename() << "...";
   }
+}
+
+int32_t WhisperAudioDevice::InitPlayout() {
+  MutexLock lock(&mutex_);
+
+  if (_playing) {
+    return -1;
+  }
+
+  StartSpeechEngines();
 
   _playoutFramesIn10MS = static_cast<size_t>(kPlayoutFixedSampleRate / 100);
 
@@ -620,7 +629,7 @@ int32_t WhisperAudioDevice::StartPlayout() {
     return 0;
   }
 
-  if (!_tts) {
+  if (!PlayoutIsInitialized()) {
     InitPlayout();
   }
 
@@ -713,6 +722,7 @@ int32_t WhisperAudioDevice::StopPlayout() {
 
   // Release cached helper devices so that the next AudioDevice instance will
   // recreate them with fresh callbacks.
+  _engines_started = false;
   SpeechAudioDeviceFactory::ResetDevices();
 
   return 0;
@@ -770,7 +780,9 @@ bool WhisperAudioDevice::PlayThreadProcess() {
 
     {
       std::lock_guard<std::mutex> tlock(_transcriber_mutex);
-      if (_whisper_transcriber) {
+      // While TTS is playing, the browser mic hears that audio. Feeding it to
+      // Whisper transcribes the robot's own voice and cuts the sentence off.
+      if (_whisper_transcriber && !_isSpeaking.load(std::memory_order_relaxed)) {
         _whisper_transcriber->processAudioBuffer(reinterpret_cast<uint8_t*>(_playoutBuffer),
                                                 kPlayoutBufferSize);
       }

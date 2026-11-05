@@ -139,6 +139,11 @@ class WhisperAudioDevice : public SpeechAudioDevice {
  private:
   bool RecThreadProcess();
   bool PlayThreadProcess();
+  // TTS, Whisper, and Llama used to start only from InitPlayout. A browser
+  // call can be sending (recording) long before any remote audio packet
+  // arrives, and playout never starts until then. Start the engines from
+  // whichever side comes up first. Caller must hold mutex_.
+  void StartSpeechEngines();
 
   webrtc::TaskQueueFactory* _task_queue_factory;
 
@@ -159,6 +164,7 @@ class WhisperAudioDevice : public SpeechAudioDevice {
 
   bool _recording;
   bool _playing;
+  bool _engines_started = false;
   
   int64_t _lastCallPlayoutMillis;
   int64_t _lastCallRecordMillis;

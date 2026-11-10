@@ -20,12 +20,6 @@
 
 namespace {
 
-void WritePlane(uint8_t* dst, int stride, int width, int height, uint8_t value) {
-  for (int y = 0; y < height; ++y) {
-    std::memset(dst + y * stride, value, width);
-  }
-}
-
 void PaintPattern(webrtc::I420Buffer* buf, int frame_index) {
   static const uint8_t kY[8] = {235, 210, 170, 145, 106, 81, 41, 16};
   static const uint8_t kU[8] = {128, 16, 166, 54, 202, 90, 240, 128};

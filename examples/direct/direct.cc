@@ -776,7 +776,7 @@ void DirectApplication::ConfigureOutgoingVideo() {
   if (!peer_connection_ || !peer_connection_factory_ || !opts_.video) return;
   const auto caps =
       peer_connection_factory_->GetRtpSenderCapabilities(webrtc::MediaType::VIDEO).codecs;
-  const auto preferred = OrderVideoCodecs(caps, opts_.video_codec);
+  auto preferred = OrderVideoCodecs(caps, opts_.video_codec);
   const int width = opts_.video_width > 0 ? opts_.video_width : 1920;
   const int height = opts_.video_height > 0 ? opts_.video_height : 1080;
   const int fps = opts_.video_fps > 0 ? opts_.video_fps : 30;
@@ -784,7 +784,8 @@ void DirectApplication::ConfigureOutgoingVideo() {
   for (const auto& transceiver : peer_connection_->GetTransceivers()) {
     if (!transceiver || transceiver->media_type() != webrtc::MediaType::VIDEO) continue;
     if (!preferred.empty()) {
-      auto err = transceiver->SetCodecPreferences(preferred);
+      std::span<webrtc::RtpCodecCapability> codec_span(preferred.data(), preferred.size());
+      auto err = transceiver->SetCodecPreferences(codec_span);
       if (!err.ok()) {
         RTC_LOG(LS_ERROR) << "SetCodecPreferences failed: " << err.message();
       } else {

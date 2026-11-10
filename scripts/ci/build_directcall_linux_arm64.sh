@@ -23,6 +23,25 @@ if [[ -f "${ROOT_DIR}/build/linux/sysroot_scripts/install-sysroot.py" ]]; then
   python3 "${ROOT_DIR}/build/linux/sysroot_scripts/install-sysroot.py" --arch=arm64
 fi
 
+# Chromium enables experimental ELF CREL for arm64. That encoding segfaults
+# in the Linux loader on aarch64 (crbug.com/376278218, which already excludes
+# 32-bit arm). Drop it so the binary runs under qemu and on SteamOS.
+python3 - "${ROOT_DIR}/build/config/compiler/BUILD.gn" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = 'current_cpu != "arm" && current_cpu != "s390x"'
+new = 'current_cpu != "arm" && current_cpu != "arm64" && current_cpu != "s390x"'
+if old not in text:
+    raise SystemExit("CREL guard not found in compiler BUILD.gn")
+if 'current_cpu != "arm64"' not in text[text.find("Enable ELF CREL"):text.find("Enable ELF CREL")+500]:
+    text = text.replace(old, new, 1)
+    path.write_text(text)
+    print("disabled ELF CREL for arm64")
+else:
+    print("ELF CREL already disabled for arm64")
+PY
+
 GN_BIN=""
 for candidate in \
   "${ROOT_DIR}/buildtools/linux64/gn" \
@@ -53,7 +72,6 @@ symbol_level=1
 rtc_include_tests=false
 rtc_build_examples=true
 rtc_build_tools=false
-rtc_build_sdk=false
 rtc_include_opus=true
 rtc_enable_protobuf=false
 enable_js_protobuf=false
@@ -64,6 +82,7 @@ rtc_use_h265=false
 ffmpeg_branding="Chrome"
 rtc_include_pulse_audio=true
 rtc_use_pipewire=false
+rtc_use_x11=false
 rtc_use_speech_audio_devices=false
 rtc_enable_symbol_export=true
 is_component_build=false

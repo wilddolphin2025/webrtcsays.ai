@@ -25,7 +25,6 @@ fi
 
 GN_BIN=""
 for candidate in \
-  "${HOME}/depot_tools/gn" \
   "${ROOT_DIR}/buildtools/linux64/gn" \
   "$(command -v gn || true)"; do
   if [[ -n "${candidate}" && -x "${candidate}" ]]; then

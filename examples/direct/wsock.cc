@@ -286,8 +286,8 @@ bool WebSocketClient::setup_ssl_context() {
   // Enable TLS extensions and SNI
   SSL_CTX_set_options(ssl_ctx_, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
 
-  // Load client certificate if provided
-  if (!config_.cert_file_path.empty()) {
+  // Load client certificate if provided. A missing default cert.pem is normal.
+  if (!config_.cert_file_path.empty() && access(config_.cert_file_path.c_str(), R_OK) == 0) {
     APP_LOG(AS_INFO) << "Loading client certificate from: " << config_.cert_file_path;
     if (SSL_CTX_use_certificate_file(ssl_ctx_, config_.cert_file_path.c_str(), SSL_FILETYPE_PEM) <= 0) {
       log_ssl_error("Failed to load certificate file");
@@ -296,7 +296,7 @@ bool WebSocketClient::setup_ssl_context() {
   }
 
   // Load private key if provided
-  if (!config_.key_file_path.empty()) {
+  if (!config_.key_file_path.empty() && access(config_.key_file_path.c_str(), R_OK) == 0) {
     APP_LOG(AS_INFO) << "Loading private key from: " << config_.key_file_path;
     if (SSL_CTX_use_PrivateKey_file(ssl_ctx_, config_.key_file_path.c_str(), SSL_FILETYPE_PEM) <= 0) {
       log_ssl_error("Failed to load private key file");
@@ -335,8 +335,8 @@ bool WebSocketClient::perform_ssl_handshake() {
     // Continue anyway, SNI is not critical
   }
   if (config_.verify_tls) {
-    X509_VERIFY_PARAM* param = SSL_get0_param(ssl_);
-    if (!param || X509_VERIFY_PARAM_set1_host(param, config_.host.c_str(), 0) != 1) {
+    // namelen 0 is not "use strlen" here; pass the host length explicitly.
+    if (SSL_set1_host(ssl_, config_.host.c_str()) != 1) {
       APP_LOG(AS_ERROR) << "Failed to pin TLS hostname";
       SSL_free(ssl_);
       ssl_ = nullptr;

@@ -1036,6 +1036,9 @@ if (!build_with_chromium) {
       if (rtc_use_speech_audio_devices) {
         defines += [ "WEBRTC_SPEECH_DEVICES", "LLAMA_NOTIFICATION_ENABLED" ]
       }
+      if (rtc_use_h264) {
+        defines += [ "WEBRTC_USE_H264" ]
+      }
 
       cflags = []
       if (is_mac) {

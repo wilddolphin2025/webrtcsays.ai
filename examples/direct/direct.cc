@@ -26,12 +26,10 @@
 #include <cstdlib>
 #include "rtc_base/time_utils.h"
 #include "api/video_codecs/video_decoder_factory_template.h"
-#include "api/video_codecs/video_decoder_factory_template_dav1d_adapter.h"
 #include "api/video_codecs/video_decoder_factory_template_libvpx_vp8_adapter.h"
 #include "api/video_codecs/video_decoder_factory_template_libvpx_vp9_adapter.h"
 #include "api/video_codecs/video_decoder_factory_template_open_h264_adapter.h"
 #include "api/video_codecs/video_encoder_factory_template.h"
-#include "api/video_codecs/video_encoder_factory_template_libaom_av1_adapter.h"
 #include "api/video_codecs/video_encoder_factory_template_libvpx_vp8_adapter.h"
 #include "api/video_codecs/video_encoder_factory_template_libvpx_vp9_adapter.h"
 #include "api/video_codecs/video_encoder_factory_template_open_h264_adapter.h"
@@ -349,16 +347,15 @@ bool DirectApplication::CreatePeerConnection() {
     deps.audio_decoder_factory = webrtc::CreateBuiltinAudioDecoderFactory();
     deps.audio_processing_builder =
         std::make_unique<webrtc::BuiltinAudioProcessingBuilder>();
+    // H.264 first, then VP8 and VP9. AV1 and HEVC are not offered.
     deps.video_encoder_factory = std::make_unique<webrtc::VideoEncoderFactoryTemplate<
-        webrtc::LibvpxVp8EncoderTemplateAdapter,
-        webrtc::LibvpxVp9EncoderTemplateAdapter,
         webrtc::OpenH264EncoderTemplateAdapter,
-        webrtc::LibaomAv1EncoderTemplateAdapter>>();
+        webrtc::LibvpxVp8EncoderTemplateAdapter,
+        webrtc::LibvpxVp9EncoderTemplateAdapter>>();
     deps.video_decoder_factory = std::make_unique<webrtc::VideoDecoderFactoryTemplate<
-        webrtc::LibvpxVp8DecoderTemplateAdapter,
-        webrtc::LibvpxVp9DecoderTemplateAdapter,
         webrtc::OpenH264DecoderTemplateAdapter,
-        webrtc::Dav1dDecoderTemplateAdapter>>();
+        webrtc::LibvpxVp8DecoderTemplateAdapter,
+        webrtc::LibvpxVp9DecoderTemplateAdapter>>();
     webrtc::EnableMedia(deps);
     peer_connection_factory_ =
         webrtc::CreateModularPeerConnectionFactory(std::move(deps));
@@ -768,6 +765,15 @@ std::vector<webrtc::RtpCodecCapability> OrderVideoCodecs(
     }
     media.push_back(codec);
   }
+  bool has_media = false;
+  for (const auto& codec : media) {
+    const std::string name = LowerName(codec.name);
+    if (name != "rtx" && name != "red" && name != "ulpfec" && name != "flexfec-03") {
+      has_media = true;
+      break;
+    }
+  }
+  if (!has_media) return {};
   return media;
 }
 }  // namespace

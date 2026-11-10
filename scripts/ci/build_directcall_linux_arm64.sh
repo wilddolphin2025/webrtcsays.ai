@@ -83,6 +83,7 @@ ffmpeg_branding="Chrome"
 rtc_include_pulse_audio=true
 rtc_use_pipewire=false
 rtc_use_x11=false
+arm_control_flow_integrity="none"
 rtc_use_speech_audio_devices=false
 rtc_enable_symbol_export=true
 is_component_build=false
@@ -122,15 +123,15 @@ cat > "${DIST_DIR}/run.sh" <<'EOF'
 #!/bin/sh
 # Usage: ./run.sh [room] [duration_seconds] [fps]
 # Token: set DIRECT_SIGNAL_TOKEN or pass TOKEN_FILE=/path/to/token.
-# The login-gated demo will be wss://rtc.wilddolphin.us:443/demo/ws.
-# Until that path is live, SIGNAL_URL can select the current socket:
-#   SIGNAL_URL=wss://rtc.wilddolphin.us:443/ws ./run.sh room101 60
+# Live socket today is wss://rtc.wilddolphin.us:443/ws.
+# The login gate (not live yet; currently HTTP 404) will be:
+#   SIGNAL_URL=wss://rtc.wilddolphin.us:443/demo/ws TOKEN_FILE=./token ./run.sh room101 60
 set -eu
 ROOM="${1:-room101}"
 DURATION="${2:-60}"
 FPS="${3:-30}"
 DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-SIGNAL_URL="${SIGNAL_URL:-wss://rtc.wilddolphin.us:443/demo/ws}"
+SIGNAL_URL="${SIGNAL_URL:-wss://rtc.wilddolphin.us:443/ws}"
 TOKEN_ARGS=""
 if [ -n "${TOKEN_FILE:-}" ]; then
   TOKEN_ARGS="--token-file=${TOKEN_FILE}"
@@ -145,7 +146,6 @@ exec "${DIR}/directcall" \
   --signal-url="${SIGNAL_URL}" \
   ${TOKEN_ARGS} \
   --stun=stun:stun.l.google.com:19302 \
-  --codec=h264 \
   --res=1920x1080 \
   --fps="${FPS}" \
   --video-source=pattern \
@@ -163,9 +163,12 @@ cat > "${DIST_DIR}/README.md" <<EOF
 # directcall linux arm64
 
 Headless caller for the WebRTCsays demo on a Steam Frame (SteamOS, aarch64).
-Video is H.264, 1920x1080 at 30 fps (60 is allowed), from a test pattern when
-no camera is present. \`--video-source=screen\` uses the X11 root window when
-\`DISPLAY\` is set and otherwise falls back to the pattern.
+The sender aims at 1920x1080 and 30 fps (60 is allowed) from a test pattern
+when no camera is present. \`--video-source=screen\` uses the X11 root window
+when \`DISPLAY\` is set and otherwise falls back to the pattern. H.264 is
+listed first, with VP8 and VP9 kept as fallbacks. \`--codec=h264\` offers
+H.264 only. The robot on \`/ws\` today answers a forced H.264 offer with BYE
+and, when H.264 is only preferred, sends VP8 at 640x480.
 
 ## Join room101
 
@@ -182,9 +185,8 @@ That expands to:
   --target_name=Slim \\
   --room_name=room101 \\
   --encryption \\
-  --signal-url=wss://rtc.wilddolphin.us:443/demo/ws \\
+  --signal-url=wss://rtc.wilddolphin.us:443/ws \\
   --stun=stun:stun.l.google.com:19302 \\
-  --codec=h264 \\
   --res=1920x1080 \\
   --fps=30 \\
   --video-source=pattern \\
@@ -193,11 +195,12 @@ That expands to:
 \`\`\`
 
 \`www.wilddolphin.us/demo.html\` is currently a request-a-demo page and does not
-open a WebSocket. The live direct-protocol socket, checked from this build, is
+open a WebSocket. The live direct-protocol socket is
 \`wss://rtc.wilddolphin.us:443/ws\` (HELLO, 200 OK, INVITE with room_name,
 WAITING, OFFER/ANSWER/ICE). DevOps is adding a login gate at
-\`wss://rtc.wilddolphin.us:443/demo/ws\`. Pass that URL with \`--signal-url\`.
-Until it answers, point \`SIGNAL_URL\` at \`/ws\`.
+\`wss://rtc.wilddolphin.us:443/demo/ws\`; that path currently returns HTTP 404.
+When it is live, set \`SIGNAL_URL\` or \`--signal-url\` to it and pass
+\`--token-file\`.
 
 ## Token
 

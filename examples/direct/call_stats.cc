@@ -217,7 +217,8 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     if (pair) {
       if (pair->current_round_trip_time) rtt_ms = *pair->current_round_trip_time * 1000.0;
       if (pair->local_candidate_id) {
-        if (const auto* local = report->GetAs<webrtc::RTCIceCandidateStats>(*pair->local_candidate_id)) {
+        if (const auto* local =
+                report->GetAs<webrtc::RTCLocalIceCandidateStats>(*pair->local_candidate_id)) {
           if (local->candidate_type) ice = *local->candidate_type;
         }
       }

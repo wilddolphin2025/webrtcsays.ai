@@ -34,8 +34,12 @@
 #include "direct.h"
 #include "pc/test/fake_video_track_source.h"
 #include "api/video/i420_buffer.h"
-#include "modules/audio_device/speech/speech_audio_device_factory.h"
 #include "test/test_video_capturer.h"
+#include "call_stats.h"
+#include "pattern_video.h"
+#if defined(WEBRTC_SPEECH_DEVICES)
+#include "modules/audio_device/speech/speech_audio_device_factory.h"
+#endif
 #if !defined(WEBRTC_IOS) && !defined(WEBRTC_MAC)
 #include "test/platform_video_capturer.h"
 #include "test/vcm_capturer.h"
@@ -331,6 +335,11 @@ DirectPeer::~DirectPeer() {
 }
 
 void DirectPeer::ShutdownInternal() {
+    if (call_stats_) call_stats_->Summarize();
+    if (video_pump_) {
+        video_pump_->Stop();
+        video_pump_.reset();
+    }
     auto release = [this] {
         StopTalkingFaceRenderer();
         RunOn(signaling_thread(), [this] {
@@ -352,7 +361,51 @@ void DirectPeer::ShutdownInternal() {
     }
 }
 
+void DirectPeer::MarkSessionStart() {
+    if (session_origin_.time_since_epoch().count() == 0) {
+        session_origin_ = std::chrono::steady_clock::now();
+    }
+}
+
+void DirectPeer::StartCallStatsIfEnabled() {
+    if (opts_.stats_interval_sec <= 0 || call_stats_) return;
+    MarkSessionStart();
+    call_stats_ = DirectCallStats::Create(
+        opts_.stats_interval_sec, session_origin_, signaling_thread(),
+        [this] { return peer_connection_.get(); });
+}
+
+void DirectPeer::EnsureLocalVideoSource() {
+    if (!opts_.video || video_source_) return;
+    const std::string mode = opts_.video_source.empty() ? "pattern" : opts_.video_source;
+    const int width = opts_.video_width > 0 ? opts_.video_width : 1920;
+    const int height = opts_.video_height > 0 ? opts_.video_height : 1080;
+    const int fps = opts_.video_fps > 0 ? opts_.video_fps : 30;
+    if (mode == "camera") {
+        if (opts_.camera.empty()) {
+            opts_.camera = "0," + std::to_string(width) + "x" + std::to_string(height) +
+                           "@" + std::to_string(fps);
+        }
+        video_source_ = CreateCameraVideoSource(this, opts_);
+        if (video_source_) {
+            fprintf(stderr, "video source: camera %s\n", opts_.camera.c_str());
+            return;
+        }
+        fprintf(stderr, "camera unavailable, using test pattern\n");
+    }
+    const bool screen = mode == "screen";
+    auto src = webrtc::FakeVideoTrackSource::Create(screen);
+    src->SetState(webrtc::MediaSourceInterface::kLive);
+    src->SetSize(width, height);
+    video_pump_ = StartDirectVideoPump(src, width, height, fps, screen);
+    video_source_ = src;
+    fprintf(stderr, "video source: %s %dx%d @ %d fps\n",
+            screen ? "screen" : "pattern", width, height, fps);
+}
+
 void DirectPeer::BeginCall() {
+    MarkSessionStart();
+    StartCallStatsIfEnabled();
     const uint64_t gen = ++call_generation_;
     in_call_ = true;
     media_connected_ = false;
@@ -398,6 +451,7 @@ void DirectPeer::OnConnectionChange(
     switch (new_state) {
         case State::kConnected:
             media_connected_ = true;
+            if (call_stats_) call_stats_->OnIceConnected();
             break;
         case State::kFailed:
             // ICE gave up (consent expired or no candidate pair works).
@@ -438,6 +492,10 @@ void DirectPeer::Start() {
       SendMessage(Msg::kWaiting);
     }
 
+    if (is_caller() && opts_.video) {
+      EnsureLocalVideoSource();
+    }
+
     if(peer_connection_ == nullptr) {
         if (!CreatePeerConnection()) {
             RTC_LOG(LS_ERROR) << "Failed to create peer connection";
@@ -470,33 +528,11 @@ void DirectPeer::Start() {
         RTC_LOG(LS_INFO) << "Initial audio transceiver direction set for " << (is_caller() ? "caller" : "callee")
             << ", result:" << (adirection_result.ok() ? "success" : "failed");
     
-        // Create a video track source for the caller.
+        if (opts_.video && video_source_ && !video_track_) {
+            SetVideoSource(video_source_);
+        }
         if (opts_.video) {
-            // Reuse existing live source if present.
-            webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface> existing_source = video_source_;
-            if (existing_source && existing_source->state() == webrtc::MediaSourceInterface::kLive) {
-                RTC_LOG(LS_INFO) << "Existing video source is already live – keeping it.";
-            } else {
-                // Prefer real camera capture when opts_.camera is provided.
-                if (!opts_.camera.empty()) {
-                    video_source_ = CreateCameraVideoSource(this, opts_);
-                }
-                // Fallback to synthetic if camera unavailable or unspecified.
-                if (!video_source_) {
-                    RTC_LOG(LS_INFO) << "Falling back to EchoVideoTrackSource";
-                    if (webrtc::Thread::Current() == signaling_thread()) {
-                        auto src = webrtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
-                        video_source_ = src;
-                    } else {
-                        signaling_thread()->BlockingCall([this]() {
-                            auto src = webrtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
-                            video_source_ = src;
-                        });
-                    }
-                }
-                SetVideoSource(video_source_);
-            }
-            RTC_LOG(LS_INFO) << "Video source configured for caller.";
+            ConfigureOutgoingVideo();
         }
 
         webrtc::PeerConnectionInterface::RTCOfferAnswerOptions offer_options;
@@ -1096,6 +1132,7 @@ void DirectPeer::OnIceConnectionChange(webrtc::PeerConnectionInterface::IceConne
     if (new_state == webrtc::PeerConnectionInterface::kIceConnectionConnected ||
         new_state == webrtc::PeerConnectionInterface::kIceConnectionCompleted) {
         RTC_LOG(LS_INFO) << "Connection established successfully!";
+        if (call_stats_) call_stats_->OnIceConnected();
     }
     
     // Handle connection failure, disconnection, or closure

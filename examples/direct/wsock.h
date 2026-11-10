@@ -46,6 +46,8 @@ public:
         std::string host;
         std::string port;
         bool use_ssl = false;
+        bool verify_tls = true;
+        std::string ca_file;
         std::string cert_file_path;
         std::string key_file_path;
         std::map<std::string, std::string> headers;

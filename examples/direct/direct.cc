@@ -16,6 +16,8 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <regex>
 #include <atomic>
 #include <map>
@@ -296,6 +298,10 @@ bool DirectApplication::CreatePeerConnection() {
   }
 #endif // WEBRTC_SPEECH_DEVICES
 
+  if (opts_.audio == "dummy") {
+    audio_layer = webrtc::AudioDeviceModule::kDummyAudio;
+  }
+
   // The ADM is owned by the worker (== network) thread.
   RunOn(worker_thread(), [this, audio_layer] {
     if (audio_device_module_) {
@@ -392,25 +398,43 @@ bool DirectApplication::CreatePeerConnection() {
   config.port_allocator_config.flags |=
       webrtc::PORTALLOCATOR_ENABLE_ANY_ADDRESS_PORTS;
 
-  webrtc::PeerConnectionInterface::IceServer stun;
-  stun.urls = {"stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302",
-               "stun:stun2.l.google.com:19302"};
-  config.servers.push_back(stun);
+  for (const auto& stun_url : opts_.stun_urls) {
+    std::string ice_error;
+    if (!IceUrlUsesHostname(stun_url, ice_error)) {
+      RTC_LOG(LS_ERROR) << ice_error;
+      return false;
+    }
+    webrtc::PeerConnectionInterface::IceServer stun;
+    stun.uri = stun_url;
+    stun.urls.push_back(stun_url);
+    stun.tls_cert_policy = webrtc::PeerConnectionInterface::kTlsCertPolicySecure;
+    config.servers.push_back(stun);
+    RTC_LOG(LS_INFO) << "STUN config: " << stun_url;
+  }
 
   // turns: "uri;user;pass;uri2;user2;pass2;..." (semicolon-separated triples)
   if (!opts_.turns.empty()) {
     std::vector<std::string> parts = stringSplit(opts_.turns, ";");
     for (size_t i = 0; i + 2 < parts.size(); i += 3) {
+      std::string ice_error;
+      if (!IceUrlUsesHostname(parts[i], ice_error)) {
+        RTC_LOG(LS_ERROR) << ice_error;
+        return false;
+      }
       webrtc::PeerConnectionInterface::IceServer turn;
       turn.uri = parts[i];
+      turn.urls.push_back(parts[i]);
       turn.username = parts[i + 1];
       turn.password = parts[i + 2];
-      turn.tls_cert_policy =
-          webrtc::PeerConnectionInterface::kTlsCertPolicyInsecureNoCheck;
+      turn.tls_cert_policy = webrtc::PeerConnectionInterface::kTlsCertPolicySecure;
       config.servers.push_back(turn);
-      RTC_LOG(LS_INFO) << "TURN config: uri=" << turn.uri << " user='"
-                       << turn.username << "'";
+      RTC_LOG(LS_INFO) << "TURN config: uri=" << parts[i]
+                       << " tls_verify=on user='" << turn.username << "'";
     }
+  }
+  if (config.servers.empty()) {
+    RTC_LOG(LS_WARNING) << "No STUN or TURN servers configured. Pass --stun=stun:host:port "
+                           "and --turns=turns:host:5349?transport=tcp;user;pass";
   }
 
   webrtc::PeerConnectionDependencies pc_dependencies(this);
@@ -685,6 +709,113 @@ void DirectApplication::AddVideoTrackIfSourceAvailable() {
     }
     // Safeguard: Ensure video send is active with the current source
     EnsureVideoSendActive();
+    ConfigureOutgoingVideo();
+  }
+}
+
+namespace {
+std::string LowerName(std::string name) {
+  for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return name;
+}
+
+int CodecRank(const webrtc::RtpCodecCapability& codec, const std::string& force) {
+  const std::string name = LowerName(codec.name);
+  if (name == "rtx" || name == "red" || name == "ulpfec" || name == "flexfec-03") return 100;
+  if (!force.empty() && name != force) return 1000;
+  if (name == "av1" || name == "h265" || name == "hev1" || name == "hvc1") return 1000;
+  if (name == "h264") {
+    int score = 0;
+    auto mode = codec.parameters.find("packetization-mode");
+    auto profile = codec.parameters.find("profile-level-id");
+    if (mode == codec.parameters.end() || mode->second != "1") score += 10;
+    if (profile != codec.parameters.end() && profile->second != "42e01f") score += 1;
+    return score;
+  }
+  if (!force.empty()) return 1000;
+  if (name == "vp8") return 20;
+  if (name == "vp9") return 30;
+  return 1000;
+}
+
+std::vector<webrtc::RtpCodecCapability> OrderVideoCodecs(
+    const std::vector<webrtc::RtpCodecCapability>& caps,
+    const std::string& force) {
+  std::vector<webrtc::RtpCodecCapability> media;
+  std::vector<int> payload_types;
+  for (const auto& codec : caps) {
+    const int rank = CodecRank(codec, force);
+    const std::string name = LowerName(codec.name);
+    if (rank >= 100 || name == "rtx" || name == "red" || name == "ulpfec" || name == "flexfec-03") {
+      continue;
+    }
+    media.push_back(codec);
+    if (codec.preferred_payload_type) payload_types.push_back(*codec.preferred_payload_type);
+  }
+  std::stable_sort(media.begin(), media.end(), [&](const auto& a, const auto& b) {
+    return CodecRank(a, force) < CodecRank(b, force);
+  });
+  for (const auto& codec : caps) {
+    const std::string name = LowerName(codec.name);
+    if (name != "rtx" && name != "red" && name != "ulpfec" && name != "flexfec-03") continue;
+    if (name == "rtx") {
+      auto apt = codec.parameters.find("apt");
+      if (apt == codec.parameters.end()) continue;
+      const int apt_pt = std::atoi(apt->second.c_str());
+      if (std::find(payload_types.begin(), payload_types.end(), apt_pt) == payload_types.end()) {
+        continue;
+      }
+    }
+    media.push_back(codec);
+  }
+  return media;
+}
+}  // namespace
+
+void DirectApplication::ConfigureOutgoingVideo() {
+  if (!peer_connection_ || !peer_connection_factory_ || !opts_.video) return;
+  const auto caps =
+      peer_connection_factory_->GetRtpSenderCapabilities(webrtc::MediaType::VIDEO).codecs;
+  const auto preferred = OrderVideoCodecs(caps, opts_.video_codec);
+  const int width = opts_.video_width > 0 ? opts_.video_width : 1920;
+  const int height = opts_.video_height > 0 ? opts_.video_height : 1080;
+  const int fps = opts_.video_fps > 0 ? opts_.video_fps : 30;
+  const int max_bps = std::max(300000, width * height * fps / 12);
+  for (const auto& transceiver : peer_connection_->GetTransceivers()) {
+    if (!transceiver || transceiver->media_type() != webrtc::MediaType::VIDEO) continue;
+    if (!preferred.empty()) {
+      auto err = transceiver->SetCodecPreferences(preferred);
+      if (!err.ok()) {
+        RTC_LOG(LS_ERROR) << "SetCodecPreferences failed: " << err.message();
+      } else {
+        RTC_LOG(LS_INFO) << "Video codecs start with " << preferred.front().name
+                         << (opts_.video_codec.empty() ? " (H.264 preferred)" : " (forced)");
+        fprintf(stderr, "video codecs: %s%s\n", preferred.front().name.c_str(),
+                opts_.video_codec.empty() ? " then VP8/VP9" : " only");
+      }
+    } else if (!opts_.video_codec.empty()) {
+      RTC_LOG(LS_ERROR) << "Requested video codec is not built into this binary";
+      fprintf(stderr, "video codec %s is not available in this build\n", opts_.video_codec.c_str());
+    }
+    auto sender = transceiver->sender();
+    if (!sender) continue;
+    auto params = sender->GetParameters();
+    params.degradation_preference =
+        webrtc::DegradationPreference::MAINTAIN_FRAMERATE_AND_RESOLUTION;
+    if (!params.encodings.empty()) {
+      params.encodings[0].max_framerate = static_cast<double>(fps);
+      params.encodings[0].scale_resolution_down_by = 1.0;
+      params.encodings[0].scale_resolution_down_to = webrtc::Resolution{width, height};
+      params.encodings[0].max_bitrate_bps = max_bps;
+      params.encodings[0].min_bitrate_bps = std::max(150000, max_bps / 8);
+    }
+    auto set = sender->SetParameters(params);
+    if (!set.ok()) {
+      RTC_LOG(LS_WARNING) << "Video sender SetParameters: " << set.message();
+    } else {
+      fprintf(stderr, "video send target %dx%d @ %d fps, max %d bps, degradation=maintain\n",
+              width, height, fps, max_bps);
+    }
   }
 }
 

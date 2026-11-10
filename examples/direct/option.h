@@ -114,7 +114,38 @@ struct Options {
     int media_grace_ms = 10000;         // tolerated PeerConnection "disconnected"
     int hangup_ack_timeout_ms = 2000;   // BYE -> 200 OK before force-close
     std::string tts_voice{};            // default cloned voice (Pocket TTS clip name)
+    // Public signaling. Hostnames only; port and path come from the URL.
+    std::string signal_url{};           // wss://host:443/demo/ws
+    std::string token_file{};           // bearer token file; never logged
+    std::string token_env{"DIRECT_SIGNAL_TOKEN"};
+    std::string ca_file{};              // PEM bundle for TLS verification
+    std::vector<std::string> stun_urls; // stun:host:port, hostnames only
+    std::string video_codec{};          // empty = H.264 then VP8/VP9; "h264" forces H.264
+    std::string video_source{};         // pattern, camera, or screen
+    int video_width = 0;
+    int video_height = 0;
+    int video_fps = 0;                  // 1..60, 30 if video is on and unset
+    int stats_interval_sec = 0;
+    int call_duration_sec = 0;
+    std::string audio{};                // "dummy" forces the fake audio device
+    std::string parse_error{};
 };
+
+struct SignalEndpoint {
+    bool ssl = true;
+    std::string host;
+    int port = 443;
+    std::string path{"/"};
+};
+
+bool IsNumericHost(const std::string& host);
+bool ParseSignalUrl(const std::string& url, SignalEndpoint& out, std::string& error);
+bool IceUrlUsesHostname(const std::string& url, std::string& error);
+std::string UrlEncode(const std::string& in);
+// Reads --token-file or the env named by token_env. The returned secret must
+// not be written to logs.
+std::string LoadSignalToken(const Options& opts, std::string& error);
+std::string AppendTokenQuery(std::string path, const std::string& token);
 
 // Function to parse command line string to above options
 DIRECT_API Options parseOptions(const char* argString);

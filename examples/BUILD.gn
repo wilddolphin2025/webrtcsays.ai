@@ -1027,6 +1027,10 @@ if (!build_with_chromium) {
         "direct/wsock.cc",
         "direct/wsock.h",
         "direct/client.h",
+        "direct/pattern_video.cc",
+        "direct/pattern_video.h",
+        "direct/call_stats.cc",
+        "direct/call_stats.h",
       ]
 
       if (rtc_use_speech_audio_devices) {
@@ -1053,6 +1057,7 @@ if (!build_with_chromium) {
         "../api:async_dns_resolver",
         "../api:audio_options_api",
         "../api:create_modular_peer_connection_factory",
+        "../api:rtc_stats_api",
         "../api:enable_media",
         "../api/audio:builtin_audio_processing_builder",
         "../api/audio:create_audio_device_module",

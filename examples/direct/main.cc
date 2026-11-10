@@ -672,6 +672,10 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "%s\n", usage.c_str());
     return 1;
   }
+  if (!opts.parse_error.empty()) {
+    fprintf(stderr, "%s\n", opts.parse_error.c_str());
+    return 1;
+  }
 
   InstallSignalHandlers();
 
@@ -688,6 +692,17 @@ int main(int argc, char* argv[]) {
   DirectApplication::rtcInitialize();
 
   // Parse server address and room from options
+  if (opts.call_duration_sec > 0) {
+    const int seconds = opts.call_duration_sec;
+    std::thread([seconds] {
+      std::this_thread::sleep_for(std::chrono::seconds(seconds));
+      if (!g_shutdown) {
+        fprintf(stderr, "\nDuration of %d s reached, hanging up\n", seconds);
+        g_shutdown = 1;
+      }
+    }).detach();
+  }
+
   std::string room_name = opts.room_name.empty() ? "room101" : opts.room_name;  // Use provided room or default
   // Ensure opts.room_name is set so that callee/caller register correctly
   opts.room_name = room_name;

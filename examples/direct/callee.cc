@@ -26,6 +26,7 @@
 
 #include "direct.h"
 #include "status.h"
+#include "sdp_diag.h"
 #include "parser.h"
 
 #if TARGET_OS_IOS || TARGET_OS_OSX
@@ -244,7 +245,7 @@ void DirectCallee::OnMessage(webrtc::AsyncPacketSocket* socket,
                              size_t len,
                              const webrtc::SocketAddress& remote_addr) {
   std::string message(reinterpret_cast<const char*>(data), len);
-  RTC_LOG(LS_INFO) << "Callee received: " << message.substr(0, 120);
+  RTC_LOG(LS_INFO) << "Callee received: " << RedactedSignalingLine(message);
 
   if (message.rfind(Msg::kHello, 0) == 0) {
     SendMessage(InCall() ? StatusCodes::kBusyHere : StatusCodes::kOk);

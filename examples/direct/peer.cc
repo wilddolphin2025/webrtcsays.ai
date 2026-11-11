@@ -32,6 +32,7 @@
 #include "rtc_base/logging.h"
 #include "option.h"
 #include "direct.h"
+#include "sdp_diag.h"
 #include "pc/test/fake_video_track_source.h"
 #include "api/video/i420_buffer.h"
 #include "test/test_video_capturer.h"
@@ -553,6 +554,7 @@ void DirectPeer::Start() {
                             return;
                         }
                         RTC_LOG(LS_INFO) << "Local description set successfully";
+                        fprintf(stderr, "%s\n", RedactedSignalingLine(std::string(Msg::kOfferPrefix) + sdp).c_str());
                         // Now that both descriptions may be in place, process any queued ICE candidates.
                         DrainPendingIceCandidates();
                         SendMessage(std::string(Msg::kOfferPrefix) + sdp);
@@ -675,7 +677,7 @@ void DirectPeer::HandleMessage(webrtc::AsyncPacketSocket* socket,
       std::string payload = message.substr(sizeof(Msg::kIcePrefix) - 1);
       size_t delim = payload.find(':');
       if (delim == std::string::npos) {
-          RTC_LOG(LS_ERROR) << "Malformed ICE payload received: " << payload;
+          RTC_LOG(LS_ERROR) << "Malformed ICE payload received";
       } else {
           int mline_index = atoi(payload.substr(0, delim).c_str());
           std::string candidate = payload.substr(delim + 1);
@@ -725,6 +727,8 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
     signaling_thread()->PostTask([this, sdp]() {
         fprintf(stderr, "[peer] SetRemoteDescription enter (caller=%d) sdp_len=%zu\n",
                 is_caller() ? 1 : 0, sdp.size());
+        fprintf(stderr, "%s\n",
+                RedactedSignalingLine((is_caller() ? std::string("ANSWER:") : std::string("OFFER:")) + sdp).c_str());
         if (!peer_connection()) {
             fprintf(stderr, "[peer] no pc yet, creating...\n");
             RTC_LOG(LS_WARNING) << "PeerConnection not initialized yet; creating now before applying remote SDP";

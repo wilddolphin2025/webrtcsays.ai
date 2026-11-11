@@ -348,6 +348,40 @@ class PanelTests(unittest.TestCase):
         self.assertNotIn("setOverlayTransformAbsolute", source)
         self.assertNotIn("TrackingUniverseStanding", source)
 
+    def test_upload_size_and_hello_lines_do_not_redraw(self):
+        import gc
+        import tracemalloc
+
+        import numpy as np
+
+        from webrtcsays_panel.fast_compose import CallCanvas
+        from webrtcsays_panel.overlay_app import overlay_lines
+        from webrtcsays_panel.present import pixel_nbytes
+
+        image = np.zeros((1080, 1920, 4), dtype=np.uint8)
+        self.assertEqual(pixel_nbytes(image), 1920 * 1080 * 4)
+        self.assertNotEqual(pixel_nbytes(image), len(image))
+
+        class Steady:
+            process_text = "running"
+            error = ""
+
+        session = Steady()
+        session._lines = ["Caller: HELLO attempt 1 sent"]
+        first = overlay_lines(session)
+        session._lines.append("Caller: HELLO attempt 5 sent")
+        self.assertEqual(overlay_lines(session), first)
+        self.assertNotIn("HELLO", " ".join(first))
+
+        tracemalloc.start()
+        canvas = CallCanvas()
+        for i in range(12):
+            canvas.set_status(["WEBRTCSAYS.AI", "process: running %d" % (i % 2)])
+        gc.collect()
+        current, _peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        self.assertLess(current, 30 * 1024 * 1024)
+
     def test_controls_are_centered_and_hits_match_the_paint(self):
         from webrtcsays_panel.compose import compose
         from webrtcsays_panel.layout import (

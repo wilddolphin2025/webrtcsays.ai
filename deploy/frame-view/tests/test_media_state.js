@@ -72,6 +72,28 @@ check("labels", media.buttonLabel("screen", screen) === "Stop screen");
 check("labels off", media.buttonLabel("mic", off) === "Microphone");
 check("send label", media.sendLabel(camera) === "camera, mic off");
 
+const listen = media.initialListen();
+const opened = media.listenAction(listen, "page");
+check("page listens once", opened.action === "open" && opened.state.socket === "connecting");
+const again = media.listenAction(opened.state, "page");
+check("no second viewer", again.action === "none");
+const listening = media.listenAction(opened.state, "opened");
+check("view after open", listening.action === "view" && listening.state.socket === "open");
+const bye = media.listenAction(listening.state, "bye");
+check("bye keeps the socket", bye.action === "none" && bye.state.afterBye === true && bye.state.socket === "open");
+const relisten = media.listenAction(bye.state, "closed");
+check("bye then wait", relisten.action === "wait" && relisten.delay === 400 && relisten.state.failures === 0);
+let failedListen = media.initialListen();
+for (let i = 0; i < 5; i++) failedListen = media.listenAction(failedListen, "closed").state;
+const signedOut = media.listenAction(failedListen, "closed");
+check("auth backoff stops", signedOut.action === "sign-in");
+const stopped = media.listenAction(listening.state, "click-disconnect");
+check("disconnect stops", stopped.action === "close" && stopped.state.userStop === true);
+const quiet = media.listenAction(stopped.state, "closed");
+check("no retry after disconnect", quiet.action === "none");
+const manual = media.listenAction(stopped.state, "click-connect");
+check("connect retries", manual.action === "open" && manual.state.userStop === false);
+
 if (failed) {
   console.error(failed + " failed");
   process.exit(1);

@@ -172,15 +172,29 @@ _UPLOAD_BUF = {"buf": None}
 
 
 def _upload(overlay, handle, pixels):
-    # One ctypes buffer for every upload. A fresh array each 100 ms matched the shared RSS climb.
+    # The ctypes buffer must be the full RGBA image. len() on the numpy
+    # frame is only its height, and OpenVR then reads past that allocation.
     import ctypes
-    size = len(pixels)
+    from webrtcsays_panel.present import pixel_nbytes
+    size = pixel_nbytes(pixels)
     buf = _UPLOAD_BUF["buf"]
     if buf is None or len(buf) != size:
         buf = (c_uint8 * size)()
         _UPLOAD_BUF["buf"] = buf
-    ctypes.memmove(buf, bytes(pixels), size)
+    source = pixels.ctypes.data if hasattr(pixels, "ctypes") else bytes(pixels)
+    ctypes.memmove(buf, source, size)
     overlay.setOverlayRaw(handle, buf, WIDTH, HEIGHT, 4)
+
+
+def overlay_lines(session):
+    """Stable headset text. Log lines from HELLO retries are not part of the picture."""
+    rows = [
+        APP_NAME,
+        "process: " + session.process_text,
+    ]
+    if session.error:
+        rows[1] = "error: " + session.error
+    return tuple(rows)
 
 
 def _read_bytes(path):
@@ -262,10 +276,10 @@ def main():
                 child_status = _read_optional("/proc/%s/status" % session.identity.pid)
             self_status = _read_optional("/proc/self/status")
             session.poll(None, child_status, self_status, zones)
-            lines = tuple(panel_lines(session))
+            image_lines = overlay_lines(session)
             index = _frame_index(session.paths["frame"])
-            if budget.should_upload((lines, index), time.time()):
-                canvas.set_status(lines)
+            if budget.should_upload((image_lines, index), time.time()):
+                canvas.set_status(image_lines)
                 view = frame_view(_read_bytes(session.paths["frame"]))
                 if view:
                     import numpy as np
@@ -273,6 +287,9 @@ def main():
                     src = np.frombuffer(pixels, dtype=np.uint8).reshape(height, width, 4)
                     canvas.paint_video(src)
                 _upload(overlay, handle, canvas.pixels)
+            full = tuple(panel_lines(session))
+            if full != flag.get("state"):
+                flag["state"] = full
                 try:
                     state_path.parent.mkdir(parents=True, exist_ok=True)
                     write_state(state_path, session)

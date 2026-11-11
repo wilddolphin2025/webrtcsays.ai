@@ -39,7 +39,7 @@ class ContractTests(unittest.TestCase):
         self.assertIn("<title>Frame viewer</title>", page)
         self.assertNotIn("WebRTCSays", page)
         script = (ROOT / "page" / "view.js").read_text(encoding="utf-8")
-        connect = script.split("async function connect()", 1)[1].split("async function ", 1)[0]
+        connect = script.split("async function connect(", 1)[1].split("async function ", 1)[0]
         self.assertNotIn("getDisplayMedia", connect)
         self.assertNotIn("getUserMedia", connect)
         self.assertIn("screen=unavailable", script)
@@ -58,7 +58,8 @@ class ContractTests(unittest.TestCase):
         self.assertIn('"rtc.wilddolphin.us": 1', script)
         self.assertNotIn("turn.wilddolphin.us", script)
         self.assertIn("idle-timeout", script)
-        self.assertIn('failWait("disconnected")', script)
+        self.assertIn('finishCall("waiting")', script)
+        self.assertIn('connect("page")', script)
         self.assertNotIn("log(payload.credential", script)
         self.assertNotIn("log(payload.username", script)
 

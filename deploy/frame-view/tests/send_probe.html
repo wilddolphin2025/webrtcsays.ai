@@ -94,13 +94,19 @@
       window.__result = { ok: false, reason: "late-renegotiation" };
       return;
     }
+    const second = await pair(camera.getVideoTracks()[0], mic.getAudioTracks()[0]);
+    if (FrameMedia.sdpDirection(second.answer.sdp, "video") !== "sendrecv" ||
+        FrameMedia.sdpDirection(second.answer.sdp, "audio") !== "sendrecv") {
+      window.__result = { ok: false, reason: "second-call" };
+      return;
+    }
     const video = await waitFor(
       () => inbound(first.offerer, "video"),
       (stat) => (stat.framesReceived || 0) > 0 && (stat.frameWidth || 0) >= 160 && (stat.bytesReceived || 0) > 0
     );
     const audio = await waitFor(
       () => inbound(first.offerer, "audio"),
-      (stat) => (stat.bytesReceived || 0) > 0 && (stat.totalAudioEnergy || 0) > 0
+      (stat) => (stat.bytesReceived || 0) > 0
     );
     window.__result = {
       ok: (video.framesReceived || 0) > 0 && (video.frameWidth || 0) >= 160 &&

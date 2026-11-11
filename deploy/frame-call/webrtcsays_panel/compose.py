@@ -56,8 +56,19 @@ _GLYPHS = {
 }
 
 
+_PIXELS = None
+
+
+def _canvas():
+    global _PIXELS
+    need = WIDTH * HEIGHT * 4
+    if _PIXELS is None or len(_PIXELS) != need:
+        _PIXELS = bytearray(need)
+    return _PIXELS
+
+
 def _blank():
-    pixels = bytearray(WIDTH * HEIGHT * 4)
+    pixels = _canvas()
     for i in range(0, len(pixels), 4):
         pixels[i] = 27
         pixels[i + 1] = 40

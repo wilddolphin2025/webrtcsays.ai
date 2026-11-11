@@ -57,6 +57,59 @@
     return video + ", " + mic;
   }
 
+  function initialListen() {
+    return { userStop: false, socket: "closed", failures: 0, sawOpen: false, retryMs: 1000, afterBye: false };
+  }
+
+  function listenAction(state, event) {
+    const next = {
+      userStop: state.userStop,
+      socket: state.socket,
+      failures: state.failures,
+      sawOpen: state.sawOpen,
+      retryMs: state.retryMs,
+      afterBye: state.afterBye
+    };
+    if (event === "pagehide" || event === "click-disconnect") {
+      next.userStop = true;
+      next.socket = "closed";
+      next.afterBye = false;
+      return { state: next, action: "close", delay: 0 };
+    }
+    if (event === "click-connect") {
+      next.userStop = false;
+      next.failures = 0;
+      next.retryMs = 1000;
+    }
+    if (event === "page") next.userStop = false;
+    if (event === "bye") next.afterBye = true;
+    if (next.userStop) return { state: next, action: "none", delay: 0 };
+    if (event === "opened") {
+      next.socket = "open";
+      next.sawOpen = true;
+      next.failures = 0;
+      next.retryMs = 1000;
+      next.afterBye = false;
+      return { state: next, action: "view", delay: 0 };
+    }
+    if (event === "closed") {
+      const afterBye = next.afterBye;
+      next.socket = "closed";
+      next.afterBye = false;
+      if (!next.sawOpen) next.failures += 1;
+      next.sawOpen = false;
+      if (next.failures >= 5) return { state: next, action: "sign-in", delay: 0 };
+      const delay = afterBye ? 400 : next.retryMs;
+      if (!afterBye) next.retryMs = Math.min(next.retryMs * 2, 15000);
+      return { state: next, action: "wait", delay: delay };
+    }
+    if (next.socket === "open" || next.socket === "connecting") {
+      return { state: next, action: "none", delay: 0 };
+    }
+    next.socket = "connecting";
+    return { state: next, action: "open", delay: 0 };
+  }
+
   async function bindOutbound(pc, videoTrack, audioTrack) {
     const found = { video: null, audio: null };
     pc.getTransceivers().forEach((transceiver) => {
@@ -87,7 +140,9 @@
     sdpDirection: sdpDirection,
     buttonLabel: buttonLabel,
     sendLabel: sendLabel,
-    bindOutbound: bindOutbound
+    bindOutbound: bindOutbound,
+    initialListen: initialListen,
+    listenAction: listenAction
   };
 })(typeof globalThis !== "undefined" ? globalThis : this);
 
@@ -111,6 +166,8 @@
   let statsTimer = null;
   let answerSent = false;
   let prompting = false;
+  let listen = FrameMedia.initialListen();
+  let retryTimer = null;
   let state = FrameMedia.initialState();
   let screenTrack = null;
   let cameraTrack = null;
@@ -583,13 +640,30 @@
     }
     if (text.startsWith("480")) {
       log("idle-timeout");
-      failWait("disconnected");
+      finishCall("waiting");
       return;
     }
-    if (kind === "BYE" || text.startsWith("486") || text.startsWith("400")) {
-      setStatus(kind === "BYE" ? "remote-bye" : "rejected");
+    if (kind === "BYE") {
+      listen = FrameMedia.listenAction(listen, "bye").state;
+      log("call-end");
+      finishCall("waiting");
+      return;
+    }
+    if (text.startsWith("486") || text.startsWith("400")) {
+      setStatus("rejected");
       disconnect(false);
     }
+  }
+
+  function finishCall(reason) {
+    if (pc) {
+      pc.close();
+      pc = null;
+    }
+    answerSent = false;
+    pendingIce.length = 0;
+    codecEl.textContent = "no media";
+    setStatus(reason);
   }
 
   function failWait(reason) {
@@ -614,6 +688,10 @@
   }
 
   function disconnect(sendBye) {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
     if (statsTimer) {
       clearInterval(statsTimer);
       statsTimer = null;
@@ -626,50 +704,89 @@
       pc = null;
     }
     if (ws) {
-      ws.close();
+      const socket = ws;
       ws = null;
+      socket.onclose = null;
+      try { socket.close(); } catch (_error) {}
     }
+    listen.socket = "closed";
     stopUserMedia();
     answerSent = false;
     pendingIce.length = 0;
-    if (statusEl.textContent.indexOf("remote-bye") !== 0 && statusEl.textContent !== "rejected") {
+    if (statusEl.textContent.indexOf("remote-bye") !== 0 && statusEl.textContent !== "rejected" &&
+        statusEl.textContent !== "sign-in") {
       setStatus("disconnected");
     }
   }
 
-  async function connect() {
+  function scheduleListen(delay) {
+    if (retryTimer || listen.userStop) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      connect("retry").catch(() => setStatus("connect-failed"));
+    }, delay);
+  }
+
+  async function connect(event) {
+    const decision = FrameMedia.listenAction(listen, event || "page");
+    listen = decision.state;
+    if (decision.action !== "open") return;
     if (!room || !hostnameOk()) {
+      listen.socket = "closed";
       setStatus("bad-address");
       return;
     }
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      listen.socket = "open";
       return;
+    }
+    if (statsTimer) {
+      clearInterval(statsTimer);
+      statsTimer = null;
     }
     ensureHold();
     unlockPlayback();
     setStatus("connecting");
     ws = new WebSocket(signalingUrl());
     ws.onopen = () => {
+      const opened = FrameMedia.listenAction(listen, "opened");
+      listen = opened.state;
       ws.send("VIEW");
       setStatus("waiting");
     };
     ws.onmessage = (event) => handleMessage(event.data);
     ws.onerror = () => setStatus("signaling-error");
     ws.onclose = () => {
-      if (statsTimer) {
-        clearInterval(statsTimer);
-        statsTimer = null;
+      ws = null;
+      if (pc) {
+        pc.close();
+        pc = null;
       }
-      const status = statusEl.textContent;
-      if (status === "remote-bye" || status === "rejected" || status === "disconnected") return;
-      codecEl.textContent = "no media";
-      setStatus("disconnected");
+      answerSent = false;
+      pendingIce.length = 0;
+      const closed = FrameMedia.listenAction(listen, "closed");
+      listen = closed.state;
+      if (closed.action === "sign-in") {
+        codecEl.textContent = "no media";
+        setStatus("sign-in");
+        return;
+      }
+      if (closed.action === "wait") {
+        codecEl.textContent = "no media";
+        setStatus("waiting");
+        scheduleListen(closed.delay);
+      }
     };
     statsTimer = setInterval(() => { showCodec().catch(() => {}); }, 2000);
   }
 
   connectBtn.addEventListener("click", () => {
-    connect().catch(() => setStatus("connect-failed"));
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    if (listen.socket === "open" || listen.socket === "connecting") return;
+    connect("click-connect").catch(() => setStatus("connect-failed"));
   });
   screenBtn.addEventListener("click", () => {
     shareScreen().catch(() => log("screen=cancelled"));
@@ -689,8 +806,19 @@
       setStatus("disconnected");
     }
   });
-  disconnectBtn.addEventListener("click", () => disconnect(true));
+  disconnectBtn.addEventListener("click", () => {
+    listen = FrameMedia.listenAction(listen, "click-disconnect").state;
+    disconnect(true);
+  });
+  window.addEventListener("pagehide", () => {
+    listen = FrameMedia.listenAction(listen, "pagehide").state;
+    disconnect(true);
+  });
   remoteVideo.addEventListener("click", () => { unlockPlayback(); });
   paintShare();
-  if (!room) setStatus("missing-room");
+  if (!room || !hostnameOk()) {
+    setStatus(room ? "bad-address" : "missing-room");
+  } else {
+    connect("page").catch(() => setStatus("connect-failed"));
+  }
 })();

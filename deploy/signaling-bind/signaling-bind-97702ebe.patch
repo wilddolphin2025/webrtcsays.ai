@@ -1,0 +1,499 @@
+diff --git a/deploy/signaling-bind/README.md b/deploy/signaling-bind/README.md
+new file mode 100644
+index 0000000000..3f58255428
+--- /dev/null
++++ b/deploy/signaling-bind/README.md
+@@ -0,0 +1,108 @@
++# Loopback signaling bind
++
++There is no existing flag that makes directcall's signaling sockets listen on
++127.0.0.1.
++
++`address` is parsed for a port. `DirectCalleeClient::setupWebRTCListener`
++then replaces it with `0.0.0.0:<port>` before `bind`. Both listeners pass
++`INADDR_ANY`:
++
++- TCP signaling (`examples/direct/callee.cc`), port from `address` (3458 on the demo)
++- WebSocket signaling (`examples/direct/main.cc` `DirectWebSocketProxy`), `websocket_port` (3459)
++
++A firewall rule is not the same thing. The sockets would still accept a
++connection that reaches the host another way.
++
++## Config
++
++`signaling_bind` is optional. Omit it, or set `0.0.0.0`, and the binary keeps
++the old all-interface listen.
++
++```json
++"address": "0.0.0.0:3458",
++"websocket_port": 3459,
++"signaling_bind": "127.0.0.1"
++```
++
++`signaling_bind` must be a dotted IPv4 address. A hostname is rejected and the
++process exits before it listens, so a typo cannot fall open onto every
++interface. The value binds only those two TCP sockets.
++
++The in-process WebSocket bridge dials that same address. With `127.0.0.1` it
++dials `127.0.0.1:3458`. With the historical default it still dials `127.0.0.1`,
++which an `INADDR_ANY` listener accepts.
++
++Changing `address` to `127.0.0.1:3458` without `signaling_bind` does not change
++the bind. The stage-1 config copy that only rewrites `address` is not this fix.
++
++## Media ICE
++
++ICE candidates come from the WebRTC peer connection's UDP sockets and from
++`publishAddressToSignalingServer`, which walks the host interfaces. Neither
++path reads `signaling_bind`. This patch does not set a port allocator, a
++network ignore mask, or a candidate filter. Public and LAN media addresses
++stay as they are. Loopback is still skipped when that function advertises an
++address, which is the existing behavior.
++
++## What to build on the VPS
++
++The running callee is the checkout at `97702ebe` (`fix(direct): do not
++increment a volatile shutdown counter`) plus local edits in
++`modules/audio_device/speech/whisper_audio_device.cc` and
++`whisper_audio_device.h`. Do not check out `feat/webrtc-m156`. That branch now
++contains merged PR #16 (H.264 caller, TLS hostname checks, call stats). Building
++it would ship those unrelated changes and can disturb the whisper edits.
++
++Stay on `97702ebe`. Apply only `signaling-bind-97702ebe.patch`. It does not
++touch the whisper files, codecs, or `p2p/`.
++
++```bash
++cd /opt/wsai-m156/src
++git rev-parse HEAD    # 97702ebe6a...
++TS=$(date +%Y%m%d%H%M%S)
++install -d -m 0700 /root/webrtcsays-demo-backups
++cp -a out/release/directcall "/root/webrtcsays-demo-backups/directcall.$TS"
++cp -a out/release/libdirect.so "/root/webrtcsays-demo-backups/libdirect.so.$TS"
++patch -p1 --dry-run < signaling-bind-97702ebe.patch
++patch -p1 < signaling-bind-97702ebe.patch
++```
++
++Confirm the dry-run ninja plan does not compile whisper, codecs, or ICE:
++
++```bash
++ninja -C out/release -n directcall
++```
++
++Then build. `directcall` links `examples:directlib` (`libdirect.so`). Ninja
++recompiles the directcall translation units that include `option.h`
++(`callee.cc`, `caller.cc`, `client.cc`, `peer.cc`, `direct.cc`, `option.cc`,
++`wsock.cc`, `dirobjc.mm`, `main.cc`) and relinks `libdirect.so` and
++`directcall`. It does not rebuild the WebRTC static libraries or the whisper
++objects, because those sources do not include `option.h` and this patch does
++not change them.
++
++```bash
++ninja -C out/release directcall
++```
++
++That is four to nine C++ files in `examples/direct/` plus two links. It is not
++`gn gen` and it is not a WebRTC rebuild.
++
++After the new binary is installed, logs must show:
++
++```
++Signaling TCP listening on 127.0.0.1:3458
++WebSocket signaling listening on ws://127.0.0.1:3459
++```
++
++`ss -ltnp` for those ports must show `127.0.0.1`, not `0.0.0.0`. Rollback is
++the backed-up `directcall` and `libdirect.so`, and removing `signaling_bind`
++from the config.
++
++## Test without the WebRTC tree
++
++```bash
++g++ -std=c++17 -Wall -Werror -I examples/direct \
++  examples/direct/signaling_bind_test.cc -o /tmp/signaling_bind_test
++/tmp/signaling_bind_test
++```
+diff --git a/deploy/signaling-bind/run-bind-test.sh b/deploy/signaling-bind/run-bind-test.sh
+new file mode 100755
+index 0000000000..70ff1a5c08
+--- /dev/null
++++ b/deploy/signaling-bind/run-bind-test.sh
+@@ -0,0 +1,6 @@
++#!/bin/sh
++set -eu
++root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
++g++ -std=c++17 -Wall -Werror -I "$root/examples/direct" \
++  "$root/examples/direct/signaling_bind_test.cc" -o /tmp/signaling_bind_test
++/tmp/signaling_bind_test
+diff --git a/examples/direct/callee.cc b/examples/direct/callee.cc
+index 2eecf293ff..58883c40d1 100644
+--- a/examples/direct/callee.cc
++++ b/examples/direct/callee.cc
+@@ -19,2 +19,3 @@
+ #include <chrono>
++#include <cstdio>
+ #include <cstdlib>
+@@ -27,2 +28,3 @@
+ #include "direct.h"
++#include "signaling_bind.h"
+ #include "status.h"
+@@ -54,2 +56,10 @@ bool DirectCallee::StartListening() {
+   auto listen_fn = [this]() -> bool {
++    // Resolve once. A bad signaling_bind must not fall back to every interface.
++    in_addr_t bind_addr = htonl(INADDR_ANY);
++    std::string bind_error;
++    if (!ResolveSignalingBind(opts_.signaling_bind, &bind_addr, &bind_error)) {
++      RTC_LOG(LS_ERROR) << "signaling bind refused: " << bind_error;
++      fprintf(stderr, "signaling bind refused: %s\n", bind_error.c_str());
++      return false;
++    }
+     const int kMaxRetries = 10;
+@@ -93,3 +103,4 @@ bool DirectCallee::StartListening() {
+ 
+-      // Setup server address
++      // signaling_bind was resolved above. Empty keeps INADDR_ANY.
++      // This socket is TCP signaling only; media ICE is unaffected.
+       struct sockaddr_in addr;
+@@ -98,3 +109,3 @@ bool DirectCallee::StartListening() {
+       addr.sin_port = htons(local_port_);
+-      addr.sin_addr.s_addr = INADDR_ANY;
++      addr.sin_addr.s_addr = bind_addr;
+ 
+@@ -133,3 +144,9 @@ bool DirectCallee::StartListening() {
+       // Bind succeeded, continue with socket setup
+-      RTC_LOG(LS_INFO) << "Bind succeeded on attempt " << (attempt + 1) << " (port " << local_port_ << ")";
++      char shown[INET_ADDRSTRLEN] = {};
++      if (!inet_ntop(AF_INET, &addr.sin_addr, shown, sizeof(shown))) {
++        std::snprintf(shown, sizeof(shown), "?");
++      }
++      fprintf(stderr, "Signaling TCP listening on %s:%d\n", shown, local_port_);
++      RTC_LOG(LS_INFO) << "Bind succeeded on attempt " << (attempt + 1)
++                       << " (" << shown << ":" << local_port_ << ")";
+ 
+diff --git a/examples/direct/client.cc b/examples/direct/client.cc
+index 672e60c6c3..467c357bb3 100644
+--- a/examples/direct/client.cc
++++ b/examples/direct/client.cc
+@@ -1,4 +1,6 @@
+ #include "client.h"
++#include "signaling_bind.h"
+ #include "wsock.h"
+ #include "direct.h"
++#include <cstdio>
+ #include <iostream>
+@@ -515,3 +517,5 @@ bool DirectCalleeClient::StartListening() {
+     // First, set up WebRTC listener using DirectCallee (this will update opts_.address)
+-    setupWebRTCListener();
++    if (!setupWebRTCListener()) {
++        return false;
++    }
+     
+@@ -726,7 +730,21 @@ bool DirectCalleeClient::SendMessage(const std::string& message) {
+ 
+-void DirectCalleeClient::setupWebRTCListener() {
++bool DirectCalleeClient::setupWebRTCListener() {
+     APP_LOG(AS_INFO) << "DirectCalleeClient: Setting up WebRTC listener on port " << local_port_;
+-    
+-    // Ensure opts_ has the correct listen address to avoid conflict with signaling port
+-    opts_.address = "0.0.0.0:" + std::to_string(local_port_);
++
++    // Record the TCP listen address. Empty signaling_bind stays 0.0.0.0,
++    // matching binaries that always called bind(INADDR_ANY). A dotted address
++    // is stored here and used by DirectCallee::StartListening. This string is
++    // not an ICE candidate filter.
++    std::string listen_host = "0.0.0.0";
++    if (!opts_.signaling_bind.empty()) {
++      in_addr_t bind_addr = 0;
++      std::string bind_error;
++      if (!ResolveSignalingBind(opts_.signaling_bind, &bind_addr, &bind_error)) {
++        APP_LOG(AS_ERROR) << "signaling bind refused: " << bind_error;
++        fprintf(stderr, "signaling bind refused: %s\n", bind_error.c_str());
++        return false;
++      }
++      listen_host = opts_.signaling_bind;
++    }
++    opts_.address = listen_host + ":" + std::to_string(local_port_);
+ 
+@@ -734,3 +752,3 @@ void DirectCalleeClient::setupWebRTCListener() {
+         APP_LOG(AS_ERROR) << "DirectCalleeClient: base initialization failed";
+-        return;
++        return false;
+     }
+@@ -739,3 +757,3 @@ void DirectCalleeClient::setupWebRTCListener() {
+         APP_LOG(AS_ERROR) << "Failed to start WebRTC listener on port " << local_port_;
+-        return;
++        return false;
+     }
+@@ -782,2 +800,3 @@ void DirectCalleeClient::setupWebRTCListener() {
+     APP_LOG(AS_INFO) << "DirectCalleeClient: WebRTC listener started on port " << local_port_;
++    return true;
+ }
+@@ -880,3 +899,5 @@ void DirectCalleeClient::onIncomingCall(const std::string& peer_id, const std::s
+         APP_LOG(AS_INFO) << "DirectCalleeClient: Not listening, starting WebRTC listener";
+-        setupWebRTCListener();
++        if (!setupWebRTCListener()) {
++            return;
++        }
+         listening_ = true;
+diff --git a/examples/direct/client.h b/examples/direct/client.h
+index 514df49431..9af275f543 100644
+--- a/examples/direct/client.h
++++ b/examples/direct/client.h
+@@ -245,3 +245,3 @@ private:
+     void createAndSendAnswer(const std::string& peer_id);
+-    void setupWebRTCListener();
++    bool setupWebRTCListener();
+     void publishAddressToSignalingServer();
+diff --git a/examples/direct/main.cc b/examples/direct/main.cc
+index 5db7c4a0aa..222807be5a 100644
+--- a/examples/direct/main.cc
++++ b/examples/direct/main.cc
+@@ -25,2 +25,3 @@
+ #include <cstdint>
++#include <cstdio>
+ #include <cstring>
+@@ -40,2 +41,3 @@
+ #include "option.h"
++#include "signaling_bind.h"
+ #include "client.h"
+@@ -205,4 +207,8 @@ class DirectWebSocketProxy {
+  public:
+-  DirectWebSocketProxy(std::string tcp_host, int tcp_port, int ws_port)
+-      : tcp_host_(std::move(tcp_host)), tcp_port_(tcp_port), ws_port_(ws_port) {}
++  DirectWebSocketProxy(std::string tcp_host, int tcp_port, int ws_port,
++                       std::string bind_host)
++      : tcp_host_(std::move(tcp_host)),
++        tcp_port_(tcp_port),
++        ws_port_(ws_port),
++        bind_host_(std::move(bind_host)) {}
+ 
+@@ -594,2 +600,10 @@ class DirectWebSocketProxy {
+ 
++    in_addr_t bind_addr = htonl(INADDR_ANY);
++    std::string bind_error;
++    if (!ResolveSignalingBind(bind_host_, &bind_addr, &bind_error)) {
++      fprintf(stderr, "WebSocket signaling bind refused: %s\n", bind_error.c_str());
++      close(listen_fd_);
++      listen_fd_ = -1;
++      return;
++    }
+     struct sockaddr_in sa;
+@@ -598,3 +612,3 @@ class DirectWebSocketProxy {
+     sa.sin_port = htons(static_cast<uint16_t>(ws_port_));
+-    sa.sin_addr.s_addr = INADDR_ANY;
++    sa.sin_addr.s_addr = bind_addr;
+     if (bind(listen_fd_, reinterpret_cast<struct sockaddr*>(&sa), sizeof(sa)) != 0 ||
+@@ -608,3 +622,7 @@ class DirectWebSocketProxy {
+ 
+-    std::cerr << "WebSocket signaling listening on ws://0.0.0.0:" << ws_port_
++    char shown[INET_ADDRSTRLEN] = {};
++    if (!inet_ntop(AF_INET, &sa.sin_addr, shown, sizeof(shown))) {
++      std::snprintf(shown, sizeof(shown), "?");
++    }
++    std::cerr << "WebSocket signaling listening on ws://" << shown << ":" << ws_port_
+               << " -> " << tcp_host_ << ":" << tcp_port_ << "\n";
+@@ -642,2 +660,3 @@ class DirectWebSocketProxy {
+   int ws_port_ = 3457;
++  std::string bind_host_;
+   std::atomic<bool> running_{false};
+@@ -724,2 +743,11 @@ int main(int argc, char* argv[]) {
+ 
++  {
++    in_addr_t signaling_addr = 0;
++    std::string signaling_error;
++    if (!ResolveSignalingBind(opts.signaling_bind, &signaling_addr, &signaling_error)) {
++      fprintf(stderr, "Invalid signaling_bind: %s\n", signaling_error.c_str());
++      return 1;
++    }
++  }
++
+   if (opts.websocket_signaling && (opts.mode == "callee" || opts.mode == "both")) {
+@@ -734,3 +762,10 @@ int main(int argc, char* argv[]) {
+     }
+-    ws_proxy = std::make_unique<DirectWebSocketProxy>("127.0.0.1", callee_port, opts.websocket_port);
++    // The bridge dials the TCP listener. INADDR_ANY accepts 127.0.0.1.
++    // A specific signaling_bind, such as 127.0.0.1, accepts only that address.
++    std::string dial_host = "127.0.0.1";
++    if (!opts.signaling_bind.empty() && opts.signaling_bind != "0.0.0.0") {
++      dial_host = opts.signaling_bind;
++    }
++    ws_proxy = std::make_unique<DirectWebSocketProxy>(
++        dial_host, callee_port, opts.websocket_port, opts.signaling_bind);
+     ws_proxy->Start();
+diff --git a/examples/direct/option.cc b/examples/direct/option.cc
+index 07899eb9b6..f74d548873 100644
+--- a/examples/direct/option.cc
++++ b/examples/direct/option.cc
+@@ -341,2 +341,3 @@ Options parseOptions(const std::vector<std::string>& args) {
+       "  --websocket_port=<port>            Raw WebSocket signaling port (default: 3457)\n"
++      "  --signaling_bind=<ipv4>            Bind signaling TCP and WebSocket to this address (default: 0.0.0.0)\n"
+       "  --call_setup_timeout_ms=<ms>       Abort a call not connected within this time (default: 45000)\n"
+@@ -375,2 +376,3 @@ Options parseOptions(const std::vector<std::string>& args) {
+     "--websocket_signaling", "--no-websocket_signaling", "--websocket_port",
++    "--signaling_bind",
+     "--call_setup_timeout_ms", "--media_grace_ms", "--hangup_ack_timeout_ms", "--tts_voice",
+@@ -597,2 +599,6 @@ Options parseOptions(const std::vector<std::string>& args) {
+         }
++        if (config_json.isMember("signaling_bind") && config_json["signaling_bind"].isString()) {
++             opts.signaling_bind = config_json["signaling_bind"].asString();
++             RTC_LOG(LS_INFO) << "Config signaling_bind: " << opts.signaling_bind;
++        }
+         for (auto [key, field] : {std::pair{"call_setup_timeout_ms", &opts.call_setup_timeout_ms},
+@@ -692,2 +698,4 @@ Options parseOptions(const std::vector<std::string>& args) {
+         opts.websocket_port = std::stoi(arg.substr(17));
++    } else if (arg.find("--signaling_bind=") == 0) {
++        opts.signaling_bind = arg.substr(17);
+     } else if (arg.find("--call_setup_timeout_ms=") == 0) {
+diff --git a/examples/direct/option.h b/examples/direct/option.h
+index 680e4f6330..6a91f4fb28 100644
+--- a/examples/direct/option.h
++++ b/examples/direct/option.h
+@@ -112,2 +112,5 @@ struct Options {
+     int websocket_port = 3457;        // raw WebSocket signaling port
++    // Empty keeps TCP and WebSocket signaling on 0.0.0.0. A dotted IPv4
++    // address binds only those two sockets. ICE and media UDP are unchanged.
++    std::string signaling_bind{};
+     int call_setup_timeout_ms = 45000;  // INVITE -> media connected
+diff --git a/examples/direct/signaling_bind.h b/examples/direct/signaling_bind.h
+new file mode 100644
+index 0000000000..5d5a33d537
+--- /dev/null
++++ b/examples/direct/signaling_bind.h
+@@ -0,0 +1,54 @@
++/*
++ * Signaling listen address. Empty means the historical INADDR_ANY bind.
++ * This chooses the TCP signaling socket and the WebSocket signaling socket
++ * only. It is not an ICE or media setting.
++ */
++#ifndef EXAMPLES_DIRECT_SIGNALING_BIND_H_
++#define EXAMPLES_DIRECT_SIGNALING_BIND_H_
++
++#include <arpa/inet.h>
++#include <netinet/in.h>
++
++#include <string>
++
++// On success writes the IPv4 address to bind, in network byte order.
++// An empty value and "0.0.0.0" both mean INADDR_ANY, which is the behavior
++// of binaries that do not know this setting. Any other value must be a
++// dotted IPv4 address. Hostnames are rejected so a typo cannot resolve onto
++// a public interface. On failure *addr is left unchanged.
++inline bool ResolveSignalingBind(const std::string& signaling_bind,
++                                 in_addr_t* addr,
++                                 std::string* error) {
++  if (error) {
++    error->clear();
++  }
++  if (!addr) {
++    if (error) {
++      *error = "missing address";
++    }
++    return false;
++  }
++  if (signaling_bind.empty() || signaling_bind == "0.0.0.0") {
++    *addr = htonl(INADDR_ANY);
++    return true;
++  }
++  for (unsigned char ch : signaling_bind) {
++    if (ch <= ' ' || ch >= 127) {
++      if (error) {
++        *error = "signaling_bind must be a dotted IPv4 address";
++      }
++      return false;
++    }
++  }
++  struct in_addr parsed = {};
++  if (inet_pton(AF_INET, signaling_bind.c_str(), &parsed) != 1) {
++    if (error) {
++      *error = "signaling_bind must be a dotted IPv4 address";
++    }
++    return false;
++  }
++  *addr = parsed.s_addr;
++  return true;
++}
++
++#endif  // EXAMPLES_DIRECT_SIGNALING_BIND_H_
+diff --git a/examples/direct/signaling_bind_test.cc b/examples/direct/signaling_bind_test.cc
+new file mode 100644
+index 0000000000..5d952a113e
+--- /dev/null
++++ b/examples/direct/signaling_bind_test.cc
+@@ -0,0 +1,78 @@
++// Standalone check for the signaling listen address. It does not link WebRTC.
++#include "signaling_bind.h"
++
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++namespace {
++
++int failures = 0;
++
++void Expect(bool cond, const char* name) {
++  if (!cond) {
++    std::fprintf(stderr, "FAIL %s\n", name);
++    ++failures;
++  }
++}
++
++in_addr_t Parse(const char* text) {
++  struct in_addr parsed = {};
++  if (inet_pton(AF_INET, text, &parsed) != 1) {
++    std::fprintf(stderr, "bad fixture %s\n", text);
++    std::exit(2);
++  }
++  return parsed.s_addr;
++}
++
++}  // namespace
++
++int main() {
++  in_addr_t addr = 0x11111111;
++  std::string error = "stale";
++  Expect(ResolveSignalingBind("", &addr, &error), "empty ok");
++  Expect(addr == htonl(INADDR_ANY), "empty is any");
++  Expect(error.empty(), "empty clears error");
++
++  addr = 0x22222222;
++  error = "stale";
++  Expect(ResolveSignalingBind("0.0.0.0", &addr, &error), "any literal ok");
++  Expect(addr == htonl(INADDR_ANY), "any literal");
++
++  addr = 0x33333333;
++  Expect(ResolveSignalingBind("127.0.0.1", &addr, &error), "loopback ok");
++  Expect(addr == Parse("127.0.0.1"), "loopback value");
++  Expect(addr != htonl(INADDR_ANY), "loopback is not any");
++
++  const in_addr_t sentinel = 0x44444444;
++  addr = sentinel;
++  Expect(!ResolveSignalingBind("localhost", &addr, &error), "reject hostname");
++  Expect(addr == sentinel, "hostname leaves addr");
++  Expect(!error.empty(), "hostname explains");
++
++  addr = sentinel;
++  Expect(!ResolveSignalingBind("turn.wilddolphin.us", &addr, &error),
++         "reject dns");
++  Expect(addr == sentinel, "dns leaves addr");
++
++  addr = sentinel;
++  Expect(!ResolveSignalingBind("::1", &addr, &error), "reject ipv6");
++  Expect(addr == sentinel, "ipv6 leaves addr");
++
++  addr = sentinel;
++  Expect(!ResolveSignalingBind("127.0.0.1 ", &addr, &error), "reject space");
++  Expect(addr == sentinel, "space leaves addr");
++
++  addr = sentinel;
++  Expect(ResolveSignalingBind("10.1.2.3", &addr, &error), "unicast ok");
++  Expect(addr == Parse("10.1.2.3"), "unicast value");
++
++  Expect(!ResolveSignalingBind("127.0.0.1", nullptr, &error), "null out");
++
++  if (failures) {
++    std::fprintf(stderr, "%d failure(s)\n", failures);
++    return 1;
++  }
++  std::printf("signaling_bind ok\n");
++  return 0;
++}

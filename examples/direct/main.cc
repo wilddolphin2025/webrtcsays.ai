@@ -23,6 +23,7 @@
 #include <mutex>
 #include <sstream>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <array>
 #include <algorithm>
@@ -38,6 +39,7 @@
 
 #include "direct.h"
 #include "option.h"
+#include "signaling_bind.h"
 #include "client.h"
 //#include "room.h"
 
@@ -203,8 +205,12 @@ static std::array<uint8_t, 20> Sha1Digest(const std::string& msg) {
 
 class DirectWebSocketProxy {
  public:
-  DirectWebSocketProxy(std::string tcp_host, int tcp_port, int ws_port)
-      : tcp_host_(std::move(tcp_host)), tcp_port_(tcp_port), ws_port_(ws_port) {}
+  DirectWebSocketProxy(std::string tcp_host, int tcp_port, int ws_port,
+                       std::string bind_host)
+      : tcp_host_(std::move(tcp_host)),
+        tcp_port_(tcp_port),
+        ws_port_(ws_port),
+        bind_host_(std::move(bind_host)) {}
 
   ~DirectWebSocketProxy() { Stop(); }
 
@@ -592,11 +598,19 @@ class DirectWebSocketProxy {
     // silently sharing the port and stealing browser connections.
     setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
+    in_addr_t bind_addr = htonl(INADDR_ANY);
+    std::string bind_error;
+    if (!ResolveSignalingBind(bind_host_, &bind_addr, &bind_error)) {
+      fprintf(stderr, "WebSocket signaling bind refused: %s\n", bind_error.c_str());
+      close(listen_fd_);
+      listen_fd_ = -1;
+      return;
+    }
     struct sockaddr_in sa;
     std::memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
     sa.sin_port = htons(static_cast<uint16_t>(ws_port_));
-    sa.sin_addr.s_addr = INADDR_ANY;
+    sa.sin_addr.s_addr = bind_addr;
     if (bind(listen_fd_, reinterpret_cast<struct sockaddr*>(&sa), sizeof(sa)) != 0 ||
         listen(listen_fd_, 16) != 0) {
       fprintf(stderr, "WebSocket signaling: cannot listen on port %d: %s\n",
@@ -606,7 +620,11 @@ class DirectWebSocketProxy {
       return;
     }
 
-    std::cerr << "WebSocket signaling listening on ws://0.0.0.0:" << ws_port_
+    char shown[INET_ADDRSTRLEN] = {};
+    if (!inet_ntop(AF_INET, &sa.sin_addr, shown, sizeof(shown))) {
+      std::snprintf(shown, sizeof(shown), "?");
+    }
+    std::cerr << "WebSocket signaling listening on ws://" << shown << ":" << ws_port_
               << " -> " << tcp_host_ << ":" << tcp_port_ << "\n";
 
     while (running_.load() && !g_shutdown) {
@@ -640,6 +658,7 @@ class DirectWebSocketProxy {
   std::string tcp_host_;
   int tcp_port_ = 3456;
   int ws_port_ = 3457;
+  std::string bind_host_;
   std::atomic<bool> running_{false};
   int listen_fd_ = -1;
   std::thread server_thread_;
@@ -722,6 +741,15 @@ int main(int argc, char* argv[]) {
   std::shared_ptr<DirectCallerClient> caller;
   std::unique_ptr<DirectWebSocketProxy> ws_proxy;
 
+  {
+    in_addr_t signaling_addr = 0;
+    std::string signaling_error;
+    if (!ResolveSignalingBind(opts.signaling_bind, &signaling_addr, &signaling_error)) {
+      fprintf(stderr, "Invalid signaling_bind: %s\n", signaling_error.c_str());
+      return 1;
+    }
+  }
+
   if (opts.websocket_signaling && (opts.mode == "callee" || opts.mode == "both")) {
     std::string callee_ip;
     int callee_port = 3456;
@@ -732,7 +760,14 @@ int main(int argc, char* argv[]) {
         callee_port = parsed_port;
       }
     }
-    ws_proxy = std::make_unique<DirectWebSocketProxy>("127.0.0.1", callee_port, opts.websocket_port);
+    // The bridge dials the TCP listener. INADDR_ANY accepts 127.0.0.1.
+    // A specific signaling_bind, such as 127.0.0.1, accepts only that address.
+    std::string dial_host = "127.0.0.1";
+    if (!opts.signaling_bind.empty() && opts.signaling_bind != "0.0.0.0") {
+      dial_host = opts.signaling_bind;
+    }
+    ws_proxy = std::make_unique<DirectWebSocketProxy>(
+        dial_host, callee_port, opts.websocket_port, opts.signaling_bind);
     ws_proxy->Start();
   }
   

@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>local caller</title></head>
+<body>
+<canvas id="paint" width="320" height="180"></canvas>
+<script>
+const room = "frame101";
+const canvas = document.getElementById("paint");
+const ctx = canvas.getContext("2d");
+let frame = 0;
+setInterval(() => {
+  frame += 1;
+  ctx.fillStyle = frame % 2 ? "#123" : "#321";
+  ctx.fillRect(0, 0, 320, 180);
+  ctx.fillStyle = "#fff";
+  ctx.fillRect((frame * 8) % 280, 40, 40, 40);
+}, 100);
+const stream = canvas.captureStream(10);
+const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+const ws = new WebSocket((location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/demo/view/ws/" + room);
+const pending = [];
+ws.onopen = () => ws.send("HELLO:viewer");
+ws.onmessage = async (event) => {
+  const text = String(event.data || "");
+  if (text.startsWith("200 OK")) {
+    ws.send('INVITE:{"agent":"video","room_name":"frame101","video":true}');
+    return;
+  }
+  if (text.startsWith("WAITING")) {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send("OFFER:" + offer.sdp);
+    return;
+  }
+  if (text.startsWith("ANSWER:")) {
+    await pc.setRemoteDescription({ type: "answer", sdp: text.slice(7) });
+    while (pending.length) await pc.addIceCandidate(pending.shift());
+    return;
+  }
+  if (text.startsWith("ICE:")) {
+    const payload = text.slice(4);
+    const cut = payload.indexOf(":");
+    const candidate = { candidate: payload.slice(cut + 1), sdpMLineIndex: Number(payload.slice(0, cut)) || 0 };
+    if (pc.remoteDescription) await pc.addIceCandidate(candidate);
+    else pending.push(candidate);
+  }
+};
+pc.onicecandidate = (event) => {
+  if (event.candidate && ws.readyState === WebSocket.OPEN) {
+    ws.send("ICE:" + (event.candidate.sdpMLineIndex || 0) + ":" + event.candidate.candidate);
+  }
+};
+</script>
+</body>
+</html>

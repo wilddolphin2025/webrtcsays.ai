@@ -27,6 +27,7 @@
 #include "direct.h"
 #include "client.h"
 #include "status.h"
+#include "sdp_diag.h"
 
 #if TARGET_OS_IOS || TARGET_OS_OSX
 #include "bonjour.h"
@@ -210,7 +211,7 @@ void DirectCaller::OnMessage(webrtc::AsyncPacketSocket* socket,
                            size_t len,
                            const webrtc::SocketAddress& remote_addr) {
     std::string raw(reinterpret_cast<const char*>(data), len);
-    RTC_LOG(LS_INFO) << "Caller received: " << raw;
+    RTC_LOG(LS_INFO) << "Caller received: " << RedactedSignalingLine(raw);
 
     // Helper to trim CR/LF and spaces so we can reliably compare tokens.
     auto trim = [](const std::string& in) {
@@ -288,7 +289,7 @@ void DirectCaller::OnMessage(webrtc::AsyncPacketSocket* socket,
         std::string payload = raw.substr(sizeof(Msg::kIcePrefix) - 1);
         size_t delim = payload.find(':');
         if (delim == std::string::npos) {
-            RTC_LOG(LS_ERROR) << "Malformed ICE payload received: " << payload;
+            RTC_LOG(LS_ERROR) << "Malformed ICE payload received";
         } else {
             int mline_index = atoi(payload.substr(0, delim).c_str());
             std::string candidate = payload.substr(delim + 1);

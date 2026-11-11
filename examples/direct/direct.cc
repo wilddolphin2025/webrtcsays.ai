@@ -425,8 +425,7 @@ bool DirectApplication::CreatePeerConnection() {
       turn.password = parts[i + 2];
       turn.tls_cert_policy = webrtc::PeerConnectionInterface::kTlsCertPolicySecure;
       config.servers.push_back(turn);
-      RTC_LOG(LS_INFO) << "TURN config: uri=" << parts[i]
-                       << " tls_verify=on user='" << turn.username << "'";
+      RTC_LOG(LS_INFO) << "TURN server configured, tls_verify=on";
     }
   }
   if (config.servers.empty()) {

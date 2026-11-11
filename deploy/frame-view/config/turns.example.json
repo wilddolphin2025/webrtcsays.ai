@@ -1,0 +1,8 @@
+{
+  "urls": [
+    "turns:turn.wilddolphin.us:5349?transport=tcp",
+    "turn:turn.wilddolphin.us:3478?transport=udp"
+  ],
+  "username": "REPLACE_ON_THE_HOST",
+  "credential": "REPLACE_ON_THE_HOST"
+}

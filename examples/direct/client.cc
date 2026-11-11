@@ -1194,7 +1194,9 @@ bool DirectClient::connectToWebSocketUrl(const SignalEndpoint& endpoint,
     cfg.ca_file = opts_.ca_file;
     cfg.cert_file_path = opts_.webrtc_cert_path;
     cfg.key_file_path = opts_.webrtc_key_path;
-    cfg.headers["path"] = AppendTokenQuery(endpoint.path, token);
+    cfg.headers["path"] = (opts_.token_in_query && !token.empty())
+                              ? AppendTokenQuery(endpoint.path, token)
+                              : endpoint.path;
     if (!token.empty()) cfg.headers["Authorization"] = "Bearer " + token;
     if (!ws_client_->connect(cfg)) {
         APP_LOG(AS_ERROR) << "Failed to connect signaling WebSocket";

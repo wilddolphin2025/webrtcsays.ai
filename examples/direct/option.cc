@@ -252,6 +252,60 @@ std::string AppendTokenQuery(std::string path, const std::string& token) {
   return path;
 }
 
+namespace {
+bool LoadTurnsFile(const std::string& path, std::string& turns_out, std::string& error) {
+  std::ifstream in(path);
+  if (!in) {
+    error = "cannot read turns file";
+    return false;
+  }
+  std::stringstream buffer;
+  buffer << in.rdbuf();
+  Json::Value root;
+  Json::CharReaderBuilder builder;
+  std::string json_error;
+  const std::string text = buffer.str();
+  std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+  if (!reader->parse(text.data(), text.data() + text.size(), &root, &json_error)) {
+    error = "turns file is not valid JSON";
+    return false;
+  }
+  if (!root.isObject() || !root["urls"].isArray() || !root["username"].isString() ||
+      !root["credential"].isString()) {
+    error = "turns file must contain urls, username, and credential";
+    return false;
+  }
+  const std::string username = root["username"].asString();
+  const std::string credential = root["credential"].asString();
+  if (username.empty() || credential.empty() || username.find(';') != std::string::npos ||
+      credential.find(';') != std::string::npos) {
+    error = "turns file credentials are empty or contain a separator";
+    return false;
+  }
+  std::string joined;
+  for (const auto& item : root["urls"]) {
+    if (!item.isString()) {
+      error = "turns file urls must be strings";
+      return false;
+    }
+    const std::string url = item.asString();
+    std::string ice_error;
+    if (!IceUrlUsesHostname(url, ice_error)) {
+      error = ice_error;
+      return false;
+    }
+    if (!joined.empty()) joined += ";";
+    joined += url + ";" + username + ";" + credential;
+  }
+  if (joined.empty()) {
+    error = "turns file has no urls";
+    return false;
+  }
+  turns_out = joined;
+  return true;
+}
+}  // namespace
+
 // Basic split that honours quotes – only used for cmd-line string variant.
 std::vector<std::string> stringSplit(std::string input, std::string delimiter)
 {
@@ -345,6 +399,8 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --tts_voice=<clip>                 Personalized TTS voice: reference clip in POCKET_TTS_VOICES_DIR\n"
       "  --signal-url=wss://host:443/path   Signaling WebSocket (hostname, explicit port and path)\n"
       "  --token-file=<path>                Bearer token file (or env DIRECT_SIGNAL_TOKEN). Never logged.\n"
+      "  --token-query                      Also put the token in the WebSocket path. Default is the Authorization header only.\n"
+      "  --turns-file=<json>                TURN urls and credentials from a file. The file is not logged.\n"
       "  --token-env=<name>                 Env var that holds the bearer token (default DIRECT_SIGNAL_TOKEN)\n"
       "  --ca-file=<pem>                    CA bundle used to verify the signaling TLS certificate\n"
       "  --stun=stun:host:port              STUN server (repeatable, hostnames only)\n"
@@ -375,6 +431,7 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--websocket_signaling", "--no-websocket_signaling", "--websocket_port",
     "--call_setup_timeout_ms", "--media_grace_ms", "--hangup_ack_timeout_ms", "--tts_voice",
     "--signal-url", "--signal_url", "--token-file", "--token_file",
+    "--token-query", "--no-token-query", "--turns-file", "--turns_file",
     "--token-env", "--token_env", "--ca-file", "--ca_file", "--stun",
     "--codec", "--res", "--fps", "--video-source", "--video_source",
     "--audio", "--stats", "--duration",
@@ -483,7 +540,7 @@ Options parseOptions(const std::vector<std::string>& args) {
                         joined += t[i].asString();
                     }
                     opts.turns = joined;
-                    RTC_LOG(LS_INFO) << "Config turns array joined to: " << opts.turns;
+                    RTC_LOG(LS_INFO) << "Config TURN list loaded, credentials not shown";
                 } else if (t.size() > 0 && t[0].isArray()) {
                     std::string joined;
                     for (Json::ArrayIndex j = 0; j < t.size(); ++j) {
@@ -497,7 +554,7 @@ Options parseOptions(const std::vector<std::string>& args) {
                     }
                     if (!joined.empty()) {
                         opts.turns = joined;
-                        RTC_LOG(LS_INFO) << "Config turns (array-of-arrays) joined to: " << opts.turns;
+                        RTC_LOG(LS_INFO) << "Config TURN entries loaded, credentials not shown";
                     }
                 } else {
                     RTC_LOG(LS_WARNING) << "`turns` array has unexpected structure; ignored.";
@@ -704,6 +761,13 @@ Options parseOptions(const std::vector<std::string>& args) {
     } else if (arg.find("--token-file=") == 0 || arg.find("--token_file=") == 0) {
         const auto eq = arg.find('=');
         opts.token_file = stripQuotes(arg.substr(eq + 1));
+    } else if (arg == "--token-query") {
+        opts.token_in_query = true;
+    } else if (arg == "--no-token-query") {
+        opts.token_in_query = false;
+    } else if (arg.find("--turns-file=") == 0 || arg.find("--turns_file=") == 0) {
+        const auto eq = arg.find('=');
+        opts.turns_file = stripQuotes(arg.substr(eq + 1));
     } else if (arg.find("--token-env=") == 0 || arg.find("--token_env=") == 0) {
         const auto eq = arg.find('=');
         opts.token_env = stripQuotes(arg.substr(eq + 1));
@@ -888,6 +952,19 @@ Options parseOptions(const std::vector<std::string>& args) {
       break;
     }
   }
+  if (!opts.turns_file.empty()) {
+    if (!opts.turns.empty()) {
+      opts.parse_error = "use --turns-file without --turns so credentials stay off the command line";
+    } else {
+      std::string loaded;
+      std::string file_error;
+      if (!LoadTurnsFile(opts.turns_file, loaded, file_error)) {
+        opts.parse_error = file_error;
+      } else {
+        opts.turns = loaded;
+      }
+    }
+  }
   if (opts.parse_error.empty() && !opts.turns.empty()) {
     std::vector<std::string> parts = stringSplit(opts.turns, ";");
     for (size_t i = 0; i + 2 < parts.size(); i += 3) {
@@ -943,7 +1020,7 @@ std::string getUsage(const Options opts) {
   usage << "WebRTC Key Path: " << opts.webrtc_key_path << "\\n";
   usage << "WebRTC Speech Initial Playout WAV: "
         << opts.webrtc_speech_initial_playout_wav << "\\n";
-  usage << "TURN Server: " << (!opts.turns.empty() ? opts.turns : "(not set)") << "\\n";
+  usage << "TURN Server: " << (opts.turns.empty() ? "(not set)" : "(configured, credentials not shown)") << "\\n";
   usage << "VPN Interface: " << (!opts.vpn.empty() ? opts.vpn : "(not set)") << "\\n";
   usage << "Camera: " << (!opts.camera.empty() ? opts.camera : "(not set)") << "\\n";
   if (!opts.config_path.empty()) {

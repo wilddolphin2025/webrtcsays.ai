@@ -339,6 +339,7 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --room_name=<name>                 Room name to join (default: room1)\n"
       "  --websocket_signaling, --no-websocket_signaling  Enable/disable raw WebSocket signaling endpoint (default: enabled)\n"
       "  --websocket_port=<port>            Raw WebSocket signaling port (default: 3457)\n"
+      "  --signaling_bind=<ipv4>            Bind signaling TCP and WebSocket to this address (default: 0.0.0.0)\n"
       "  --call_setup_timeout_ms=<ms>       Abort a call not connected within this time (default: 45000)\n"
       "  --media_grace_ms=<ms>              Hang up after media stays disconnected this long (default: 10000)\n"
       "  --hangup_ack_timeout_ms=<ms>       Wait this long for 200 OK after BYE (default: 2000)\n"
@@ -373,6 +374,7 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--llama_llava_yuv", "--turns", "--vpn", "--camera", "--bonjour_name",
     "--user_name", "--target_name", "--room_name",
     "--websocket_signaling", "--no-websocket_signaling", "--websocket_port",
+    "--signaling_bind",
     "--call_setup_timeout_ms", "--media_grace_ms", "--hangup_ack_timeout_ms", "--tts_voice",
     "--signal-url", "--signal_url", "--token-file", "--token_file",
     "--token-env", "--token_env", "--ca-file", "--ca_file", "--stun",
@@ -595,6 +597,10 @@ Options parseOptions(const std::vector<std::string>& args) {
              RTC_LOG(LS_INFO) << "Config websocket_port: " << config_json["websocket_port"].asInt();
              opts.websocket_port = config_json["websocket_port"].asInt();
         }
+        if (config_json.isMember("signaling_bind") && config_json["signaling_bind"].isString()) {
+             opts.signaling_bind = config_json["signaling_bind"].asString();
+             RTC_LOG(LS_INFO) << "Config signaling_bind: " << opts.signaling_bind;
+        }
         for (auto [key, field] : {std::pair{"call_setup_timeout_ms", &opts.call_setup_timeout_ms},
                                   std::pair{"media_grace_ms", &opts.media_grace_ms},
                                   std::pair{"hangup_ack_timeout_ms", &opts.hangup_ack_timeout_ms}}) {
@@ -690,6 +696,8 @@ Options parseOptions(const std::vector<std::string>& args) {
         opts.room_name = arg.substr(12);
     } else if (arg.find("--websocket_port=") == 0) {
         opts.websocket_port = std::stoi(arg.substr(17));
+    } else if (arg.find("--signaling_bind=") == 0) {
+        opts.signaling_bind = arg.substr(17);
     } else if (arg.find("--call_setup_timeout_ms=") == 0) {
         opts.call_setup_timeout_ms = std::stoi(arg.substr(24));
     } else if (arg.find("--media_grace_ms=") == 0) {

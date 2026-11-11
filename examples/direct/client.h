@@ -243,7 +243,7 @@ private:
     void onIncomingCall(const std::string& peer_id, const std::string& sdp);
     // Helper to generate an SDP answer and send it via signaling server
     void createAndSendAnswer(const std::string& peer_id);
-    void setupWebRTCListener();
+    bool setupWebRTCListener();
     void publishAddressToSignalingServer();
     void onIceCandidateReceived(const std::string& peer_id, const std::string& candidate);
 

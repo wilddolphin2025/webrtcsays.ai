@@ -17,6 +17,7 @@
 #include <unistd.h>  // For close
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>  // For memset
 #include <memory>
@@ -25,6 +26,7 @@
 #include <vector>
 
 #include "direct.h"
+#include "signaling_bind.h"
 #include "status.h"
 #include "parser.h"
 
@@ -52,6 +54,14 @@ DirectCallee::~DirectCallee() {
 bool DirectCallee::StartListening() {
   // Core listening setup logic as a callable
   auto listen_fn = [this]() -> bool {
+    // Resolve once. A bad signaling_bind must not fall back to every interface.
+    in_addr_t bind_addr = htonl(INADDR_ANY);
+    std::string bind_error;
+    if (!ResolveSignalingBind(opts_.signaling_bind, &bind_addr, &bind_error)) {
+      RTC_LOG(LS_ERROR) << "signaling bind refused: " << bind_error;
+      fprintf(stderr, "signaling bind refused: %s\n", bind_error.c_str());
+      return false;
+    }
     const int kMaxRetries = 10;
     const int kMaxRetryTimeMs = 30000; // 30 seconds total
     const int kInitialDelayMs = 100;   // Start with 100ms delay
@@ -91,12 +101,13 @@ bool DirectCallee::StartListening() {
       }
 #endif
 
-      // Setup server address
+      // signaling_bind was resolved above. Empty keeps INADDR_ANY.
+      // This socket is TCP signaling only; media ICE is unaffected.
       struct sockaddr_in addr;
       memset(&addr, 0, sizeof(addr));
       addr.sin_family = AF_INET;
       addr.sin_port = htons(local_port_);
-      addr.sin_addr.s_addr = INADDR_ANY;
+      addr.sin_addr.s_addr = bind_addr;
 
       // Attempt to bind
       if (::bind(raw_socket, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
@@ -131,7 +142,13 @@ bool DirectCallee::StartListening() {
       }
       
       // Bind succeeded, continue with socket setup
-      RTC_LOG(LS_INFO) << "Bind succeeded on attempt " << (attempt + 1) << " (port " << local_port_ << ")";
+      char shown[INET_ADDRSTRLEN] = {};
+      if (!inet_ntop(AF_INET, &addr.sin_addr, shown, sizeof(shown))) {
+        std::snprintf(shown, sizeof(shown), "?");
+      }
+      fprintf(stderr, "Signaling TCP listening on %s:%d\n", shown, local_port_);
+      RTC_LOG(LS_INFO) << "Bind succeeded on attempt " << (attempt + 1)
+                       << " (" << shown << ":" << local_port_ << ")";
 
       // Retrieve the actual port assigned by the OS if port was 0
       socklen_t addrlen = sizeof(addr);

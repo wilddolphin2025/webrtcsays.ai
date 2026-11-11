@@ -33,7 +33,22 @@ class ContractTests(unittest.TestCase):
         self.assertIn("#1B2838", css)
         self.assertIn("14px/1.4", css)
         self.assertNotIn("#101418", css)
-        self.assertNotIn("getUserMedia", (ROOT / "page" / "view.js").read_text(encoding="utf-8"))
+        self.assertIn('<h1 class="wm">WebRTCsays.AI</h1>', page)
+        self.assertIn("<title>Frame viewer</title>", page)
+        self.assertNotIn("WebRTCSays", page)
+        script = (ROOT / "page" / "view.js").read_text(encoding="utf-8")
+        connect = script.split("async function connect()", 1)[1].split("async function ", 1)[0]
+        self.assertNotIn("getDisplayMedia", connect)
+        self.assertNotIn("getUserMedia", connect)
+        self.assertIn("screen=unavailable", script)
+        self.assertIn("screen=cancelled", script)
+        self.assertIn("mic=cancelled", script)
+        self.assertIn("getDisplayMedia", script)
+        self.assertIn("getUserMedia({ audio: true, video: false })", script)
+        self.assertIn('id="view-share"', page)
+        self.assertIn('id="view-mic"', page)
+        self.assertIn('id="view-remote-audio"', page)
+        self.assertNotIn("getUserMedia({ video: true", script)
 
     def test_nginx_adds_viewer_routes_only(self) -> None:
         conf = (ROOT / "nginx" / "frame-view-locations.conf").read_text(encoding="utf-8")
@@ -42,6 +57,9 @@ class ContractTests(unittest.TestCase):
         self.assertIn("127.0.0.1:3461", conf)
         self.assertIn("X-Original-URI $demo_orig_uri", conf)
         self.assertIn('X-Demo-Auth "ok"', conf)
+        self.assertIn("location ~ '^/demo/view/ws/", conf)
+        self.assertIn("location ~ '^/demo/view/(?!ws$|assets$)", conf)
+        self.assertNotIn("location ~ ^/demo/view/ws/", conf)
         import re
         for pattern in (
             r"^location = /demo/\s*\{",

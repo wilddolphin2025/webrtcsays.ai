@@ -407,7 +407,9 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --codec=h264|vp8|vp9               Force a video codec (default: H.264, then VP8, then VP9)\n"
       "  --res=WIDTHxHEIGHT                 Send resolution (default 1920x1080 when video is on)\n"
       "  --fps=30                           Send frame rate, 1..60 (default 30)\n"
-      "  --video-source=pattern|camera|screen  pattern if no camera; screen falls back to pattern\n"
+      "  --video-source=pattern|camera|screen|image  pattern if unset; image repeats a PNG\n"
+      "  --image-file=<png>                 PNG still for --video-source=image. Letterboxed, not a capture.\n"
+      "  --remote-window=auto|openvr|sdl|none  Show incoming video. auto prefers an OpenVR overlay.\n"
       "  --audio=dummy                      Use a fake audio device (no Pulse/PipeWire)\n"
       "  --stats=<seconds>                  Log a GetStats JSON line on this interval\n"
       "  --duration=<seconds>               Hang up and exit after this many seconds\n"
@@ -415,10 +417,10 @@ Options parseOptions(const std::vector<std::string>& args) {
       "Examples (callee called first, encryption is recommended):\n"
       "  directcall --config settings.json\n"
       "  directcall --config settings.json --mode=callee --no-encryption\n"
-      "  directcall --mode=callee --user_name=alice --room_name=meeting1 192.168.88.225:3456 --no-encryption\n"
-      "  directcall --mode=callee --user_name=bob --room_name=meeting1 192.168.88.225:3456 --encryption --whisper"
+      "  directcall --mode=callee --user_name=alice --room_name=meeting1 --signal-url=wss://rtc.wilddolphin.us:443/demo/ws --no-encryption\n"
+      "  directcall --mode=callee --user_name=bob --room_name=meeting1 --signal-url=wss://rtc.wilddolphin.us:443/demo/ws --encryption --whisper"
       " --whisper_model=/path/to/model.bin --llama_model=/path/to/llama.gguf\n"
-      "  directcall --mode=caller --user_name=charlie --target_name=alice --room_name=room101 192.168.88.225:3456 --encryption\n"
+      "  directcall --mode=caller --user_name=charlie --target_name=alice --room_name=room101 --signal-url=wss://rtc.wilddolphin.us:443/demo/view/ws/frame101 --encryption\n"
       ;
 
   // Set of known options (with and without =)
@@ -434,6 +436,7 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--token-query", "--no-token-query", "--turns-file", "--turns_file",
     "--token-env", "--token_env", "--ca-file", "--ca_file", "--stun",
     "--codec", "--res", "--fps", "--video-source", "--video_source",
+    "--image-file", "--image_file", "--remote-window", "--remote_window",
     "--audio", "--stats", "--duration",
     "--help"
   };
@@ -800,6 +803,13 @@ Options parseOptions(const std::vector<std::string>& args) {
         const auto eq = arg.find('=');
         opts.video_source = arg.substr(eq + 1);
         opts.video = true;
+    } else if (arg.find("--image-file=") == 0 || arg.find("--image_file=") == 0) {
+        const auto eq = arg.find('=');
+        opts.image_file = stripQuotes(arg.substr(eq + 1));
+        opts.video = true;
+    } else if (arg.find("--remote-window=") == 0 || arg.find("--remote_window=") == 0) {
+        const auto eq = arg.find('=');
+        opts.remote_window = arg.substr(eq + 1);
     } else if (arg.find("--audio=") == 0) {
         opts.audio = arg.substr(8);
     } else if (arg.find("--stats=") == 0) {
@@ -988,6 +998,13 @@ Options parseOptions(const std::vector<std::string>& args) {
     if (opts.video_source.empty()) {
       opts.video_source = opts.camera.empty() ? "pattern" : "camera";
     }
+    if (opts.video_source != "pattern" && opts.video_source != "camera" &&
+        opts.video_source != "screen" && opts.video_source != "image") {
+      opts.parse_error = "video source must be pattern, camera, screen, or image";
+    }
+    if (opts.video_source == "image" && opts.image_file.empty()) {
+      opts.parse_error = "image source needs --image-file pointing at a PNG";
+    }
     std::string codec = opts.video_codec;
     for (char& c : codec) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (codec == "h.264") codec = "h264";
@@ -996,6 +1013,10 @@ Options parseOptions(const std::vector<std::string>& args) {
       codec.clear();
     }
     opts.video_codec = codec;
+  }
+  if (opts.remote_window != "auto" && opts.remote_window != "openvr" &&
+      opts.remote_window != "sdl" && opts.remote_window != "none") {
+    opts.parse_error = "remote window must be auto, openvr, sdl, or none";
   }
 
   RTC_LOG(LS_INFO) << "Mode used " << opts.mode; // Log final mode value

@@ -348,6 +348,41 @@ class PanelTests(unittest.TestCase):
         self.assertNotIn("setOverlayTransformAbsolute", source)
         self.assertNotIn("TrackingUniverseStanding", source)
 
+    def test_stop_releases_the_overlay_before_the_child(self):
+        from webrtcsays_panel.overlay_app import shutdown_runtime
+
+        class Overlay:
+            def hideOverlay(self, handle):
+                del handle
+
+            def destroyOverlay(self, handle):
+                del handle
+
+        class Runtime:
+            def shutdown(self):
+                return None
+
+        child = []
+        order = shutdown_runtime((Runtime(), Overlay(), 7), lambda: child.append("closed"))
+        self.assertEqual(order, ["hide", "destroy", "shutdown", "child"])
+        self.assertEqual(child, ["closed"])
+        broken = []
+
+        class Bad:
+            def hideOverlay(self, handle):
+                raise RuntimeError("hide")
+
+            def destroyOverlay(self, handle):
+                broken.append(("destroy", handle))
+
+            def shutdown(self):
+                broken.append("shutdown")
+
+        again = shutdown_runtime((Bad(), Bad(), 3), lambda: broken.append("child"))
+        self.assertEqual(again[0], "hide-error")
+        self.assertIn("child", again)
+        self.assertLess(again.index("shutdown"), again.index("child"))
+
     def test_upload_size_and_hello_lines_do_not_redraw(self):
         import gc
         import tracemalloc

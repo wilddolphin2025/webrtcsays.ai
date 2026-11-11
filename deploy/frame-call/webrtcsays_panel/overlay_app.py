@@ -247,6 +247,36 @@ def _request_stop(flag):
     return handler
 
 
+def release_overlay(vr):
+    """Drop the overlay while this process and its texture buffer are still alive.
+
+    Order is hide, destroy, then VR_Shutdown. The caller waits on directcall
+    only after this returns.
+    """
+    steps = []
+    if not vr:
+        return steps
+    openvr_mod, overlay, handle = vr
+    for name, fn in (
+        ("hide", lambda: overlay.hideOverlay(handle)),
+        ("destroy", lambda: overlay.destroyOverlay(handle)),
+        ("shutdown", lambda: openvr_mod.shutdown()),
+    ):
+        try:
+            fn()
+            steps.append(name)
+        except Exception:
+            steps.append(name + "-error")
+    return steps
+
+
+def shutdown_runtime(vr, close_child):
+    steps = release_overlay(vr)
+    close_child()
+    steps.append("child")
+    return steps
+
+
 def main():
     session = make_session()
     state_path = Path.home() / "babelfish" / "call" / "app" / "state.txt"
@@ -297,9 +327,7 @@ def main():
                     pass
             time.sleep(0.05)
     finally:
-        session.close()
-        if vr is not None:
-            try:
-                vr[0].shutdown()
-            except Exception:
-                pass
+        # Release the compositor client before the child wait. The running
+        # build called VR_Shutdown only after a 5s SIGTERM plus SIGKILL, with
+        # the overlay still shown.
+        shutdown_runtime(vr, session.close)

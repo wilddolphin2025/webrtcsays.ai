@@ -40,7 +40,7 @@ Connect reads that same token file and GETs `https://rtc.wilddolphin.us/demo/tur
 The view shows WebRTCsays.AI, the remote picture, a local still preview, Connect, and Hangup.
 
 - Connect starts one directcall on cores 2, 3, 4, and 7. The command passes `--video` explicitly, with the still at 1920x1080 and 30 fps, for at most 15 minutes. It does not pass `--audio=dummy`, so the caller's default audio track stays enabled. Launch does not start the call. Connect again while that same process is alive does not start another.
-- Hangup checks the pid, start time, executable, and full argv, then SIGTERM. SIGKILL follows only if it is still that process.
+- Hangup checks the pid, start time, executable, and full argv, then SIGTERM. SIGKILL follows only if it is still that process. directcall's own shutdown budget is 10 seconds, so a 5 second wait can still be followed by SIGKILL. That signal is only the owned caller. Stopping the panel hides and destroys the OpenVR overlay, then shuts down the OpenVR client, and only then waits on the caller. A Steam library shortcut may launch the app. It is not an autostart entry.
 - Closing the app stops the owned call.
 - The guard uses the hottest thermal zone, not only zone0. At or above 80C for 6 seconds, or the panel or the call at or above 7 GiB RSS, stops the owned call and exits the panel.
 - While the picture is unchanged, the overlay image is uploaded once. Each new remote frame is copied into that same image with numpy and uploaded. There is no 4 fps cap. The native writer scales into the 1920x820 video rectangle and updates one shared mapping, so the app does not rebuild the buttons per frame.

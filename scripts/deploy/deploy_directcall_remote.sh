@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# UNSAFE on the shared production VPS (217.77.3.65 / rtc.wilddolphin.us).
+# Phase 9 can rewrite /etc/turnserver.conf and restart coturn.
+# Phase 11 deletes sites-enabled/default, installs a catch-all server_name _
+# on port 443, and reloads nginx. That can take down rtc, Matrix, and LiveKit.
+# The stage-1 demo does not use this script. See deploy/webrtcsays-demo/README.md.
+# A real run against that host exits unless DEPLOY_ALLOW_SHARED_VPS is the
+# exact override string. Do not set the override for the demo.
+
 # Credentials come from the environment; nothing secret lives in this repo.
 : "${TURN_USER:?export TURN_USER (coturn user)}"
 : "${TURN_PASS:?export TURN_PASS (coturn password)}"
@@ -56,6 +64,19 @@ if deploy_dry_run; then
   echo "[deploy] Deploy path: ${DEPLOY_PATH}"
   exit 0
 fi
+
+case "${DEPLOY_HOST}" in
+  217.77.3.65|rtc.wilddolphin.us)
+    if [ "${DEPLOY_ALLOW_SHARED_VPS:-}" != "I-understand-this-can-break-rtc" ]; then
+      echo "[deploy] REFUSING ${DEPLOY_HOST}: this script is unsafe on the shared VPS." >&2
+      echo "[deploy] Phase 11 deletes sites-enabled/default, installs a catch-all :443 server, and reloads nginx." >&2
+      echo "[deploy] Phase 9 can rewrite coturn. That can take down rtc, Matrix, and LiveKit." >&2
+      echo "[deploy] Stage-1 demo deploy does not use this script. See deploy/webrtcsays-demo/README.md." >&2
+      exit 1
+    fi
+    echo "[deploy] WARNING: shared-VPS override set. This can break rtc, Matrix, and LiveKit." >&2
+    ;;
+esac
 
 SSH_OPTS=(-i "${SSH_KEY_PATH}" -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
 REMOTE="${DEPLOY_USER}@${DEPLOY_HOST}"
@@ -152,6 +173,7 @@ fi
 run_remote "mkdir -p '${MODELS_PATH}' '${MODELS_PATH}/piper'; if [ ! -f '${MODELS_PATH}/${WHISPER_MODEL_FILE}' ]; then echo 'Downloading Whisper...'; curl -L ${HF_AUTH} -o '${MODELS_PATH}/${WHISPER_MODEL_FILE}' '${WHISPER_MODEL_URL}'; else echo 'Whisper present'; fi; if [ ! -f '${MODELS_PATH}/${LLAMA_MODEL_FILE}' ]; then echo 'Downloading LLM...'; curl -L ${HF_AUTH} -o '${MODELS_PATH}/${LLAMA_MODEL_FILE}' '${LLAMA_MODEL_URL}'; else echo 'LLM present'; fi; if [ ! -f '${MODELS_PATH}/piper/${PIPER_MODEL_FILE}' ]; then echo 'Downloading Piper...'; curl -L ${HF_AUTH} -o '${MODELS_PATH}/piper/${PIPER_MODEL_FILE}' '${PIPER_MODEL_URL}'; curl -L ${HF_AUTH} -o '${MODELS_PATH}/piper/${PIPER_MODEL_FILE}.json' '${PIPER_MODEL_JSON_URL}'; else echo 'Piper present'; fi"
 
 echo "[deploy] === Phase 9: TURN server ==="
+echo "[deploy] WARNING: this phase can rewrite /etc/turnserver.conf and restart coturn."
 if [ "${SKIP_COTURN}" = "true" ]; then
   echo "[deploy] Skipping coturn"
 else
@@ -224,6 +246,8 @@ RSVEOF
 systemctl daemon-reload && systemctl enable ${SERVICE_NAME}.service && systemctl enable ${SERVICE_NAME}-restart.timer && systemctl restart ${SERVICE_NAME}.service && systemctl restart ${SERVICE_NAME}-restart.timer && echo 'systemd configured and started'"
 
 echo "[deploy] === Phase 11: nginx WebSocket proxy ==="
+echo "[deploy] WARNING: this phase deletes sites-enabled/default, writes server_name _, and reloads nginx."
+echo "[deploy] Do not run it on a shared VPS that already serves rtc, Matrix, or LiveKit."
 run_remote "if [ -f /etc/nginx/sites-enabled/default ]; then rm -f /etc/nginx/sites-enabled/default; fi; cat > /etc/nginx/sites-enabled/directcall <<'NGXEOF'
 server {
     listen 80;

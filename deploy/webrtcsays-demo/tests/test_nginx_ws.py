@@ -425,7 +425,7 @@ http {{
         self.assertFalse(payload["minted"])
         self.assertTrue(payload["temporary"])
         self.assertEqual(payload["credential"], "stage1pass")
-        self.assertIn("no-store", headers.get("Cache-Control"))
+        self.assertEqual(headers.get_all("Cache-Control"), ["no-store, private"])
         code, body, _headers = self.http(
             "GET",
             "/demo/",

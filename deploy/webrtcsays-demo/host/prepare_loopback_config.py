@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Copy the installed directcall JSON and set only the TCP address.
+"""Copy the installed directcall JSON for the loopback demo.
 
-The WebSocket and TCP sockets in the current binary still bind 0.0.0.0.
-The address field is what the in-process bridge dials. This copy sets it
-to 127.0.0.1 and leaves every other key, including turns, unchanged.
+address is only the port the in-process bridge dials. It does not choose
+the listen interface. signaling_bind=127.0.0.1 does, and only a binary with
+the PR 18 patch honors it. Every other key, including turns, is copied.
 Stdout lists key names only. Default mode does not write.
 """
 
@@ -30,10 +30,16 @@ def main() -> int:
         return 1
     original_address = data.get("address")
     data["address"] = "127.0.0.1:3458"
+    data["signaling_bind"] = "127.0.0.1"
     if "websocket_port" not in data:
         data["websocket_port"] = 3459
     sys.stdout.write("address -> 127.0.0.1:3458\n")
-    sys.stdout.write("preserved keys: " + ", ".join(sorted(data.keys())) + "\n")
+    sys.stdout.write("signaling_bind -> 127.0.0.1\n")
+    sys.stdout.write(
+        "address alone does not bind the listeners; signaling_bind requires the PR 18 binary\n"
+    )
+    sys.stdout.write("preserved keys: " + ", ".join(sorted(k for k in data.keys() if k != "turns")) + "\n")
+    sys.stdout.write("preserved turns key\n")
     if isinstance(original_address, str):
         sys.stdout.write("previous address was replaced\n")
     if not args.apply:

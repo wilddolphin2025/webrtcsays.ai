@@ -9,7 +9,9 @@ touch any other vhost. Do not point it at a production file from CI.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
+import stat
 import sys
 import time
 from pathlib import Path
@@ -112,6 +114,47 @@ def transform(text: str, server_name: str) -> str:
     return insert_include(updated)
 
 
+def site_target(site: Path) -> Path:
+    """Edit the file a symlink points at. Do not replace the symlink."""
+    if site.is_symlink():
+        target = site.resolve()
+        if not target.is_file():
+            raise SystemExit("site symlink does not point at a file")
+        return target
+    if not site.is_file():
+        raise SystemExit("site path is not a file")
+    return site
+
+
+def assert_backup_outside(backup_dir: Path, site: Path, nginx_dir: Path) -> Path:
+    """Nginx includes sites-enabled/* and often sites-available/*. A sibling .bak is a second server."""
+    backup = backup_dir.expanduser().resolve()
+    target_dir = site_target(site).resolve().parent
+    link_dir = site.parent.resolve()
+    nginx = nginx_dir.expanduser().resolve()
+    included = {"sites-enabled", "sites-available", "conf.d", "snippets", "nginx.conf.d"}
+    if included.intersection(backup.parts):
+        raise SystemExit("refusing to store the nginx backup in a directory nginx includes")
+    if backup in {target_dir, link_dir}:
+        raise SystemExit("refusing to store the nginx backup beside the site file")
+    if backup == nginx or backup.is_relative_to(nginx):
+        raise SystemExit("refusing to store the nginx backup inside the nginx config tree")
+    return backup
+
+
+def write_backup(backup_dir: Path, site: Path, nginx_dir: Path, original: str) -> Path:
+    directory = assert_backup_outside(backup_dir, site, nginx_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    os.chmod(directory, 0o700)
+    stamp = time.strftime("%Y%m%d%H%M%S") + f"-{time.time_ns()}"
+    destination = directory / f"{site_target(site).name}.bak-demo-{stamp}"
+    if destination.exists():
+        raise SystemExit("refusing to overwrite an existing nginx backup")
+    destination.write_text(original, encoding="utf-8")
+    os.chmod(destination, stat.S_IRUSR | stat.S_IWUSR)
+    return destination
+
+
 def copy_templates(nginx_dir: Path, locations: Path, http_conf: Path) -> None:
     snippet_dir = nginx_dir / "snippets"
     conf_dir = nginx_dir / "conf.d"
@@ -128,25 +171,29 @@ def main() -> int:
     parser.add_argument("--locations", required=True)
     parser.add_argument("--http-conf", required=True)
     parser.add_argument("--server-name", default="rtc.wilddolphin.us")
+    parser.add_argument("--backup-dir", default="/root/webrtcsays-demo-backups")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     site = Path(args.site)
     refuse_path(site)
-    original = site.read_text(encoding="utf-8")
+    target = site_target(site)
+    original = target.read_text(encoding="utf-8")
     updated = transform(original, args.server_name)
     if not args.apply:
+        assert_backup_outside(Path(args.backup_dir), site, Path(args.nginx_dir))
         sys.stdout.write("check only: site file not modified\n")
+        sys.stdout.write(f"backup directory {args.backup_dir}\n")
         if INCLUDE not in original:
             sys.stdout.write("would insert the demo include\n")
         if "location = /ws" in original and "auth_request" not in original.split("location = /ws", 1)[1].split("location", 1)[0]:
             sys.stdout.write("would comment the unauthenticated location = /ws block\n")
         return 0
-    stamp = time.strftime("%Y%m%d%H%M%S")
-    backup = site.with_name(site.name + f".bak-demo-{stamp}")
-    backup.write_text(original, encoding="utf-8")
-    site.write_text(updated, encoding="utf-8")
+    backup = write_backup(Path(args.backup_dir), site, Path(args.nginx_dir), original)
+    target.write_text(updated, encoding="utf-8")
+    if site.is_symlink() and site.resolve() != target:
+        raise SystemExit("site symlink no longer points at the edited file")
     copy_templates(Path(args.nginx_dir), Path(args.locations), Path(args.http_conf))
-    sys.stdout.write(f"applied demo nginx snippet; backup {backup.name}\n")
+    sys.stdout.write(f"applied demo nginx snippet; backup {backup}\n")
     return 0
 
 

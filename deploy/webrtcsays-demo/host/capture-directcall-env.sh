@@ -14,15 +14,26 @@ fi
 if [ -z "${ENV_FILE}" ]; then
   if [ -n "${DEMO_DIRECTCALL_PID:-}" ]; then
     ENV_FILE="/proc/${DEMO_DIRECTCALL_PID}/environ"
-  else
-    echo "set DEMO_ENVIRON_FILE or DEMO_DIRECTCALL_PID" >&2
-    exit 1
   fi
 fi
 
-if [ ! -r "${ENV_FILE}" ]; then
-  echo "environment source is not readable" >&2
-  exit 1
+write_empty() {
+  echo "original process environment is unavailable"
+  echo "the previous directcall process may already be dead"
+  echo "writing an empty directcall.env"
+  echo "do not edit whisper sources to recreate an environment"
+  if [ "${APPLY}" -ne 1 ]; then
+    echo "check only: environment file not written"
+    exit 0
+  fi
+  install -d -m 0700 "$(dirname "${OUT}")"
+  install -m 0600 /dev/null "${OUT}"
+  echo "wrote empty environment file mode 0600"
+  exit 0
+}
+
+if [ -z "${ENV_FILE}" ] || [ ! -r "${ENV_FILE}" ]; then
+  write_empty
 fi
 
 TMP="$(mktemp)"

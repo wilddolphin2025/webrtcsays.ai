@@ -64,6 +64,12 @@ class HostContractTests(unittest.TestCase):
         self.assertIn("auth_request /_demo_auth;", locations)
         self.assertIn("return 302 /demo/login?next=$demo_log_uri;", locations)
         self.assertNotIn("$request_uri", locations)
+        http_active = "\n".join(
+            line for line in http_conf.splitlines() if not line.strip().startswith("#")
+        )
+        self.assertNotIn("limit_req_status", http_active)
+        self.assertEqual(locations.count("limit_req_status 429;"), 2)
+        self.assertEqual(locations.count('add_header Cache-Control "no-store, private" always;'), 3)
 
     def test_stage_nginx_is_additive_and_refuses_default_site(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -97,6 +103,7 @@ class HostContractTests(unittest.TestCase):
                 sys.executable, str(script),
                 "--site", str(site),
                 "--nginx-dir", str(root / "nginx"),
+                "--backup-dir", str(root / "backups"),
                 "--locations", str(ROOT / "nginx" / "webrtcsays-demo-locations.conf"),
                 "--http-conf", str(ROOT / "nginx" / "webrtcsays-demo-http.conf"),
             ]
@@ -134,6 +141,103 @@ class HostContractTests(unittest.TestCase):
             self.assertEqual(updated.count("webrtcsays-demo-locations.conf"), site.read_text(encoding="utf-8").count("webrtcsays-demo-locations.conf"))
             self.assertTrue((root / "nginx" / "snippets" / "webrtcsays-demo-locations.conf").is_file())
             self.assertTrue((root / "nginx" / "conf.d" / "webrtcsays-demo-http.conf").is_file())
+            backups = list(root.rglob("*.bak-demo-*"))
+            self.assertTrue(backups)
+            self.assertTrue(all(path.parent == root / "backups" for path in backups))
+
+    def test_nginx_backup_stays_out_of_sites_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = root / "nginx"
+            available = tree / "sites-available"
+            enabled = tree / "sites-enabled"
+            available.mkdir(parents=True)
+            enabled.mkdir()
+            body = textwrap.dedent("""
+                server {
+                    listen 127.0.0.1:18080;
+                    server_name rtc.wilddolphin.us;
+                    location = /ws {
+                        proxy_pass http://127.0.0.1:3459;
+                    }
+                    location /ws/ {
+                        return 200 "signal\\n";
+                    }
+                    include /etc/nginx/snippets/babelfish.conf;
+                    location / {
+                        return 200 "gateway\\n";
+                    }
+                }
+            """).strip() + "\n"
+            real = available / "rtc.wilddolphin.us.conf"
+            real.write_text(body, encoding="utf-8")
+            link = enabled / "rtc.wilddolphin.us.conf"
+            link.symlink_to("../sites-available/rtc.wilddolphin.us.conf")
+            backups = root / "backups"
+            script = ROOT / "host" / "nginx_stage.py"
+            refused = subprocess.run(
+                [sys.executable, str(script), "--site", str(link), "--nginx-dir", str(tree),
+                 "--backup-dir", str(enabled / "oops"),
+                 "--locations", str(ROOT / "nginx" / "webrtcsays-demo-locations.conf"),
+                 "--http-conf", str(ROOT / "nginx" / "webrtcsays-demo-http.conf"),
+                 "--apply"],
+                check=False, capture_output=True, text=True,
+            )
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertEqual(real.read_text(encoding="utf-8"), body)
+            applied = subprocess.run(
+                [sys.executable, str(script), "--site", str(link), "--nginx-dir", str(tree),
+                 "--backup-dir", str(backups),
+                 "--locations", str(ROOT / "nginx" / "webrtcsays-demo-locations.conf"),
+                 "--http-conf", str(ROOT / "nginx" / "webrtcsays-demo-http.conf"),
+                 "--apply"],
+                check=False, capture_output=True, text=True,
+            )
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), real.resolve())
+            self.assertNotEqual(real.read_text(encoding="utf-8"), body)
+            self.assertFalse(list(enabled.glob("*.bak*")))
+            self.assertFalse(list(available.glob("*.bak*")))
+            saved = list(backups.glob("*.bak-demo-*"))
+            self.assertEqual(len(saved), 1)
+            self.assertEqual(saved[0].read_text(encoding="utf-8"), body)
+            self.assertEqual(stat.S_IMODE(saved[0].stat().st_mode), 0o600)
+            included = sorted(path.name for path in enabled.iterdir())
+            self.assertEqual(included, ["rtc.wilddolphin.us.conf"])
+            chunks = []
+            for path in sorted(enabled.iterdir(), key=lambda item: item.name):
+                chunks.append("\n".join(
+                    line for line in path.read_text(encoding="utf-8").splitlines()
+                    if not line.strip().startswith("include ")
+                ))
+            server_text = "\n".join(chunks)
+            prefix = root / "prefix"
+            for name in ("client_body", "proxy", "fastcgi", "uwsgi", "scgi"):
+                (prefix / name).mkdir(parents=True)
+            conf = prefix / "nginx.conf"
+            conf.write_text(
+                "worker_processes 1;\n"
+                f"error_log {prefix / 'error.log'} info;\n"
+                f"pid {prefix / 'nginx.pid'};\n"
+                "events { worker_connections 16; }\n"
+                "http {\n"
+                "  access_log off;\n"
+                f"  client_body_temp_path {prefix / 'client_body'};\n"
+                f"  proxy_temp_path {prefix / 'proxy'};\n"
+                f"  fastcgi_temp_path {prefix / 'fastcgi'};\n"
+                f"  uwsgi_temp_path {prefix / 'uwsgi'};\n"
+                f"  scgi_temp_path {prefix / 'scgi'};\n"
+                f"{server_text}\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            checked = subprocess.run(
+                ["nginx", "-p", str(prefix), "-c", str(conf), "-t"],
+                check=False, capture_output=True, text=True,
+            )
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            self.assertNotIn("conflicting server name", checked.stderr)
 
     def test_prepare_config_preserves_turns_without_printing_them(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -167,6 +271,9 @@ class HostContractTests(unittest.TestCase):
             self.assertNotIn(secret, applied.stdout)
             data = json.loads(dest.read_text(encoding="utf-8"))
             self.assertEqual(data["address"], "127.0.0.1:3458")
+            self.assertEqual(data["signaling_bind"], "127.0.0.1")
+            self.assertIn("address alone does not bind", applied.stdout)
+            self.assertIn("PR 18", applied.stdout)
             self.assertEqual(data["websocket_port"], 3459)
             self.assertEqual(data["turns"][0][2], secret)
             self.assertEqual(data["user_name"], "Slim")
@@ -255,6 +362,63 @@ class HostContractTests(unittest.TestCase):
             self.assertNotIn("TURN_PASS", text)
             self.assertNotIn("SECRET_TOKEN", text)
             self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o600)
+
+    def test_capture_env_allows_dead_process(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "directcall.env"
+            script = ROOT / "host" / "capture-directcall-env.sh"
+            done = subprocess.run(
+                ["bash", str(script), "--apply"],
+                check=False, capture_output=True, text=True,
+                env={
+                    **os.environ,
+                    "DEMO_ENV_OUT": str(out),
+                    "DEMO_DIRECTCALL_PID": "999999",
+                    "DEMO_ENVIRON_FILE": "",
+                },
+            )
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("unavailable", done.stdout)
+            self.assertIn("whisper", done.stdout)
+            self.assertEqual(out.read_text(encoding="utf-8"), "")
+            self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o600)
+
+    def test_auth_secret_perms_are_container_uid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conf = root / "webrtcsays-demo"
+            conf.mkdir()
+            (conf / "session.key").write_text("k" * 48, encoding="utf-8")
+            (conf / "password").write_text("browserpass1234\n", encoding="utf-8")
+            (conf / "directcall.env").write_text("LD_LIBRARY_PATH=/opt/lib\n", encoding="utf-8")
+            os.chmod(conf / "session.key", 0o644)
+            os.chmod(conf / "directcall.env", 0o600)
+            script = ROOT / "host" / "set-auth-perms.sh"
+            refused = subprocess.run(
+                ["bash", str(script), "--apply"],
+                check=False, capture_output=True, text=True,
+                env={**os.environ, "DEMO_AUTH_CONF": str(root / "sites-enabled" / "secrets")},
+            )
+            self.assertNotEqual(refused.returncode, 0)
+            done = subprocess.run(
+                ["bash", str(script), "--apply"],
+                check=False, capture_output=True, text=True,
+                env={
+                    **os.environ,
+                    "DEMO_AUTH_CONF": str(conf),
+                    "DEMO_AUTH_UID": str(os.getuid()),
+                    "DEMO_AUTH_GID": str(os.getgid()),
+                },
+            )
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(stat.S_IMODE(conf.stat().st_mode), 0o700)
+            self.assertEqual(conf.stat().st_uid, os.getuid())
+            self.assertEqual(stat.S_IMODE((conf / "session.key").stat().st_mode), 0o600)
+            self.assertEqual((conf / "session.key").stat().st_uid, os.getuid())
+            self.assertEqual(stat.S_IMODE((conf / "password").stat().st_mode), 0o600)
+            self.assertEqual((conf / "directcall.env").read_text(encoding="utf-8"), "LD_LIBRARY_PATH=/opt/lib\n")
+            self.assertIn("directcall.env is not changed", done.stdout)
 
     def test_install_auth_check_does_not_run_docker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

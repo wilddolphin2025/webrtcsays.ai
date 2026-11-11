@@ -43,6 +43,16 @@ for name in session.key; do
     exit 1
   fi
 done
+auth_uid="${DEMO_AUTH_UID:-8793}"
+key_uid="$(stat -c %u "${CONF}/session.key")"
+key_mode="$(stat -c %a "${CONF}/session.key")"
+dir_uid="$(stat -c %u "${CONF}")"
+dir_mode="$(stat -c %a "${CONF}")"
+if [ "${key_uid}" != "${auth_uid}" ] || [ "${key_mode}" != "600" ] || [ "${dir_uid}" != "${auth_uid}" ] || [ "${dir_mode}" != "700" ]; then
+  echo "session.key and ${CONF} must be owned by uid ${auth_uid}, directory 0700, files 0600" >&2
+  echo "run deploy/webrtcsays-demo/host/set-auth-perms.sh --apply" >&2
+  exit 1
+fi
 if [ ! -f "${CONF}/password" ] && [ ! -f "${CONF}/tokens" ]; then
   echo "need password or tokens" >&2
   exit 1

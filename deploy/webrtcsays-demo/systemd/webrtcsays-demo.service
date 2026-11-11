@@ -1,11 +1,12 @@
 # Stage-1 demo callee.
-# Uses the binary already installed on the host and a loopback copy of the
-# existing JSON config. Does not install packages, edit nginx, or change coturn.
-# The current binary binds the TCP and WebSocket signaling sockets to
-# 0.0.0.0 (examples/direct/callee.cc and examples/direct/main.cc). ufw must
-# keep 3458 and 3459 closed. Public entry is authenticated nginx on 443.
-# Capture the live process environment into the EnvironmentFile before
-# stopping that process. See deploy/webrtcsays-demo/README.md.
+# Uses the installed binary and a copy of the existing JSON config.
+# Does not install packages, edit nginx, or change coturn.
+# Loopback signaling requires the PR 18 binary and signaling_bind=127.0.0.1.
+# address alone does not choose the listen interface. ufw is not a substitute.
+# Public entry is authenticated nginx on 443. Media ICE is unchanged.
+# The EnvironmentFile may be empty when the previous process is already
+# gone. Do not edit whisper sources to fill it in.
+# See deploy/webrtcsays-demo/README.md.
 
 [Unit]
 Description=WebRTCSays demo callee (existing directcall, local signaling)

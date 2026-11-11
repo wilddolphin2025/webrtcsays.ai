@@ -1,0 +1,12 @@
+{
+  "mode": "static",
+  "temporary": true,
+  "minted": false,
+  "username": "<turn-username>",
+  "credential": "<turn-credential>",
+  "uris": [
+    "turn:turn.wilddolphin.us:3478?transport=udp",
+    "turn:turn.wilddolphin.us:3478?transport=tcp",
+    "turns:turn.wilddolphin.us:5349?transport=tcp"
+  ]
+}

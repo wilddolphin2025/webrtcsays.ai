@@ -1,5 +1,7 @@
 # DirectCall deployment
 
+Do not run `deploy_directcall_remote.sh` or the Deploy DirectCall workflow against the shared production VPS (`217.77.3.65` / `rtc.wilddolphin.us`). Phase 11 replaces nginx with a catch-all server and can take down rtc, Matrix, and LiveKit. The script exits if that host is the target. Stage-1 demo install steps are in `deploy/webrtcsays-demo/README.md`.
+
 This repo now includes:
 
 - `scripts/ci/build_directcall_linux.sh` - builds and packages `directcall` for Linux.

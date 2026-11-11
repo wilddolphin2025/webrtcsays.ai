@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="base-uri 'none'; object-src 'none'; form-action 'self'; frame-ancestors 'none'">
+  <title>WebRTCSays demo</title>
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #101418; color: #f4f7fb; }
+    main { max-width: 920px; margin: 0 auto; padding: 16px 16px 40px; }
+    h1 { font-size: 1.4rem; }
+    .row { display: flex; gap: 12px; margin: 12px 0; flex-wrap: wrap; align-items: center; }
+    video, audio { background: #05070a; border-radius: 8px; width: min(420px, 100%); height: auto; aspect-ratio: 16 / 9; }
+    button { min-height: 44px; font-size: 17px; padding: 8px 16px; touch-action: manipulation; }
+    #log { white-space: pre-wrap; background: #1b222b; color: #d5dde6; padding: 12px; border-radius: 8px; height: 220px; overflow: auto; }
+    .note { color: #c5d0dc; line-height: 1.4; }
+    form { margin: 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>WebRTCSays demo</h1>
+    <p class="note">Room room101, callee Slim. Signaling uses this page's hostname. TURN is requested after login and is not stored in the page. The static relay account is temporary.</p>
+    <p id="endpoint" class="note"></p>
+    <div class="row">
+      <button id="startBtn" type="button">Start call</button>
+      <button id="hangupBtn" type="button">Hang up</button>
+      <form method="post" action="/demo/logout">
+        <button type="submit">Sign out</button>
+      </form>
+      <span id="status">idle</span>
+    </div>
+    <div class="row">
+      <div>
+        <div>Local</div>
+        <video id="localVideo" autoplay playsinline webkit-playsinline muted></video>
+      </div>
+      <div>
+        <div>Remote</div>
+        <video id="remoteVideo" autoplay playsinline webkit-playsinline></video>
+        <audio id="remoteAudio" autoplay playsinline></audio>
+      </div>
+    </div>
+    <pre id="log"></pre>
+  </main>
+  <script>
+    const ROOM = "room101";
+    const TARGET = "Slim";
+    let ws = null;
+    let pc = null;
+    let localStream = null;
+    let remoteStream = null;
+    let waitingSeen = false;
+    let inviteSent = false;
+    let callTimeout = null;
+    let remoteProbeTimer = null;
+    const pendingRemoteCandidates = [];
+
+    const logEl = document.getElementById("log");
+    const statusEl = document.getElementById("status");
+    const localVideo = document.getElementById("localVideo");
+    const remoteVideo = document.getElementById("remoteVideo");
+    const remoteAudio = document.getElementById("remoteAudio");
+
+    function log(msg) {
+      const line = "[" + new Date().toLocaleTimeString() + "] " + msg;
+      logEl.textContent += line + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setStatus(s) {
+      statusEl.textContent = s;
+      log("status=" + s);
+    }
+
+    function signalingUrl() {
+      const host = location.hostname;
+      const ipv4 = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(host);
+      if (!host || host.indexOf(":") !== -1 || ipv4) {
+        throw new Error("Refusing to open signaling on a raw IP address.");
+      }
+      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+      return scheme + "//" + location.host + "/demo/ws";
+    }
+
+    document.getElementById("endpoint").textContent = "Signaling stays on " + location.host + "/demo/ws";
+
+    function cleanIncoming(raw) {
+      return raw.replace(/^[\u0000-\u001f]+/, "");
+    }
+
+    function toLegacySdp(sdp) {
+      const lines = sdp.split(/\r\n|\n/).filter(Boolean);
+      const allowAudio = new Set(["opus", "pcmu", "pcma", "g722", "isac", "telephone-event"]);
+      const allowVideo = new Set(["vp8", "vp9", "h264", "av1"]);
+      const keepPt = new Set();
+      let currentMedia = "";
+      for (const line of lines) {
+        if (line.startsWith("m=audio ")) currentMedia = "audio";
+        else if (line.startsWith("m=video ")) currentMedia = "video";
+        else if (line.startsWith("m=")) currentMedia = "";
+        if (line.startsWith("a=rtpmap:")) {
+          const m = line.match(/^a=rtpmap:(\d+)\s+([^/]+)/i);
+          if (!m) continue;
+          const pt = m[1];
+          const codec = m[2].toLowerCase();
+          if ((currentMedia === "audio" && allowAudio.has(codec)) ||
+              (currentMedia === "video" && allowVideo.has(codec))) {
+            keepPt.add(pt);
+          }
+        }
+      }
+      const out = [];
+      currentMedia = "";
+      for (const line of lines) {
+        if (/ulpfec|flexfec|rtx|red/i.test(line)) continue;
+        if (line.startsWith("m=audio ") || line.startsWith("m=video ")) {
+          currentMedia = line.startsWith("m=audio ") ? "audio" : "video";
+          const parts = line.split(" ");
+          const pts = parts.slice(3).filter((pt) => keepPt.has(pt));
+          out.push(pts.length ? parts.slice(0, 3).concat(pts).join(" ") : line);
+          continue;
+        }
+        if (line.startsWith("a=rtpmap:") || line.startsWith("a=fmtp:") || line.startsWith("a=rtcp-fb:")) {
+          const m = line.match(/^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)/i);
+          if (m && !keepPt.has(m[1])) continue;
+        }
+        out.push(line);
+      }
+      return out.join("\r\n") + "\r\n";
+    }
+
+    function resetTimeout() {
+      if (callTimeout) clearTimeout(callTimeout);
+      callTimeout = setTimeout(() => log("call setup timeout (no auto-cancel)"), 120000);
+    }
+
+    function stopTimeout() {
+      if (callTimeout) {
+        clearTimeout(callTimeout);
+        callTimeout = null;
+      }
+    }
+
+    function startRemoteProbe() {
+      if (remoteProbeTimer) clearInterval(remoteProbeTimer);
+      remoteProbeTimer = setInterval(() => {
+        log("remote video probe: " + remoteVideo.videoWidth + "x" + remoteVideo.videoHeight);
+      }, 2000);
+    }
+
+    function stopRemoteProbe() {
+      if (remoteProbeTimer) {
+        clearInterval(remoteProbeTimer);
+        remoteProbeTimer = null;
+      }
+    }
+
+    async function ensureLocalMedia() {
+      if (localStream) return;
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      } catch (err) {
+        log("camera unavailable, continuing with audio only");
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      }
+      localVideo.srcObject = localStream;
+      log("local media ready");
+    }
+
+    async function loadIceServers() {
+      const servers = [{ urls: "stun:stun.l.google.com:19302" }];
+      const res = await fetch("/demo/turn", {
+        credentials: "same-origin",
+        cache: "no-store",
+        redirect: "manual",
+        referrerPolicy: "no-referrer"
+      });
+      if (res.status === 401 || res.status === 302 || res.type === "opaqueredirect") {
+        location.assign("/demo/login?next=/demo/");
+        throw new Error("login required");
+      }
+      if (!res.ok) {
+        log("TURN unavailable; continuing with STUN only. Static credentials are temporary and are not embedded in this page.");
+        return servers;
+      }
+      const data = await res.json();
+      if (data.minted === true || data.mode !== "static" || data.temporary !== true || data.rest_api === true) {
+        log("Refusing TURN settings that are not the temporary static account.");
+        return servers;
+      }
+      if (data.uris && data.username && data.credential) {
+        servers.push({ urls: data.uris, username: data.username, credential: data.credential });
+        log("TURN: temporary static account. REST credentials are not minted.");
+      }
+      return servers;
+    }
+
+    async function createPeerConnection() {
+      if (pc) return;
+      await ensureLocalMedia();
+      const iceServers = await loadIceServers();
+      remoteStream = new MediaStream();
+      remoteVideo.srcObject = remoteStream;
+      remoteAudio.srcObject = remoteStream;
+      remoteVideo.onloadedmetadata = () => {
+        remoteVideo.play().catch((e) => log("remote video play blocked: " + (e.message || e)));
+      };
+      pc = new RTCPeerConnection({ iceServers });
+      for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
+      pc.ontrack = (ev) => {
+        const tracks = ev.streams && ev.streams.length ? ev.streams[0].getTracks() : [ev.track];
+        for (const track of tracks) {
+          if (track) remoteStream.addTrack(track);
+        }
+        log("remote track: " + (ev.track ? ev.track.kind : "unknown"));
+        remoteAudio.play().catch(() => {});
+        remoteVideo.play().catch(() => {});
+      };
+      pc.onicecandidate = (ev) => {
+        if (!ev.candidate || !ws || ws.readyState !== WebSocket.OPEN) return;
+        const msg = "ICE:" + ev.candidate.sdpMLineIndex + ":" + ev.candidate.candidate;
+        ws.send(msg);
+        log(">> ICE");
+      };
+      pc.onconnectionstatechange = () => {
+        setStatus("pc:" + pc.connectionState);
+        if (pc.connectionState === "connected") {
+          stopTimeout();
+          startRemoteProbe();
+        }
+      };
+    }
+
+    async function startCall() {
+      const wsUrl = signalingUrl();
+      waitingSeen = false;
+      inviteSent = false;
+      ws = new WebSocket(wsUrl);
+      resetTimeout();
+      ws.onerror = () => setStatus("ws-error");
+      ws.onclose = () => setStatus("ws-closed");
+      ws.onmessage = async (e) => {
+        const msg = cleanIncoming(String(e.data || ""));
+        const shown = msg.startsWith("OFFER:") || msg.startsWith("ANSWER:") ? msg.slice(0, 12) + "…" : msg.slice(0, 180);
+        log("<< " + shown);
+        resetTimeout();
+        if (msg.startsWith("486") || msg.startsWith("480") || msg.startsWith("400")) {
+          setStatus("reject:" + msg.slice(0, 40));
+          return;
+        }
+        if (msg.startsWith("200 OK") && !inviteSent) {
+          ws.send('INVITE:{"agent":"audio","room_name":"' + ROOM + '","video":true}');
+          inviteSent = true;
+          setStatus("invite-sent");
+          log(">> INVITE room101");
+          return;
+        }
+        if (msg.startsWith("WAITING")) {
+          waitingSeen = true;
+          await createPeerConnection();
+          const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+          const legacySdp = toLegacySdp(offer.sdp || "");
+          await pc.setLocalDescription({ type: "offer", sdp: legacySdp });
+          ws.send("OFFER:" + legacySdp);
+          log(">> OFFER sent");
+          return;
+        }
+        if (msg.startsWith("ANSWER:")) {
+          await createPeerConnection();
+          await pc.setRemoteDescription({ type: "answer", sdp: msg.slice("ANSWER:".length) });
+          log("remote ANSWER applied");
+          stopTimeout();
+          while (pendingRemoteCandidates.length) {
+            await pc.addIceCandidate(pendingRemoteCandidates.shift());
+          }
+          return;
+        }
+        if (msg.startsWith("ICE:")) {
+          await createPeerConnection();
+          const payload = msg.slice("ICE:".length);
+          const i = payload.indexOf(":");
+          if (i < 0) return;
+          const mline = Number(payload.slice(0, i));
+          const ice = {
+            candidate: payload.slice(i + 1),
+            sdpMLineIndex: Number.isFinite(mline) ? mline : 0,
+            sdpMid: "0"
+          };
+          if (pc.remoteDescription) await pc.addIceCandidate(ice);
+          else pendingRemoteCandidates.push(ice);
+          return;
+        }
+        if (msg.startsWith("BYE")) {
+          setStatus("remote-bye");
+          hangup(false);
+        }
+      };
+      ws.onopen = () => {
+        setStatus("ws-open");
+        ws.send("HELLO:" + TARGET);
+        log(">> HELLO Slim");
+      };
+    }
+
+    function hangup(sendBye) {
+      if (sendBye === undefined) sendBye = true;
+      stopTimeout();
+      stopRemoteProbe();
+      try {
+        if (sendBye && ws && ws.readyState === WebSocket.OPEN) ws.send("BYE");
+      } catch (err) {}
+      if (pc) {
+        pc.close();
+        pc = null;
+      }
+      if (localStream) {
+        for (const track of localStream.getTracks()) track.stop();
+        localStream = null;
+      }
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+      setStatus("ended");
+    }
+
+    document.getElementById("startBtn").addEventListener("click", () => {
+      remoteVideo.play().catch(() => {});
+      remoteAudio.play().catch(() => {});
+      startCall().catch((e) => log("start failed: " + (e.message || e)));
+    });
+    document.getElementById("hangupBtn").addEventListener("click", () => hangup(true));
+  </script>
+</body>
+</html>

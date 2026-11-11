@@ -1,0 +1,30 @@
+# Stage-1 demo callee.
+# Uses the binary already installed on the host and a loopback copy of the
+# existing JSON config. Does not install packages, edit nginx, or change coturn.
+# The current binary binds the TCP and WebSocket signaling sockets to
+# 0.0.0.0 (examples/direct/callee.cc and examples/direct/main.cc). ufw must
+# keep 3458 and 3459 closed. Public entry is authenticated nginx on 443.
+# Capture the live process environment into the EnvironmentFile before
+# stopping that process. See deploy/webrtcsays-demo/README.md.
+
+[Unit]
+Description=WebRTCSays demo callee (existing directcall, local signaling)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/directcall3-dev
+EnvironmentFile=-/etc/webrtcsays-demo/directcall.env
+ExecStart=/opt/wsai-m156/src/out/release/directcall --config /opt/directcall3-dev/config.demo.json
+Restart=always
+RestartSec=3
+TimeoutStartSec=120
+TimeoutStopSec=20
+MemoryMax=12G
+CPUQuota=600%
+LimitNOFILE=65536
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

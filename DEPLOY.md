@@ -1,5 +1,7 @@
 # Deployment Guide
 
+`scripts/deploy/deploy_directcall_remote.sh` and the Deploy DirectCall workflows are unsafe on the shared production VPS (`217.77.3.65`, `rtc.wilddolphin.us`). Phase 11 deletes `sites-enabled/default`, installs a catch-all `server_name _` on port 443, and reloads nginx. Phase 9 can rewrite coturn. Either one can take down rtc, Matrix, and LiveKit. A real run against that host now exits. The stage-1 demo is installed by hand from `deploy/webrtcsays-demo/README.md`. Do not run this script as that install or as its rollback.
+
 ## Workflows
 
 | Workflow | Purpose | Target |
@@ -34,7 +36,7 @@
 7. **coturn TURN server** (CPU deploy only, skipped on GPU):
    - Install coturn, auto-detect server IP
    - Configure ports 3478 (UDP/TCP) + 5349 (TLS)
-   - Credentials: `webrtcsays.ai` / `wilddolphin`
+   - Credentials are injected on the host at deploy time. Do not write them in this file. Any static pair previously published here is obsolete and must not be reused.
 8. **Build whillats on target** (`talkingface` branch):
    - Auto-detects CUDA (`nvcc` present → `GGML_CUDA=ON`)
    - Builds `libwhillats.so` natively (avoids SIGILL from cross-compiled binaries)
@@ -99,8 +101,8 @@ TURN relay: coturn on 217.77.3.65 (ports 3478, 5349)
   "llama_threads": 8,
   "tts_threads": 4,
   "turns": [
-    ["turn:217.77.3.65:3478?transport=udp", "<turn-username>", "<turn-password>"],
-    ["turn:217.77.3.65:5349?transport=tcp", "<turn-username>", "<turn-password>"]
+    ["turn:turn.wilddolphin.us:3478?transport=udp", "<turn-username>", "<turn-password>"],
+    ["turns:turn.wilddolphin.us:5349?transport=tcp", "<turn-username>", "<turn-password>"]
   ],
   "talking_face": "/opt/directcall/RobotPhoneLogo.jpeg"
 }

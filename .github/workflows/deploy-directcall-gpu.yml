@@ -40,6 +40,20 @@ jobs:
           ref: ${{ inputs.git_ref }}
           submodules: recursive
 
+      - name: Refuse shared production VPS
+        if: ${{ !inputs.dry_run }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST_GPU }}
+        run: |
+          case "${DEPLOY_HOST:-}" in
+            217.77.3.65|rtc.wilddolphin.us)
+              echo "Refusing Deploy DirectCall against the shared VPS."
+              echo "Phase 11 replaces nginx and can take down rtc, Matrix, and LiveKit."
+              echo "Stage-1 demo deploy is manual: deploy/webrtcsays-demo/README.md"
+              exit 1
+              ;;
+          esac
+
       - name: Build directcall package
         run: |
           chmod +x scripts/ci/build_directcall_linux.sh

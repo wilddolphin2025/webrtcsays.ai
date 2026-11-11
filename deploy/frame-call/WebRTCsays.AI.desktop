@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=WebRTCsays.AI
+GenericName=WebRTCsays.AI
+Comment=Connect and disconnect the Frame call from inside VR
+Exec=/bin/sh -c 'exec "$HOME/babelfish/call/app/webrtcsays_app.sh"'
+Terminal=false
+Categories=Network;AudioVideo;
+StartupNotify=false

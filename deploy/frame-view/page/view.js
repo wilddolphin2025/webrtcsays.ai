@@ -13,6 +13,7 @@
   let statsTimer = null;
   let localVideoTrack = null;
   let localAudioTrack = null;
+  let answerSent = false;
   const pendingIce = [];
 
   function log(line) {
@@ -135,26 +136,55 @@
     return scheme + "://" + location.host + "/demo/view/ws/" + room;
   }
 
-  async function shareLocalMedia() {
-    const display = await navigator.mediaDevices.getDisplayMedia({
-      video: {
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
-        frameRate: { ideal: 30 }
-      },
-      audio: false
-    });
-    localVideoTrack = display.getVideoTracks()[0];
-    const settings = localVideoTrack.getSettings ? localVideoTrack.getSettings() : {};
-    log("screen=" + (settings.width || "?") + "x" + (settings.height || "?") +
-      "@" + (settings.frameRate || "?"));
+  function screenSettings(track) {
+    const settings = track && track.getSettings ? track.getSettings() : {};
+    return (settings.width || "?") + "x" + (settings.height || "?") +
+      "@" + (settings.frameRate || "?");
+  }
+
+  async function shareScreen() {
+    const devices = navigator.mediaDevices;
+    if (!devices || !devices.getDisplayMedia) {
+      log("screen=unavailable");
+      if (!ws) await connect();
+      return;
+    }
     try {
-      const mic = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      localAudioTrack = mic.getAudioTracks()[0] || null;
-      log("mic=browser");
-    } catch (_error) {
-      localAudioTrack = null;
+      const display = await devices.getDisplayMedia({
+        video: {
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 30 }
+        },
+        audio: false
+      });
+      localVideoTrack = display.getVideoTracks()[0];
+      log("screen=" + screenSettings(localVideoTrack));
+      if (answerSent) log("screen=granted-after-answer");
+    } catch (error) {
+      if (localVideoTrack) localVideoTrack.stop();
+      localVideoTrack = null;
+      const name = error && error.name;
+      const unavailable = name === "NotSupportedError" || name === "NotFoundError" || name === "NotReadableError";
+      log(unavailable ? "screen=unavailable" : "screen=cancelled");
+    }
+    if (!ws) await connect();
+  }
+
+  async function shareMic() {
+    const devices = navigator.mediaDevices;
+    if (!devices || !devices.getUserMedia) {
       log("mic=unavailable");
+      return;
+    }
+    try {
+      const mic = await devices.getUserMedia({ audio: true, video: false });
+      if (localAudioTrack) localAudioTrack.stop();
+      localAudioTrack = mic.getAudioTracks()[0] || null;
+      log(localAudioTrack ? "mic=browser" : "mic=unavailable");
+      if (answerSent && localAudioTrack) log("mic=granted-after-answer");
+    } catch (_error) {
+      log("mic=cancelled");
     }
   }
 
@@ -193,9 +223,14 @@
       if (kind === "video" && !videoTransceiver) videoTransceiver = transceiver;
       if (kind === "audio" && !audioTransceiver) audioTransceiver = transceiver;
     });
-    if (videoTransceiver && localVideoTrack) {
-      videoTransceiver.direction = "sendrecv";
-      videoTransceiver.sender.replaceTrack(localVideoTrack);
+    if (videoTransceiver) {
+      if (localVideoTrack) {
+        videoTransceiver.direction = "sendrecv";
+        videoTransceiver.sender.replaceTrack(localVideoTrack);
+        log("screen=sending");
+      } else {
+        videoTransceiver.direction = "recvonly";
+      }
       log("video " + preferH264(videoTransceiver));
     }
     if (audioTransceiver && localAudioTrack) {
@@ -218,6 +253,7 @@
     const answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
     ws.send("ANSWER:" + answer.sdp);
+    answerSent = true;
     log("ANSWER sent");
   }
 
@@ -272,6 +308,7 @@
       ws = null;
     }
     stopLocalMedia();
+    answerSent = false;
     if (statusEl.textContent.indexOf("remote-bye") !== 0 && statusEl.textContent !== "rejected") {
       setStatus("disconnected");
     }
@@ -282,11 +319,7 @@
       setStatus("bad-address");
       return;
     }
-    try {
-      await shareLocalMedia();
-    } catch (_error) {
-      setStatus("share-cancelled");
-      stopLocalMedia();
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
     unlockPlayback();
@@ -308,6 +341,12 @@
 
   connectBtn.addEventListener("click", () => {
     connect().catch(() => setStatus("connect-failed"));
+  });
+  document.getElementById("view-share").addEventListener("click", () => {
+    shareScreen().catch(() => setStatus("connect-failed"));
+  });
+  document.getElementById("view-mic").addEventListener("click", () => {
+    shareMic().catch(() => log("mic=cancelled"));
   });
   disconnectBtn.addEventListener("click", () => disconnect(true));
   remoteVideo.addEventListener("click", () => { unlockPlayback(); });

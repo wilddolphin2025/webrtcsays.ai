@@ -13,7 +13,7 @@
   <header class="top">
     <div class="wrap topin">
       <div class="brand">
-        <h1 class="wm">WebRTCSays</h1>
+        <h1 class="wm">WebRTCsays.AI</h1>
         <p class="by">by Wilddolphin LLC</p>
       </div>
     </div>
@@ -21,9 +21,11 @@
   <main class="wrap">
     <section class="card" aria-labelledby="view-heading">
       <h2 id="view-heading">Frame viewer</h2>
-      <p>Connect shares this computer's screen and microphone, then shows the Frame's picture. The microphone is the browser mic, not system or game audio. The Frame picture is the still image directcall is sending, not a capture of the game. Playback starts from Connect so iPhone Safari can show the picture.</p>
+      <p>Connect watches the Frame. It does not share this device's screen or microphone, so iPhone and iPad can receive. Share screen sends this computer's display. Microphone is a separate consent and is the browser mic, not system or game audio. Cancelling either prompt still leaves the viewer receiving. The Frame picture is the still image directcall is sending, not a capture of the game.</p>
       <div class="row">
         <button id="view-connect" class="btn primary" type="button">Connect</button>
+        <button id="view-share" class="btn" type="button">Share screen</button>
+        <button id="view-mic" class="btn" type="button">Microphone</button>
         <button id="view-disconnect" class="btn" type="button">Disconnect</button>
         <span id="view-status" class="hint">idle</span>
         <span id="view-codec" class="hint">codec pending</span>

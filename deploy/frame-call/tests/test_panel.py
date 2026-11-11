@@ -364,8 +364,28 @@ class PanelTests(unittest.TestCase):
 
         child = []
         order = shutdown_runtime((Runtime(), Overlay(), 7), lambda: child.append("closed"))
-        self.assertEqual(order, ["hide", "destroy", "shutdown", "child"])
+        self.assertEqual(order, ["clear-missing", "hide", "destroy", "shutdown", "child"])
         self.assertEqual(child, ["closed"])
+
+        class Clears:
+            def __init__(self):
+                self.order = []
+
+            def clearOverlayTexture(self, handle):
+                self.order.append(("clear", handle))
+
+            def hideOverlay(self, handle):
+                self.order.append(("hide", handle))
+
+            def destroyOverlay(self, handle):
+                self.order.append(("destroy", handle))
+
+            def shutdown(self):
+                self.order.append("shutdown")
+
+        clearing = Clears()
+        cleared = shutdown_runtime((clearing, clearing, 9), lambda: None)
+        self.assertEqual(cleared, ["clear", "hide", "destroy", "shutdown", "child"])
         broken = []
 
         class Bad:
@@ -379,8 +399,8 @@ class PanelTests(unittest.TestCase):
                 broken.append("shutdown")
 
         again = shutdown_runtime((Bad(), Bad(), 3), lambda: broken.append("child"))
-        self.assertEqual(again[0], "hide-error")
-        self.assertIn("child", again)
+        self.assertEqual(again[0], "clear-missing")
+        self.assertIn("hide-error", again)
         self.assertLess(again.index("shutdown"), again.index("child"))
 
     def test_upload_size_and_hello_lines_do_not_redraw(self):

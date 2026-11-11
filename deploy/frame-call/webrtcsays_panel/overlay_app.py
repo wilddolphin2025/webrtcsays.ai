@@ -248,15 +248,27 @@ def _request_stop(flag):
 
 
 def release_overlay(vr):
-    """Drop the overlay while this process and its texture buffer are still alive.
+    """Release the raw overlay while this process is still connected.
 
-    Order is hide, destroy, then VR_Shutdown. The caller waits on directcall
-    only after this returns.
+    Both compositor crashes were SIGBUS in a worker memcpy, 68 ms and 142 ms
+    after the pipe dropped, at byte 0 of a read-only 1920x1080x4 tmpfs
+    mapping. ClearOverlayTexture, hide, and destroy run before VR_Shutdown
+    so that path is not the first time the compositor hears the client is
+    gone. This does not prove the race is closed.
     """
     steps = []
     if not vr:
         return steps
     openvr_mod, overlay, handle = vr
+    clear = getattr(overlay, "clearOverlayTexture", None)
+    if clear is None:
+        steps.append("clear-missing")
+    else:
+        try:
+            clear(handle)
+            steps.append("clear")
+        except Exception:
+            steps.append("clear-error")
     for name, fn in (
         ("hide", lambda: overlay.hideOverlay(handle)),
         ("destroy", lambda: overlay.destroyOverlay(handle)),

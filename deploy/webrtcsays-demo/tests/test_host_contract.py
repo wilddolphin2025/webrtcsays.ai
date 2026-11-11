@@ -34,6 +34,12 @@ class HostContractTests(unittest.TestCase):
         self.assertNotIn("ws://127.0.0.1", page)
         self.assertNotIn("<turn-password>", page)
         self.assertNotRegex(page, r"credential\s*[:=]\s*[\"'][^\"']+[\"']")
+        self.assertIn("#1B2838", page)
+        self.assertIn("14px/1.4", page)
+        self.assertIn('id="startBtn"', page)
+        self.assertIn('id="remoteVideo"', page)
+        self.assertNotIn("steampowered", page.lower())
+        self.assertNotIn('class="steam"', page)
 
     def test_dockerfile_is_exec_form_and_compose_uses_init(self) -> None:
         docker = (ROOT / "auth" / "Dockerfile").read_text(encoding="utf-8")

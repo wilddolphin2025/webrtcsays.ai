@@ -436,6 +436,17 @@ class AuthTests(unittest.TestCase):
             hmac.compare_digest = real
         self.assertGreaterEqual(calls["n"], 2)
 
+    def test_login_page_matches_babelfish_palette(self) -> None:
+        page = demo_auth.login_page("csrf-token", "/demo/", "Those credentials were not accepted.").decode()
+        self.assertIn('id="credential"', page)
+        self.assertIn('name="csrf" value="csrf-token"', page)
+        self.assertIn('name="next" value="/demo/"', page)
+        self.assertIn("#1B2838", page)
+        self.assertIn("14px/1.4", page)
+        self.assertIn("Those credentials were not accepted.", page)
+        self.assertNotIn("steampowered", page.lower())
+        self.assertNotIn('class="steam"', page)
+
     def test_healthz_has_no_secrets(self) -> None:
         code, body, _ = self.request("GET", "/healthz")
         self.assertEqual(code, 200)

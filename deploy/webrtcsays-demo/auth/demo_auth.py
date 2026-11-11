@@ -637,37 +637,67 @@ def csrf_cookie(value: str) -> str:
 
 
 def login_page(csrf: str, nxt: str, message: str) -> bytes:
+    banner = ""
+    if message:
+        banner = f'<p class="msg err" role="status">{html.escape(message, quote=True)}</p>'
     body = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
   <title>WebRTCSays demo login</title>
   <style>
-    body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #101418; color: #f4f7fb; }}
-    main {{ max-width: 28rem; margin: 0 auto; padding: 24px 16px 48px; }}
-    h1 {{ font-size: 1.4rem; }}
-    p {{ line-height: 1.4; }}
-    label {{ display: block; margin: 16px 0 8px; }}
-    input {{ width: 100%; box-sizing: border-box; min-height: 44px; font-size: 16px; padding: 8px 12px; }}
-    button {{ min-height: 44px; font-size: 17px; padding: 8px 16px; width: 100%; }}
-    .note {{ color: #c5d0dc; }}
+    body.wsdemo {{ margin: 0; background: #1B2838; color: #C7D5E0; font: 14px/1.4 Inter, system-ui, sans-serif; }}
+    body.wsdemo * {{ box-sizing: border-box; }}
+    body.wsdemo .wrap {{ max-width: 1120px; margin: 0 auto; padding: 0 32px; }}
+    body.wsdemo .narrow {{ max-width: 520px; margin: 40px auto 48px; }}
+    body.wsdemo .top {{ background: #171D25; border-bottom: 3px solid #2A475E; }}
+    body.wsdemo .topin {{ display: flex; align-items: center; min-height: 72px; }}
+    body.wsdemo .wm {{ margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -.01em; line-height: 1.2; color: #FFFFFF; }}
+    body.wsdemo .by {{ margin: 0; font-size: 12px; color: #8F98A0; text-transform: uppercase; letter-spacing: .12em; }}
+    body.wsdemo .card {{ background: #2A475E; border: 1px solid #3D4450; border-radius: 10px; padding: 24px; }}
+    body.wsdemo h2 {{ margin: 0 0 16px; font-size: 13px; line-height: 1.3; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: #D6D9DC; }}
+    body.wsdemo p {{ margin: 0 0 16px; }}
+    body.wsdemo label {{ display: block; font-weight: 600; margin: 0 0 8px; color: #F1F2F3; }}
+    body.wsdemo input:not([type=hidden]) {{ min-height: 48px; padding: 0 14px; font: inherit; width: 100%; background: #0E141B; border: 1px solid #ACB2B8; border-radius: 6px; color: #C7D5E0; }}
+    body.wsdemo .btn {{ min-height: 48px; padding: 0 20px; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; border-radius: 6px; border: 1px solid #1A9FFF; color: #0E141B; background: #1A9FFF; touch-action: manipulation; }}
+    body.wsdemo .full {{ width: 100%; margin-top: 20px; }}
+    body.wsdemo .msg.err {{ padding: 14px 18px; border-radius: 8px; background: #1B2838; border: 1px solid #E35E1C; color: #F1F2F3; }}
+    body.wsdemo :focus-visible {{ outline: 3px solid #66C0F4; outline-offset: 2px; }}
+    @media (max-width: 800px) {{
+      body.wsdemo .wrap {{ padding: 0 16px; }}
+      body.wsdemo .card {{ padding: 16px; }}
+      body.wsdemo .topin {{ min-height: 0; padding: 14px 0; }}
+    }}
   </style>
 </head>
-<body>
+<body class="wsdemo">
+  <header class="top">
+    <div class="wrap topin">
+      <div class="brand">
+        <h1 class="wm">WebRTCSays</h1>
+        <p class="by">by Wilddolphin LLC</p>
+      </div>
+    </div>
+  </header>
   <main>
-    <h1>WebRTCSays demo</h1>
-    <p class="note">Room room101, callee Slim. The password or client token is exchanged for a cookie and is not put in the address bar.</p>
-    <p>{html.escape(message, quote=True)}</p>
-    <form method="post" action="/demo/login" autocomplete="on">
-      <input type="hidden" name="csrf" value="{html.escape(csrf, quote=True)}">
-      <input type="hidden" name="next" value="{html.escape(nxt, quote=True)}">
-      <label for="credential">Password or client token</label>
-      <input id="credential" name="credential" type="password" autocomplete="current-password" minlength="12" maxlength="128" required>
-      <button type="submit">Sign in</button>
-    </form>
+    <section class="narrow">
+      <div class="card">
+        <h2>Sign in</h2>
+        <p>Room room101, callee Slim. The password or client token is exchanged for a cookie and is not put in the address bar.</p>
+        {banner}
+        <form method="post" action="/demo/login" autocomplete="on">
+          <input type="hidden" name="csrf" value="{html.escape(csrf, quote=True)}">
+          <input type="hidden" name="next" value="{html.escape(nxt, quote=True)}">
+          <label for="credential">Password or client token</label>
+          <input id="credential" name="credential" type="password" autocomplete="current-password" minlength="12" maxlength="128" required>
+          <button class="btn full" type="submit">Sign in</button>
+        </form>
+      </div>
+    </section>
   </main>
 </body>
 </html>

@@ -5,7 +5,13 @@ import signal
 from pathlib import Path
 
 from webrtcsays_panel.command import CORES, DEFAULT_DURATION_SEC, directcall_argv
-from webrtcsays_panel.guards import ThermalGuard, memory_tripped, read_celsius, read_rss_bytes
+from webrtcsays_panel.guards import (
+    ThermalGuard,
+    hottest_celsius,
+    memory_tripped,
+    read_celsius,
+    read_rss_bytes,
+)
 from webrtcsays_panel.owner import Owner
 from webrtcsays_panel.stats import MediaView
 
@@ -27,6 +33,7 @@ class Session:
         self.error = ""
         self.guard = ""
         self.process_text = "stopped"
+        self.stop_panel = False
         self._lines = []
 
     def argv(self):
@@ -39,6 +46,8 @@ class Session:
         )
 
     def preflight(self):
+        if not self.paths.get("binary"):
+            return "direct root is not configured"
         binary = Path(self.paths["binary"])
         image = Path(self.paths["image"])
         token = Path(self.paths["token"])
@@ -117,7 +126,7 @@ class Session:
     def close(self):
         return self.disconnect()
 
-    def poll(self, thermal_text=None, status_text=None):
+    def poll(self, thermal_text=None, status_text=None, self_status_text=None, thermal_texts=None):
         self._drain()
         running = self._verified()
         self.process_text = "running" if running else "stopped"
@@ -127,17 +136,30 @@ class Session:
             if not self.error:
                 self.error = "call process exited"
         now = self.clock()
-        if self.thermal.update(now, read_celsius(thermal_text)):
+        if thermal_texts is not None:
+            celsius = hottest_celsius(thermal_texts)
+        else:
+            celsius = read_celsius(thermal_text)
+        if self.thermal.update(now, celsius):
             self.guard = "thermal %.0fC sustained %.0fs" % (self.thermal.limit_c, self.thermal.sustain_s)
             self.error = self.guard
+            self.stop_panel = True
             if running:
                 self.disconnect()
             return
-        rss = read_rss_bytes(status_text)
-        if running and memory_tripped(rss):
+        rss_values = [read_rss_bytes(status_text), read_rss_bytes(self_status_text)]
+        rss_values = [value for value in rss_values if value is not None]
+        rss = max(rss_values) if rss_values else None
+        if memory_tripped(rss):
             self.guard = "memory guard"
-            self.error = "memory reached 7GiB"
-            self.disconnect()
+            own = read_rss_bytes(self_status_text)
+            if own is not None and memory_tripped(own):
+                self.error = "panel memory reached 7GiB"
+            else:
+                self.error = "memory reached 7GiB"
+            self.stop_panel = True
+            if running:
+                self.disconnect()
 
     def lines(self):
         return list(self._lines)

@@ -38,11 +38,36 @@ def directcall_argv(binary, image, token, frame_path, duration_sec=DEFAULT_DURAT
     ]
 
 
-def default_paths(home):
-    root = Path(home) / "babelfish" / "call" / "direct" / "pr21"
+def resolve_direct_root(home, environ=None):
+    """Versioned binary directory. Never defaults to a hardcoded pr21 path."""
+    env = ""
+    if environ is not None:
+        env = str(environ.get("WEBRTCSAYS_DIRECT_ROOT", "")).strip()
+    if env:
+        return Path(env)
+    path = Path(home) / "babelfish" / "call" / "app" / "direct.root"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            return Path(line)
+    return None
+
+
+def default_paths(home, root=None, environ=None):
+    if root is None:
+        root = resolve_direct_root(home, environ)
+    frame = Path(home) / "babelfish" / "call" / "app" / "remote.frame"
+    if root is None:
+        return {"binary": None, "image": None, "token": None, "frame": frame, "root": None}
+    root = Path(root)
     return {
         "binary": root / "directcall",
         "image": root / "VR-Babelfish-1080p.png",
         "token": root / "token",
-        "frame": Path(home) / "babelfish" / "call" / "app" / "remote.frame",
+        "frame": frame,
+        "root": root,
     }

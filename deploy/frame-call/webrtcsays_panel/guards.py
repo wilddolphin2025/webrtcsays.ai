@@ -28,6 +28,18 @@ def memory_tripped(rss_bytes, limit=MEMORY_LIMIT_BYTES):
     return rss_bytes is not None and rss_bytes >= limit
 
 
+def hottest_celsius(texts):
+    """Use the hottest available zone. zone0 alone can stay near 40C."""
+    values = []
+    for text in texts or []:
+        value = read_celsius(text)
+        if value is not None:
+            values.append(value)
+    if not values:
+        return None
+    return max(values)
+
+
 def read_celsius(text):
     """Parse a sysfs thermal value. Millidegree files are above 1000."""
     if text is None:

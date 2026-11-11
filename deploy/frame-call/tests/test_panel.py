@@ -245,6 +245,60 @@ class PanelTests(unittest.TestCase):
         self.session.poll("85000\n", "VmRSS:\t1000 kB\n")
         self.assertIn("thermal", self.session.error)
 
+    def test_idle_upload_stays_at_one_and_direct_root_is_configured(self):
+        from webrtcsays_panel.command import resolve_direct_root
+        from webrtcsays_panel.present import UploadBudget
+        budget = UploadBudget()
+        self.assertTrue(budget.should_upload(("idle",), 0.0))
+        for step in range(800):
+            self.assertFalse(budget.should_upload(("idle",), step * 0.1))
+        self.assertEqual(budget.uploads, 1)
+        self.assertFalse(budget.should_upload(("frame-2",), 0.10))
+        self.assertTrue(budget.should_upload(("frame-2",), 0.25))
+        self.assertEqual(budget.uploads, 2)
+        root_file = self.home / "babelfish" / "call" / "app" / "direct.root"
+        root_file.parent.mkdir(parents=True)
+        root_file.write_text("# versioned sender\n" + str(self.direct) + "\n", encoding="utf-8")
+        self.assertEqual(resolve_direct_root(self.home, {}), self.direct)
+        self.assertEqual(
+            resolve_direct_root(self.home, {"WEBRTCSAYS_DIRECT_ROOT": "/tmp/other"}),
+            Path("/tmp/other"),
+        )
+        root_file.write_text("\n", encoding="utf-8")
+        self.assertIsNone(resolve_direct_root(self.home, {}))
+        self.assertNotIn("pr21", str(resolve_direct_root(self.home, {}) or ""))
+
+    def test_self_memory_and_hottest_zone(self):
+        from webrtcsays_panel.guards import hottest_celsius
+        self.assertEqual(hottest_celsius(["40000\n", "72000\n"]), 72.0)
+        self.session.poll(None, "VmRSS:\t1000 kB\n", "VmRSS:\t2000 kB\n", ["40000\n", "72000\n"])
+        self.clock.now = 6
+        self.session.poll(None, "VmRSS:\t1000 kB\n", "VmRSS:\t2000 kB\n", ["40000\n", "72000\n"])
+        self.assertFalse(self.session.stop_panel)
+        self.session.thermal.samples.clear()
+        self.session.poll(None, "VmRSS:\t1000 kB\n", "VmRSS:\t2000 kB\n", ["40000\n", "80000\n"])
+        self.clock.now = 12
+        self.session.poll(None, "VmRSS:\t1000 kB\n", "VmRSS:\t2000 kB\n", ["40000\n", "80000\n"])
+        self.assertTrue(self.session.stop_panel)
+        self.assertIn("thermal", self.session.error)
+        self.session.stop_panel = False
+        self.session.error = ""
+        self.session.thermal.samples.clear()
+        huge = "VmRSS:\t%s kB\n" % (8 * 1024 * 1024)
+        self.session.poll(None, "VmRSS:\t1000 kB\n", huge, ["40000\n"])
+        self.assertTrue(self.session.stop_panel)
+        self.assertIn("panel memory", self.session.error)
+
+    def test_overlay_is_head_locked_and_interactive(self):
+        import inspect
+        from webrtcsays_panel.overlay_app import _open_overlay
+        source = inspect.getsource(_open_overlay)
+        self.assertIn("setOverlayTransformTrackedDeviceRelative", source)
+        self.assertIn("k_unTrackedDeviceIndex_Hmd", source)
+        self.assertIn("VROverlayFlags_MakeOverlaysInteractiveIfVisible", source)
+        self.assertNotIn("setOverlayTransformAbsolute", source)
+        self.assertNotIn("TrackingUniverseStanding", source)
+
     def test_fullscreen_call_image_shows_remote_video_and_hangup(self):
         from webrtcsays_panel.compose import compose
         from webrtcsays_panel.layout import REMOTE, remote_covers_most_of_the_view

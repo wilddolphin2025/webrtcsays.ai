@@ -2,7 +2,7 @@
 
 A fullscreen call view for the Frame. The remote picture fills the view. Connect and Hangup are large controls on that same image, with status and a local still preview. This is not a small utility panel and not a browser page.
 
-The image is one head-locked OpenVR surface, about 102 degrees wide (2.6 m at 1.05 m). It is not an eye-buffer `IVRCompositor.Submit`, so the far edges of the headset can still show the VR room. An X11 or SDL fullscreen window is not used as the headset view. That difference has not been checked by a person wearing the Frame.
+The image is one OpenVR overlay about 102 degrees wide (2.6 m at 1.05 m in front of the headset). Its pose is `SetOverlayTransformTrackedDeviceRelative` on the HMD, so it is meant to stay in front of the face. The previous build used `TrackingUniverseStanding` at a fixed 1.6 m above the floor, which does not follow the head. This is still not an `IVRCompositor.Submit` of the eye framebuffers, so it is not full-headset-framebuffer fullscreen and the far edges of the view can show the VR room. Laser clicks also set `VROverlayFlags_MakeOverlaysInteractiveIfVisible`. A person in the headset has not confirmed the lock or the laser.
 
 directcall writes remote frames to `remote.frame` with `--remote-window=app` and does not open its own `webrtcsays.remote` overlay. The call app draws those frames into the main view. Nothing is connected until Connect.
 
@@ -23,11 +23,13 @@ chmod 755 "$HOME/babelfish/call/app/webrtcsays_app.sh"
 
 That writes only under `~/babelfish/call/app`. It does not create or edit files in `~/.local/share/applications`, autostart, or Steam.
 
-These files are already on the Frame and are not in this repo:
+The sender directory is not hardcoded. Write it once:
 
-- `~/babelfish/call/direct/pr21/directcall` (build that accepts `--remote-window=app`)
-- `~/babelfish/call/direct/pr21/VR-Babelfish-1080p.png`
-- `~/babelfish/call/direct/pr21/token`
+```sh
+printf '%s\n' "$HOME/babelfish/call/direct/pr22" > "$HOME/babelfish/call/app/direct.root"
+```
+
+That directory holds `directcall`, `VR-Babelfish-1080p.png`, and `token`. `WEBRTCSAYS_DIRECT_ROOT` overrides the file. An empty setting does not fall back to `pr21`.
 
 Run the app by executing `~/babelfish/call/app/webrtcsays_app.sh` while SteamVR is already running. The token file is passed with `--token-file` and is not read or logged.
 
@@ -38,7 +40,8 @@ The view shows WebRTCsays.AI, the remote picture, a local still preview, Connect
 - Connect starts one directcall on cores 2, 3, 4, and 7. The still is sent at 1920x1080 and 30 fps for at most 15 minutes. Launch does not start the call. Connect again while that same process is alive does not start another.
 - Hangup checks the pid, start time, executable, and full argv, then SIGTERM. SIGKILL follows only if it is still that process.
 - Closing the app stops the owned call.
-- At or above 80C for 6 seconds, or resident memory at or above 7 GiB, stops the owned call.
+- The guard uses the hottest thermal zone, not only zone0. At or above 80C for 6 seconds, or the panel or the call at or above 7 GiB RSS, stops the owned call and exits the panel.
+- While the picture is unchanged, the overlay image is uploaded once. A new remote frame is uploaded at most 4 times a second.
 
 `process: running` is not a connected call. Send and receive stay `not measured` until stats report a positive frame size.
 

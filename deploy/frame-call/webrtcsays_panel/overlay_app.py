@@ -15,6 +15,7 @@ from webrtcsays_panel.compose import compose, read_remote_frame
 from webrtcsays_panel.layout import HEIGHT, SURFACE_DISTANCE_METERS, SURFACE_WIDTH_METERS, WIDTH
 from webrtcsays_panel.overlay_input import clicks_from_events
 from webrtcsays_panel.owner import ProcFs
+from webrtcsays_panel.present import UploadBudget
 from webrtcsays_panel.session import Session
 from webrtcsays_panel.command import default_paths
 
@@ -80,6 +81,7 @@ def panel_lines(session):
         "audio: " + media.audio_text(),
         "remote window: " + (media.remote_window or "not reported"),
         "session limit: %ds on cores %s" % (session.duration_sec, ",".join(str(c) for c in CORES)),
+        "view: head-locked overlay, not eye fullscreen",
         "error: " + (session.error or "none"),
     ]
     rows.extend(session.lines()[-4:])
@@ -99,7 +101,8 @@ def handle_click(session, name):
 
 
 def make_session(home=None):
-    paths = default_paths(Path.home() if home is None else home)
+    home = Path.home() if home is None else Path(home)
+    paths = default_paths(home)
     return Session(
         paths,
         ProcFs(),
@@ -135,6 +138,8 @@ def _open_overlay():
     if hasattr(overlay, "setOverlayCurvature"):
         overlay.setOverlayCurvature(handle, 0.35)
     overlay.setOverlayInputMethod(handle, openvr.VROverlayInputMethod_Mouse)
+    # Laser hits outside the dashboard require this flag. Not verified on a headset.
+    overlay.setOverlayFlag(handle, openvr.VROverlayFlags_MakeOverlaysInteractiveIfVisible, True)
     scale = openvr.HmdVector2_t()
     scale.v[0] = WIDTH
     scale.v[1] = HEIGHT
@@ -143,16 +148,29 @@ def _open_overlay():
     matrix.m[0][0] = 1
     matrix.m[1][1] = 1
     matrix.m[2][2] = 1
+    # Relative to the HMD: 0 is eye height, -Z is forward. Not a standing-world pose.
     matrix.m[0][3] = 0
-    matrix.m[1][3] = 1.6
+    matrix.m[1][3] = 0
     matrix.m[2][3] = -SURFACE_DISTANCE_METERS
-    overlay.setOverlayTransformAbsolute(handle, openvr.TrackingUniverseStanding, matrix)
+    overlay.setOverlayTransformTrackedDeviceRelative(
+        handle, openvr.k_unTrackedDeviceIndex_Hmd, matrix
+    )
     overlay.showOverlay(handle)
     return openvr, overlay, handle
 
 
+_UPLOAD_BUF = {"buf": None}
+
+
 def _upload(overlay, handle, pixels):
-    buf = (c_uint8 * len(pixels)).from_buffer_copy(pixels)
+    # One ctypes buffer for every upload. A fresh array each 100 ms matched the shared RSS climb.
+    import ctypes
+    size = len(pixels)
+    buf = _UPLOAD_BUF["buf"]
+    if buf is None or len(buf) != size:
+        buf = (c_uint8 * size)()
+        _UPLOAD_BUF["buf"] = buf
+    ctypes.memmove(buf, bytes(pixels), size)
     overlay.setOverlayRaw(handle, buf, WIDTH, HEIGHT, 4)
 
 
@@ -161,6 +179,34 @@ def _read_bytes(path):
         return Path(path).read_bytes()
     except OSError:
         return None
+
+
+def _frame_index(path):
+    import struct
+    try:
+        header = Path(path).read_bytes()[:16]
+    except OSError:
+        return None
+    if len(header) < 16:
+        return None
+    magic, _width, _height, index = struct.unpack("<IIII", header)
+    if magic != 0x314D5246:
+        return None
+    return index
+
+
+def _thermal_zones(root="/sys/class/thermal"):
+    texts = []
+    base = Path(root)
+    try:
+        names = sorted(base.glob("thermal_zone*/temp"))
+    except OSError:
+        return texts
+    for path in names:
+        text = _read_optional(str(path))
+        if text:
+            texts.append(text)
+    return texts
 
 
 def _read_optional(path):
@@ -188,7 +234,8 @@ def main():
     try:
         vr = _open_overlay()
         openvr, overlay, handle = vr
-        while not flag["stop"]:
+        budget = UploadBudget()
+        while not flag["stop"] and not session.stop_panel:
             events = []
             current = openvr.VREvent_t()
             for _ in range(32):
@@ -199,18 +246,21 @@ def main():
                 current = openvr.VREvent_t()
             for name in clicks_from_events(events):
                 handle_click(session, name)
-            thermal = _read_optional("/sys/class/thermal/thermal_zone0/temp")
-            status = ""
+            zones = _thermal_zones()
+            child_status = ""
             if session.identity is not None:
-                status = _read_optional("/proc/%s/status" % session.identity.pid)
-            session.poll(thermal, status)
-            _upload(overlay, handle, call_image(session))
-            try:
-                state_path.parent.mkdir(parents=True, exist_ok=True)
-                write_state(state_path, session)
-            except OSError:
-                pass
-            time.sleep(0.1)
+                child_status = _read_optional("/proc/%s/status" % session.identity.pid)
+            self_status = _read_optional("/proc/self/status")
+            session.poll(None, child_status, self_status, zones)
+            signature = (tuple(panel_lines(session)), _frame_index(session.paths["frame"]))
+            if budget.should_upload(signature, time.time()):
+                _upload(overlay, handle, call_image(session))
+                try:
+                    state_path.parent.mkdir(parents=True, exist_ok=True)
+                    write_state(state_path, session)
+                except OSError:
+                    pass
+            time.sleep(0.05)
     finally:
         session.close()
         if vr is not None:

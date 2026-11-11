@@ -30,6 +30,9 @@ class ContractTests(unittest.TestCase):
             "view-log",
         ):
             self.assertIn(f'id="{element_id}"', page)
+        self.assertIn('<h1 class="wm">WebRTCsays.AI</h1>', page)
+        self.assertIn("<title>Frame viewer</title>", page)
+        self.assertNotIn("WebRTCSays", page)
         self.assertIn("#1B2838", css)
         self.assertIn("14px/1.4", css)
         self.assertNotIn("#101418", css)

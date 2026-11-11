@@ -438,6 +438,9 @@ class AuthTests(unittest.TestCase):
 
     def test_login_page_matches_babelfish_palette(self) -> None:
         page = demo_auth.login_page("csrf-token", "/demo/", "Those credentials were not accepted.").decode()
+        self.assertIn("<title>WebRTCsays.AI demo login</title>", page)
+        self.assertIn('<h1 class="wm">WebRTCsays.AI</h1>', page)
+        self.assertNotIn("WebRTCSays", page)
         self.assertIn('id="credential"', page)
         self.assertIn('name="csrf" value="csrf-token"', page)
         self.assertIn('name="next" value="/demo/"', page)

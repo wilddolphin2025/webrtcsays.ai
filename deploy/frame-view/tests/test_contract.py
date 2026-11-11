@@ -23,9 +23,11 @@ class ContractTests(unittest.TestCase):
         css = (ROOT / "page" / "view.css").read_text(encoding="utf-8")
         for element_id in (
             "view-connect",
+            "view-camera",
             "view-disconnect",
             "view-status",
             "view-codec",
+            "view-send",
             "view-remote",
             "view-log",
         ):
@@ -46,9 +48,12 @@ class ContractTests(unittest.TestCase):
         self.assertIn("getDisplayMedia", script)
         self.assertIn("getUserMedia({ audio: true, video: false })", script)
         self.assertIn('id="view-share"', page)
+        self.assertIn('id="view-camera"', page)
         self.assertIn('id="view-mic"', page)
         self.assertIn('id="view-remote-audio"', page)
-        self.assertNotIn("getUserMedia({ video: true", script)
+        self.assertIn("getUserMedia({", script)
+        self.assertNotIn("getUserMedia", connect)
+        self.assertNotIn("getDisplayMedia", connect)
         self.assertIn("payload.uris || payload.urls", script)
         self.assertIn('"rtc.wilddolphin.us": 1', script)
         self.assertNotIn("turn.wilddolphin.us", script)

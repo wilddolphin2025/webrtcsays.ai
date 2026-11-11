@@ -1,0 +1,125 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>send probe</title>
+<script src="../page/view.js"></script>
+<script>
+(function () {
+  function blankVideo() {
+    const canvas = document.createElement("canvas");
+    canvas.width = 16;
+    canvas.height = 16;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, 16, 16);
+    return canvas.captureStream(1).getVideoTracks()[0];
+  }
+
+  function silentAudio() {
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    gain.gain.value = 0;
+    const dest = ctx.createMediaStreamDestination();
+    osc.connect(gain);
+    gain.connect(dest);
+    osc.start();
+    return dest.stream.getAudioTracks()[0];
+  }
+
+  function wire(left, right) {
+    left.onicecandidate = (event) => {
+      if (event.candidate) right.addIceCandidate(event.candidate).catch(() => {});
+    };
+  }
+
+  async function inbound(pc, kind) {
+    const report = await pc.getStats();
+    let found = null;
+    report.forEach((stat) => {
+      if (stat.type === "inbound-rtp" && stat.kind === kind) found = stat;
+    });
+    return found || {};
+  }
+
+  async function waitFor(read, ready) {
+    const start = Date.now();
+    let last = {};
+    while (Date.now() - start < 12000) {
+      last = await read();
+      if (ready(last)) return last;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    return last;
+  }
+
+  async function pair(videoTrack, audioTrack) {
+    const offerer = new RTCPeerConnection();
+    const answerer = new RTCPeerConnection();
+    wire(offerer, answerer);
+    wire(answerer, offerer);
+    offerer.addTransceiver("audio", { direction: "sendrecv" });
+    offerer.addTransceiver("video", { direction: "sendrecv" });
+    const offer = await offerer.createOffer();
+    await offerer.setLocalDescription(offer);
+    await answerer.setRemoteDescription(offer);
+    await FrameMedia.bindOutbound(answerer, videoTrack, audioTrack);
+    const answer = await answerer.createAnswer();
+    await answerer.setLocalDescription(answer);
+    await offerer.setRemoteDescription(answer);
+    return { offerer, answerer, answer };
+  }
+
+  async function run() {
+    const holdVideo = blankVideo();
+    const holdAudio = silentAudio();
+    const first = await pair(holdVideo, holdAudio);
+    const videoDir = FrameMedia.sdpDirection(first.answer.sdp, "video");
+    const audioDir = FrameMedia.sdpDirection(first.answer.sdp, "audio");
+    if (videoDir !== "sendrecv" || audioDir !== "sendrecv") {
+      window.__result = { ok: false, reason: "sdp", videoDir, audioDir };
+      return;
+    }
+    if (first.offerer.signalingState !== "stable" || first.answerer.signalingState !== "stable") {
+      window.__result = { ok: false, reason: "renegotiation" };
+      return;
+    }
+    const camera = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    const mic = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    await FrameMedia.bindOutbound(
+      first.answerer,
+      camera.getVideoTracks()[0],
+      mic.getAudioTracks()[0]
+    );
+    if (first.answerer.signalingState !== "stable") {
+      window.__result = { ok: false, reason: "late-renegotiation" };
+      return;
+    }
+    const video = await waitFor(
+      () => inbound(first.offerer, "video"),
+      (stat) => (stat.framesReceived || 0) > 0 && (stat.frameWidth || 0) >= 160 && (stat.bytesReceived || 0) > 0
+    );
+    const audio = await waitFor(
+      () => inbound(first.offerer, "audio"),
+      (stat) => (stat.bytesReceived || 0) > 0 && (stat.totalAudioEnergy || 0) > 0
+    );
+    window.__result = {
+      ok: (video.framesReceived || 0) > 0 && (video.frameWidth || 0) >= 160 &&
+        (video.bytesReceived || 0) > 0 && (audio.bytesReceived || 0) > 0,
+      videoDir,
+      audioDir,
+      frames: video.framesReceived || 0,
+      width: video.frameWidth || 0,
+      videoBytes: video.bytesReceived || 0,
+      audioBytes: audio.bytesReceived || 0,
+      audioEnergy: audio.totalAudioEnergy || 0
+    };
+  }
+
+  run().then(() => {
+    console.log("RESULT " + JSON.stringify(window.__result));
+  }).catch((error) => {
+    window.__result = { ok: false, reason: String(error && error.message || error) };
+    console.log("RESULT " + JSON.stringify(window.__result));
+  });
+})();
+</script>

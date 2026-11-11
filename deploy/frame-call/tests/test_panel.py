@@ -131,6 +131,7 @@ class PanelTests(unittest.TestCase):
         self.assertIn("--remote-frame=" + str(self.frame), argv)
         self.assertIn("--remote-slot=1920x820", argv)
         self.assertIn("--duration=900", argv)
+        self.assertNotIn("--ice-policy=", text)
         self.assertNotIn("pkill", text)
 
     def test_connect_pins_cores_and_second_connect_does_not_spawn(self):
@@ -141,6 +142,12 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(self.session.process_text, "running")
         self.assertEqual(self.session.media.transport(True), "process running, no stats yet")
         self.assertEqual(self.session.media.send_text(), "not measured")
+        spawned = " ".join(self.spawned[0])
+        self.assertIn("--remote-slot=1920x820", spawned)
+        self.assertIn("--duration=900", spawned)
+        self.assertNotIn("--remote-slot=900", spawned)
+        self.assertNotIn("--turns-file=", spawned)
+        self.assertEqual(self.session.turn_note, "TURN not configured")
 
     def test_disconnect_refuses_a_reused_pid(self):
         self.session.connect()
@@ -372,6 +379,86 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(clicks_from_events([Event(hx, cy)]), ["hangup"])
         self.assertEqual(hit_button(1, 1), None)
         self.assertEqual(self.session.connect(), "started")
+
+    def test_turn_uris_become_urls_without_secrets_on_the_command_line(self):
+        import json
+
+        from webrtcsays_panel.turn import valid_turn_uri
+
+        username = "static-user"
+        credential = "static-credential-value"
+        uris = [
+            "turn:rtc.wilddolphin.us:3478?transport=udp",
+            "turn:rtc.wilddolphin.us:3478?transport=tcp",
+            "turns:rtc.wilddolphin.us:5349?transport=tcp",
+        ]
+
+        def fetch(url, token):
+            self.assertEqual(url, "https://rtc.wilddolphin.us/demo/turn")
+            self.assertEqual(token, "super-secret-token")
+            self.assertNotIn(token, url)
+            return {
+                "ok": True,
+                "mode": "static",
+                "temporary": True,
+                "minted": False,
+                "rest_api": False,
+                "username": username,
+                "credential": credential,
+                "uris": uris,
+            }
+
+        self.session.turn_fetch = fetch
+        self.session.ice_policy = "relay"
+        self.assertEqual(self.session.connect(), "started")
+        text = " ".join(self.spawned[0])
+        self.assertNotIn(username, text)
+        self.assertNotIn(credential, text)
+        self.assertNotIn("super-secret-token", text)
+        self.assertIn("wss://rtc.wilddolphin.us:443/demo/view/ws/frame101", text)
+        self.assertIn("--ice-policy=relay", self.spawned[0])
+        turns = [item for item in self.spawned[0] if item.startswith("--turns-file=")]
+        self.assertEqual(len(turns), 1)
+        path = Path(turns[0].split("=", 1)[1])
+        self.assertEqual(path.parent, self.frame.parent)
+        self.assertNotIn(".config", path.parts)
+        self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(data["urls"], uris)
+        self.assertNotIn("uris", data)
+        self.assertEqual(data["credential"], credential)
+        self.assertNotIn(credential, self.session.turn_note)
+        self.assertNotIn(username, self.session.turn_note)
+        self.assertIn("host=rtc.wilddolphin.us", self.session.turn_note)
+        self.assertIn("tls_verify=on", self.session.turn_note)
+        self.assertFalse(valid_turn_uri("turn:turn.wilddolphin.us:3478?transport=udp"))
+        self.assertFalse(valid_turn_uri("turn:127.0.0.1:3478?transport=udp"))
+        self.assertFalse(valid_turn_uri("turn:10.1.1.1:3478?transport=udp"))
+        self.assertFalse(valid_turn_uri("turns:relay.google.com:443?transport=tcp"))
+        self.assertFalse(valid_turn_uri("turn:user:secret@rtc.wilddolphin.us:3478?transport=udp"))
+        source = Path(__file__).resolve().parents[1].joinpath("webrtcsays_panel", "turn.py").read_text(encoding="utf-8")
+        self.assertNotIn("CERT_NONE", source)
+        self.assertNotIn("verify=False", source)
+
+    def test_rejected_turn_host_does_not_write_a_file(self):
+        def fetch(url, token):
+            return {
+                "mode": "static",
+                "temporary": True,
+                "minted": False,
+                "username": "static-user",
+                "credential": "static-credential-value",
+                "uris": ["turn:turn.wilddolphin.us:3478?transport=udp"],
+            }
+
+        self.session.turn_fetch = fetch
+        self.assertEqual(self.session.connect(), "started")
+        text = " ".join(self.spawned[0])
+        self.assertNotIn("static-credential-value", text)
+        self.assertNotIn("--turns-file=", text)
+        self.assertEqual(self.session.turn_note, "TURN not configured")
+        self.assertFalse((self.frame.parent / "turn.json").exists())
 
     def test_redact_and_missing_files(self):
         self.assertEqual(redact("Authorization: Bearer secret"), "[redacted]")

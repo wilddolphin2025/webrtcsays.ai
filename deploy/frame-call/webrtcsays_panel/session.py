@@ -5,6 +5,7 @@ import signal
 from pathlib import Path
 
 from webrtcsays_panel.command import CORES, DEFAULT_DURATION_SEC, directcall_argv
+from webrtcsays_panel.turn import NOTE_MISSING, prepare_turns_file
 from webrtcsays_panel.guards import (
     ThermalGuard,
     hottest_celsius,
@@ -17,7 +18,7 @@ from webrtcsays_panel.stats import MediaView
 
 
 class Session:
-    def __init__(self, paths, proc, popen, affinity, killer, clock, sleeper, duration_sec=DEFAULT_DURATION_SEC):
+    def __init__(self, paths, proc, popen, affinity, killer, clock, sleeper, duration_sec=DEFAULT_DURATION_SEC, turn_fetch=None, ice_policy=None):
         self.paths = paths
         self.proc = proc
         self.popen = popen
@@ -34,6 +35,10 @@ class Session:
         self.guard = ""
         self.process_text = "stopped"
         self.stop_panel = False
+        self.turns_file = None
+        self.turn_note = NOTE_MISSING
+        self.turn_fetch = turn_fetch
+        self.ice_policy = ice_policy or None
         self._lines = []
 
     def argv(self):
@@ -42,8 +47,22 @@ class Session:
             self.paths["image"],
             self.paths["token"],
             self.paths["frame"],
-            self.duration_sec,
+            duration_sec=self.duration_sec,
+            turns_file=self.turns_file,
+            ice_policy=self.ice_policy,
         )
+
+    def _ensure_turn(self):
+        dest = self.paths.get("turns_dest")
+        if dest is None:
+            dest = Path(self.paths["frame"]).parent / "turn.json"
+        path, note = prepare_turns_file(
+            self.paths["token"],
+            dest,
+            fetch=self.turn_fetch,
+        )
+        self.turns_file = path
+        self.turn_note = note
 
     def preflight(self):
         if not self.paths.get("binary"):
@@ -68,6 +87,7 @@ class Session:
         if problem:
             self.error = problem
             return "error"
+        self._ensure_turn()
         try:
             child = self.popen(self.argv())
         except OSError as exc:

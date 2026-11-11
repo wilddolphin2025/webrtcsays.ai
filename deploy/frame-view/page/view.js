@@ -110,24 +110,52 @@
     codecEl.textContent = parts.length ? parts.join(" ") : "codec pending";
   }
 
+  const TURN_HOSTS = { "rtc.wilddolphin.us": 1 };
+
+  function turnHost(url) {
+    const match = /^(turns?):([A-Za-z0-9.-]+)(?::(\d{1,5}))?(?:\?transport=(udp|tcp))?$/.exec(String(url || ""));
+    if (!match || url.indexOf("@") !== -1) return "";
+    const host = match[2].toLowerCase();
+    return TURN_HOSTS[host] ? host : "";
+  }
+
   function iceServersFromTurn(payload) {
     const servers = [{ urls: "stun:stun.l.google.com:19302" }];
-    if (!payload || !payload.urls) return servers;
-    servers.push({
-      urls: payload.urls,
-      username: payload.username,
-      credential: payload.credential
-    });
+    if (!payload || payload.mode !== "static" || payload.temporary !== true ||
+        payload.minted === true || payload.rest_api === true) {
+      log("TURN unavailable");
+      return servers;
+    }
+    const listed = payload.uris || payload.urls || [];
+    const urls = [];
+    let host = "";
+    for (let i = 0; i < listed.length; i++) {
+      const one = turnHost(listed[i]);
+      if (!one) continue;
+      urls.push(listed[i]);
+      if (!host) host = one;
+    }
+    if (!urls.length || !payload.username || !payload.credential) {
+      log("TURN unavailable");
+      return servers;
+    }
+    servers.push({ urls: urls, username: payload.username, credential: payload.credential });
+    log("TURN configured host=" + host);
     return servers;
   }
 
   async function loadIceServers() {
+    const stunOnly = [{ urls: "stun:stun.l.google.com:19302" }];
     try {
       const response = await fetch("/demo/turn", { credentials: "same-origin", cache: "no-store" });
-      if (!response.ok) return [{ urls: "stun:stun.l.google.com:19302" }];
+      if (!response.ok) {
+        log("TURN unavailable");
+        return stunOnly;
+      }
       return iceServersFromTurn(await response.json());
     } catch (_error) {
-      return [{ urls: "stun:stun.l.google.com:19302" }];
+      log("TURN unavailable");
+      return stunOnly;
     }
   }
 
@@ -285,10 +313,35 @@
       else pendingIce.push(candidate);
       return;
     }
-    if (kind === "BYE" || text.startsWith("486") || text.startsWith("480") || text.startsWith("400")) {
+    if (text.startsWith("480")) {
+      log("idle-timeout");
+      failWait("disconnected");
+      return;
+    }
+    if (kind === "BYE" || text.startsWith("486") || text.startsWith("400")) {
       setStatus(kind === "BYE" ? "remote-bye" : "rejected");
       disconnect(false);
     }
+  }
+
+  function failWait(reason) {
+    codecEl.textContent = "no media";
+    setStatus(reason);
+    if (statsTimer) {
+      clearInterval(statsTimer);
+      statsTimer = null;
+    }
+    if (pc) {
+      pc.close();
+      pc = null;
+    }
+    if (ws) {
+      const socket = ws;
+      ws = null;
+      try { socket.close(); } catch (_error) {}
+    }
+    stopLocalMedia();
+    answerSent = false;
   }
 
   function disconnect(sendBye) {
@@ -332,9 +385,14 @@
     ws.onmessage = (event) => handleMessage(event.data);
     ws.onerror = () => setStatus("signaling-error");
     ws.onclose = () => {
-      if (statusEl.textContent === "waiting" || statusEl.textContent === "connecting") {
-        setStatus("disconnected");
+      if (statsTimer) {
+        clearInterval(statsTimer);
+        statsTimer = null;
       }
+      const status = statusEl.textContent;
+      if (status === "remote-bye" || status === "rejected" || status === "disconnected") return;
+      codecEl.textContent = "no media";
+      setStatus("disconnected");
     };
     statsTimer = setInterval(() => { showCodec().catch(() => {}); }, 2000);
   }
@@ -347,6 +405,15 @@
   });
   document.getElementById("view-mic").addEventListener("click", () => {
     shareMic().catch(() => log("mic=cancelled"));
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    const status = statusEl.textContent;
+    if (status !== "waiting" && status !== "connecting") return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      codecEl.textContent = "no media";
+      setStatus("disconnected");
+    }
   });
   disconnectBtn.addEventListener("click", () => disconnect(true));
   remoteVideo.addEventListener("click", () => { unlockPlayback(); });

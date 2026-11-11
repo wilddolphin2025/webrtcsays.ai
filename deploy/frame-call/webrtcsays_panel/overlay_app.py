@@ -10,7 +10,7 @@ from ctypes import c_uint8
 from pathlib import Path
 
 from webrtcsays_panel import APP_NAME, OVERLAY_KEY
-from webrtcsays_panel.command import CORES
+from webrtcsays_panel.command import CORES, default_paths
 from webrtcsays_panel.compose import read_remote_frame
 from webrtcsays_panel.fast_compose import CallCanvas
 from webrtcsays_panel.layout import HEIGHT, SURFACE_DISTANCE_METERS, SURFACE_WIDTH_METERS, WIDTH
@@ -18,7 +18,7 @@ from webrtcsays_panel.overlay_input import clicks_from_events
 from webrtcsays_panel.owner import ProcFs
 from webrtcsays_panel.present import UploadBudget
 from webrtcsays_panel.session import Session
-from webrtcsays_panel.command import default_paths
+from webrtcsays_panel.turn import fetch_turn_account
 
 # Left of and closer than directcall's remote-video overlay at x=0, y=1.3, z=-2.
 CONTROL_WIDTH_METERS = SURFACE_WIDTH_METERS
@@ -82,6 +82,8 @@ def panel_lines(session):
         "audio: " + media.audio_text(),
         "remote window: " + (media.remote_window or "not reported"),
         "session limit: %ds on cores %s" % (session.duration_sec, ",".join(str(c) for c in CORES)),
+        "turn: " + session.turn_note,
+        "ice: " + (session.ice_policy or "all"),
         "view: head-locked overlay, not eye fullscreen",
         "error: " + (session.error or "none"),
     ]
@@ -104,6 +106,9 @@ def handle_click(session, name):
 def make_session(home=None):
     home = Path.home() if home is None else Path(home)
     paths = default_paths(home)
+    policy = os.environ.get("WEBRTCSAYS_ICE_POLICY", "").strip()
+    if policy not in ("", "all", "relay"):
+        policy = ""
     return Session(
         paths,
         ProcFs(),
@@ -112,6 +117,8 @@ def make_session(home=None):
         os.kill,
         time.time,
         time.sleep,
+        turn_fetch=fetch_turn_account,
+        ice_policy=policy or None,
     )
 
 

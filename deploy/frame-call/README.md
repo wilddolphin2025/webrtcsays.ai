@@ -33,6 +33,8 @@ That directory holds `directcall`, `VR-Babelfish-1080p.png`, and `token`. `WEBRT
 
 Run the app by executing `~/babelfish/call/app/webrtcsays_app.sh` while SteamVR is already running. The token file is passed with `--token-file` and is not read or logged.
 
+Connect reads that same token file and GETs `https://rtc.wilddolphin.us/demo/turn`. The response field is `uris`. directcall reads `urls`, so the app writes `~/babelfish/call/app/turn.json` and passes `--turns-file` with that path. The directory is mode `0700` and the file is mode `0600`. The username and credential are not command-line arguments and are not logged. Only `rtc.wilddolphin.us` TURN URIs are kept. TLS verification is unchanged. A missing or rejected account still starts signaling and shows `TURN not configured`. `WEBRTCSAYS_ICE_POLICY=relay` adds `--ice-policy=relay` so the call gathers TURN candidates only. The default remains all candidate types. Neither setting is a measurement that media or port 3478 worked.
+
 ## Controls
 
 The view shows WebRTCsays.AI, the remote picture, a local still preview, Connect, and Hangup.

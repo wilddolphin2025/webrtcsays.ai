@@ -28,6 +28,9 @@ MAX_QUEUE_BYTES = 1024 * 1024
 MAX_FRAME = 262144
 SETUP_TIMEOUT = 45.0
 IDLE_TIMEOUT = 120.0
+# A browser auto-pongs a server ping. That received frame refreshes seen,
+# so a viewer left on Connect is not evicted at IDLE_TIMEOUT.
+PING_INTERVAL = 30.0
 QUEUE_TIMEOUT = 20.0
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -60,6 +63,7 @@ class Peer:
         self.queued_bytes = 0
         self.opened = time.monotonic()
         self.seen = self.opened
+        self.last_tx_ping = self.opened
         self.hello_at: float | None = None
         self.answer_at: float | None = None
         self.closed = False
@@ -191,6 +195,15 @@ class Router:
                     continue
                 if peer.role == "caller" and peer.hello_at and peer.answer_at is None:
                     if now - peer.hello_at > SETUP_TIMEOUT:
+                        doomed.append(peer)
+                        continue
+                if now - peer.last_tx_ping >= PING_INTERVAL and now - peer.seen >= PING_INTERVAL:
+                    try:
+                        # Unmasked ping, empty payload. Not a text frame and not logged.
+                        peer.writer.write(b"\x89\x00")
+                        await peer.writer.drain()
+                        peer.last_tx_ping = now
+                    except (ConnectionError, asyncio.IncompleteReadError):
                         doomed.append(peer)
         for peer in doomed:
             await peer.send("480 Temporarily Unavailable")

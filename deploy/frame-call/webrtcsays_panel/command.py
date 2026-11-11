@@ -10,14 +10,25 @@ THERMAL_LIMIT_C = 80.0
 THERMAL_SUSTAIN_SEC = 6.0
 
 
-def directcall_argv(binary, image, token, frame_path, slot="1920x820", duration_sec=DEFAULT_DURATION_SEC):
+def directcall_argv(
+    binary,
+    image,
+    token,
+    frame_path,
+    slot="1920x820",
+    duration_sec=DEFAULT_DURATION_SEC,
+    turns_file=None,
+    ice_policy=None,
+):
     binary = str(binary)
     image = str(image)
     token = str(token)
     duration = int(duration_sec)
     if duration < 1 or duration > 3600:
         raise ValueError("duration must be from 1 to 3600 seconds")
-    return [
+    if ice_policy not in (None, "", "all", "relay"):
+        raise ValueError("ice policy must be all or relay")
+    argv = [
         binary,
         "--mode=caller",
         "--user_name=frame",
@@ -37,6 +48,11 @@ def directcall_argv(binary, image, token, frame_path, slot="1920x820", duration_
         "--stats=5",
         "--duration=" + str(duration),
     ]
+    if turns_file:
+        argv.append("--turns-file=" + str(turns_file))
+    if ice_policy in ("all", "relay"):
+        argv.append("--ice-policy=" + ice_policy)
+    return argv
 
 
 def resolve_direct_root(home, environ=None):

@@ -401,6 +401,7 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --token-file=<path>                Bearer token file (or env DIRECT_SIGNAL_TOKEN). Never logged.\n"
       "  --token-query                      Also put the token in the WebSocket path. Default is the Authorization header only.\n"
       "  --turns-file=<json>                TURN urls and credentials from a file. The file is not logged.\n"
+      "  --ice-policy=all|relay             all uses every candidate. relay gathers TURN only.\n"
       "  --token-env=<name>                 Env var that holds the bearer token (default DIRECT_SIGNAL_TOKEN)\n"
       "  --ca-file=<pem>                    CA bundle used to verify the signaling TLS certificate\n"
       "  --stun=stun:host:port              STUN server (repeatable, hostnames only)\n"
@@ -436,6 +437,7 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--call_setup_timeout_ms", "--media_grace_ms", "--hangup_ack_timeout_ms", "--tts_voice",
     "--signal-url", "--signal_url", "--token-file", "--token_file",
     "--token-query", "--no-token-query", "--turns-file", "--turns_file",
+    "--ice-policy", "--ice_policy",
     "--token-env", "--token_env", "--ca-file", "--ca_file", "--stun",
     "--codec", "--res", "--fps", "--video-source", "--video_source",
     "--image-file", "--image_file", "--remote-window", "--remote_window",
@@ -777,6 +779,9 @@ Options parseOptions(const std::vector<std::string>& args) {
     } else if (arg.find("--token-env=") == 0 || arg.find("--token_env=") == 0) {
         const auto eq = arg.find('=');
         opts.token_env = stripQuotes(arg.substr(eq + 1));
+    } else if (arg.find("--ice-policy=") == 0 || arg.find("--ice_policy=") == 0) {
+        const auto eq = arg.find('=');
+        opts.ice_policy = stripQuotes(arg.substr(eq + 1));
     } else if (arg.find("--ca-file=") == 0 || arg.find("--ca_file=") == 0) {
         const auto eq = arg.find('=');
         opts.ca_file = stripQuotes(arg.substr(eq + 1));
@@ -1035,6 +1040,9 @@ Options parseOptions(const std::vector<std::string>& args) {
   }
   if (opts.remote_window == "app" && opts.remote_frame.empty()) {
     opts.parse_error = "app remote window needs --remote-frame";
+  }
+  if (opts.ice_policy != "all" && opts.ice_policy != "relay") {
+    opts.parse_error = "ice policy must be all or relay";
   }
 
   RTC_LOG(LS_INFO) << "Mode used " << opts.mode; // Log final mode value

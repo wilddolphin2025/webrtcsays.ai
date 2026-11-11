@@ -120,6 +120,7 @@ struct Options {
     std::string token_env{"DIRECT_SIGNAL_TOKEN"};
     bool token_in_query = false;        // default: Authorization header only
     std::string turns_file{};           // JSON TURN account; credentials stay in the file
+    std::string ice_policy{"all"};      // all or relay; relay is a test of TURN only
     std::string ca_file{};              // PEM bundle for TLS verification
     std::vector<std::string> stun_urls; // stun:host:port, hostnames only
     std::string video_codec{};          // empty = H.264 then VP8/VP9; "h264" forces H.264

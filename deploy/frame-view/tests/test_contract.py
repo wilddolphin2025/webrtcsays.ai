@@ -49,6 +49,13 @@ class ContractTests(unittest.TestCase):
         self.assertIn('id="view-mic"', page)
         self.assertIn('id="view-remote-audio"', page)
         self.assertNotIn("getUserMedia({ video: true", script)
+        self.assertIn("payload.uris || payload.urls", script)
+        self.assertIn('"rtc.wilddolphin.us": 1', script)
+        self.assertNotIn("turn.wilddolphin.us", script)
+        self.assertIn("idle-timeout", script)
+        self.assertIn('failWait("disconnected")', script)
+        self.assertNotIn("log(payload.credential", script)
+        self.assertNotIn("log(payload.username", script)
 
     def test_nginx_adds_viewer_routes_only(self) -> None:
         conf = (ROOT / "nginx" / "frame-view-locations.conf").read_text(encoding="utf-8")

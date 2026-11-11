@@ -17,9 +17,8 @@
 // An SDL window is a desktop window. It is not a SteamVR compositor view.
 // `frame_path` is used when requested is "app": the latest remote frame is
 // written there for the fullscreen call app. No OpenVR overlay is created.
-// `slot_w` and `slot_h` are the call-view video rectangle. When both are
-// positive, frames are scaled into that size in this process so the app
-// copies instead of resampling.
+// `slot_w` and `slot_h`, when both are positive, are a box the frame is
+// fitted inside. The aspect ratio is kept. They are not a stretch target.
 std::unique_ptr<webrtc::VideoSinkInterface<webrtc::VideoFrame>> StartRemoteVideoWindow(
     const std::string& requested, const std::string& frame_path, int slot_w, int slot_h);
 

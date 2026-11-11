@@ -15,7 +15,6 @@ def directcall_argv(
     image,
     token,
     frame_path,
-    slot="1920x820",
     duration_sec=DEFAULT_DURATION_SEC,
     turns_file=None,
     ice_policy=None,
@@ -45,7 +44,6 @@ def directcall_argv(
         "--fps=30",
         "--remote-window=app",
         "--remote-frame=" + str(frame_path),
-        "--remote-slot=" + str(slot),
         "--stats=5",
         "--duration=" + str(duration),
     ]

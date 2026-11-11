@@ -412,7 +412,7 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --image-file=<png>                 PNG still for --video-source=image. Letterboxed, not a capture.\n"
       "  --remote-window=auto|openvr|sdl|app|none  app writes frames for the call app and opens no overlay.\n"
       "  --remote-frame=<path>              Shared frame file used with --remote-window=app.\n"
-      "  --remote-slot=WIDTHxHEIGHT         Scale app frames to this video rectangle.\n"
+      "  --remote-slot=WIDTHxHEIGHT         Fit app frames inside this box. Aspect is kept.\n"
       "  --audio=dummy                      Use a fake audio device (no Pulse/PipeWire)\n"
       "  --stats=<seconds>                  Log a GetStats JSON line on this interval\n"
       "  --duration=<seconds>               Hang up and exit after this many seconds\n"

@@ -183,6 +183,9 @@ def _upload(overlay, handle, pixels):
         _UPLOAD_BUF["buf"] = buf
     source = pixels.ctypes.data if hasattr(pixels, "ctypes") else bytes(pixels)
     ctypes.memmove(buf, source, size)
+    # One publish per new stable frame. The room shows through during a call
+    # and not after Hangup, which is when this publish stops. That timing does
+    # not show why the compositor clears the quad, so the call stays on this path.
     overlay.setOverlayRaw(handle, buf, WIDTH, HEIGHT, 4)
 
 

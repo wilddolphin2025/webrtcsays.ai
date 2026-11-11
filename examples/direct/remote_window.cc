@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "api/video/i420_buffer.h"
+#include "frame_fit.h"
 #include "remote_choice.h"
 
 namespace {
@@ -321,8 +322,11 @@ class Presenter : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
     int dst_w = src_w;
     int dst_h = src_h;
     if (slot_w_ >= 2 && slot_h_ >= 2) {
-      dst_w = slot_w_ & ~1;
-      dst_h = slot_h_ & ~1;
+      // Fit inside the slot. Stretching 16:9 into a shorter slot is what made
+      // a 640x360 call display as 1920x820.
+      const FrameFit fit = FitInside(src_w, src_h, slot_w_, slot_h_);
+      dst_w = fit.width;
+      dst_h = fit.height;
     } else if (dst_w > kMaxEdge || dst_h > kMaxEdge) {
       if (dst_w * 9 >= dst_h * 16) {
         dst_w = kMaxEdge;

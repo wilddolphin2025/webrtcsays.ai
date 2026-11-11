@@ -2,24 +2,19 @@
 
 WIDTH = 1920
 HEIGHT = 1080
-# Remote video fills the view above the controls. The fast copy uses this
-# rectangle from the origin, so its size stays 1920x820.
-REMOTE = (0, 0, 1920, 820)
-PREVIEW = (1560, 24, 328, 184)
+# The video plane is the whole overlay. Frames are fitted inside it.
+REMOTE = (0, 0, WIDTH, HEIGHT)
+PREVIEW = (1656, 24, 240, 135)
 # Head-locked surface. 2.6 m wide at 1.05 m is about 102 degrees across.
-# A control at the left edge is about 51 degrees off the nose. The buttons
-# and status sit together near the middle, about 14 degrees either side.
 FOV_DEGREES = 102.0
-CLUSTER_W = 1008
-CLUSTER_X = (WIDTH - CLUSTER_W) // 2
-GAP = 48
-BTN_W = 480
-BTN_H = 168
-BTN_Y = 892
-CONNECT = (CLUSTER_X, BTN_Y, BTN_W, BTN_H)
-HANGUP = (CLUSTER_X + BTN_W + GAP, BTN_Y, BTN_W, BTN_H)
-STATUS = (CLUSTER_X, 824, CLUSTER_W, 60)
+CONNECT = (646, 808, 300, 84)
+HANGUP = (974, 808, 300, 84)
+STATUS = (646, 762, 628, 36)
+# Opaque plate behind the cluster, 14 px outside the status line and buttons.
+PLATE = (632, 748, 656, 158)
 BUTTONS = {"connect": CONNECT, "hangup": HANGUP}
+# Opaque video bars. A fitted frame must not leave alpha at 0.
+BAR = (8, 12, 18, 255)
 SURFACE_WIDTH_METERS = 2.6
 SURFACE_DISTANCE_METERS = 1.05
 # Not an eye-buffer Submit. The far periphery of the headset can remain outside this image.
@@ -46,6 +41,28 @@ def hit_button(px, py):
         if x <= px < x + w and y <= py < y + h:
             return name
     return None
+
+
+def fit_frame(src_w, src_h, plane=None):
+    """Uniform scale of src into plane. 16:9 fills 1920x1080. Other ratios are centered."""
+    if plane is None:
+        plane = REMOTE
+    px, py, pw, ph = plane
+    src_w = int(src_w)
+    src_h = int(src_h)
+    if src_w <= 0 or src_h <= 0 or pw <= 0 or ph <= 0:
+        return (px, py, 0, 0)
+    if src_w * ph <= src_h * pw:
+        dh = ph
+        dw = src_w * ph // src_h
+    else:
+        dw = pw
+        dh = src_h * pw // src_w
+    dw = min(pw, max(1, dw))
+    dh = min(ph, max(1, dh))
+    x = px + (pw - dw) // 2
+    y = py + (ph - dh) // 2
+    return (x, y, dw, dh)
 
 
 def remote_covers_most_of_the_view():

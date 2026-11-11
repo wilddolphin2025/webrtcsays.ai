@@ -4,13 +4,16 @@ import struct
 import zlib
 
 from webrtcsays_panel.layout import (
+    BAR,
     CONNECT,
     HANGUP,
     HEIGHT,
+    PLATE,
     PREVIEW,
     REMOTE,
     STATUS,
     WIDTH,
+    fit_frame,
 )
 
 # 5x7 glyphs. Each row is five bits, MSB on the left.
@@ -70,9 +73,9 @@ def _canvas():
 def _blank():
     pixels = _canvas()
     for i in range(0, len(pixels), 4):
-        pixels[i] = 27
-        pixels[i + 1] = 40
-        pixels[i + 2] = 56
+        pixels[i] = BAR[0]
+        pixels[i + 1] = BAR[1]
+        pixels[i + 2] = BAR[2]
         pixels[i + 3] = 255
     return pixels
 
@@ -106,7 +109,8 @@ def _blit(pixels, rect, src, src_w, src_h):
             sx = x * src_w // w
             s = (sy * src_w + sx) * 4
             d = (dy * WIDTH + dx) * 4
-            pixels[d:d + 4] = src[s:s + 4]
+            pixels[d:d + 3] = src[s:s + 3]
+            pixels[d + 3] = 255
 
 
 def _text(pixels, x, y, text, scale, color):
@@ -137,16 +141,17 @@ def _center_text(pixels, rect, text, scale, color):
 
 def compose(lines, remote=None, remote_size=None, preview=None, preview_size=None):
     pixels = _blank()
-    _fill(pixels, REMOTE, (8, 12, 18))
     if remote and remote_size:
-        _blit(pixels, REMOTE, remote, remote_size[0], remote_size[1])
+        fitted = fit_frame(remote_size[0], remote_size[1], REMOTE)
+        _blit(pixels, fitted, remote, remote_size[0], remote_size[1])
     else:
-        _center_text(pixels, REMOTE, "REMOTE VIDEO NOT MEASURED", 4, (199, 213, 224))
+        _center_text(pixels, (0, 280, WIDTH, 220), "REMOTE VIDEO NOT MEASURED", 4, (199, 213, 224))
     _fill(pixels, PREVIEW, (14, 20, 27))
     if preview and preview_size:
         _blit(pixels, PREVIEW, preview, preview_size[0], preview_size[1])
     else:
-        _text(pixels, PREVIEW[0] + 16, PREVIEW[1] + 70, "LOCAL STILL", 3, (199, 213, 224))
+        _center_text(pixels, PREVIEW, "LOCAL", 4, (199, 213, 224))
+    _fill(pixels, PLATE, (8, 14, 20))
     _fill(pixels, STATUS, (23, 38, 46))
     shown = [line for line in lines[:2] if line]
     if len(shown) == 1:

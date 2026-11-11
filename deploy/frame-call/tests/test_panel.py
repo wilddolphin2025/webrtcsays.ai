@@ -132,7 +132,7 @@ class PanelTests(unittest.TestCase):
         self.assertIn("--video-source=image", argv)
         self.assertIn("--remote-window=app", argv)
         self.assertIn("--remote-frame=" + str(self.frame), argv)
-        self.assertIn("--remote-slot=1920x820", argv)
+        self.assertNotIn("--remote-slot=", text)
         self.assertIn("--duration=900", argv)
         self.assertNotIn("--ice-policy=", text)
         self.assertNotIn("pkill", text)
@@ -149,9 +149,8 @@ class PanelTests(unittest.TestCase):
         self.assertIn("--video", self.spawned[0])
         self.assertNotIn("--no-video", self.spawned[0])
         self.assertNotIn("--audio=dummy", self.spawned[0])
-        self.assertIn("--remote-slot=1920x820", spawned)
+        self.assertNotIn("--remote-slot=", spawned)
         self.assertIn("--duration=900", spawned)
-        self.assertNotIn("--remote-slot=900", spawned)
         self.assertNotIn("--turns-file=", spawned)
         self.assertEqual(self.session.turn_note, "TURN not configured")
 
@@ -288,10 +287,9 @@ class PanelTests(unittest.TestCase):
         import time
         import numpy as np
         from webrtcsays_panel.fast_compose import CallCanvas
-        from webrtcsays_panel.layout import REMOTE
         canvas = CallCanvas()
         canvas.set_status(["WEBRTCSAYS.AI", "PROCESS: STOPPED"])
-        dh, dw = REMOTE[3], REMOTE[2]
+        dh, dw = 1080, 1920
         src = np.random.randint(0, 255, (dh, dw, 4), dtype=np.uint8)
         frames = 90
         for _ in range(3):
@@ -304,7 +302,7 @@ class PanelTests(unittest.TestCase):
         elapsed = time.perf_counter() - started
         self.assertEqual(mode, "copy")
         self.assertGreaterEqual(frames / elapsed, 30.0)
-        mismatched = np.random.randint(0, 255, (1080, 1920, 4), dtype=np.uint8)
+        mismatched = np.random.randint(0, 255, (360, 640, 4), dtype=np.uint8)
         for _ in range(2):
             canvas.paint_video(mismatched)
         started = time.perf_counter()
@@ -442,6 +440,8 @@ class PanelTests(unittest.TestCase):
         from webrtcsays_panel.layout import (
             CONNECT,
             HANGUP,
+            PLATE,
+            PREVIEW,
             REMOTE,
             STATUS,
             WIDTH,
@@ -451,12 +451,18 @@ class PanelTests(unittest.TestCase):
             rect_center,
         )
 
+        self.assertEqual(REMOTE, (0, 0, 1920, 1080))
+        self.assertEqual(CONNECT, (646, 808, 300, 84))
+        self.assertEqual(HANGUP, (974, 808, 300, 84))
+        self.assertEqual(STATUS, (646, 762, 628, 36))
+        self.assertEqual(PREVIEW, (1656, 24, 240, 135))
         self.assertFalse(overlaps(CONNECT, HANGUP))
-        self.assertFalse(overlaps(CONNECT, REMOTE))
-        self.assertFalse(overlaps(HANGUP, REMOTE))
+        self.assertTrue(overlaps(CONNECT, REMOTE))
+        self.assertTrue(overlaps(HANGUP, REMOTE))
+        self.assertTrue(overlaps(STATUS, REMOTE))
+        self.assertTrue(overlaps(CONNECT, PLATE))
         self.assertFalse(overlaps(STATUS, CONNECT))
         self.assertFalse(overlaps(STATUS, HANGUP))
-        self.assertFalse(overlaps(STATUS, REMOTE))
         for rect in (CONNECT, HANGUP, STATUS):
             self.assertLess(abs(horizontal_degrees(rect_center(rect)[0])), 16)
         midpoint = (rect_center(CONNECT)[0] + rect_center(HANGUP)[0]) / 2
@@ -481,12 +487,13 @@ class PanelTests(unittest.TestCase):
 
     def test_fullscreen_call_image_shows_remote_video_and_hangup(self):
         from webrtcsays_panel.compose import compose
-        from webrtcsays_panel.layout import REMOTE, remote_covers_most_of_the_view
+        from webrtcsays_panel.layout import fit_frame, remote_covers_most_of_the_view
         self.assertTrue(remote_covers_most_of_the_view())
         red = bytes([220, 20, 20, 255]) * 4
         pixels = compose(["WEBRTCSAYS.AI", "PROCESS: STOPPED"], red, (2, 2))
-        x = REMOTE[0] + 100
-        y = REMOTE[1] + 100
+        fitted = fit_frame(2, 2)
+        x = fitted[0] + fitted[2] // 2
+        y = fitted[1] + fitted[3] // 2
         i = (y * 1920 + x) * 4
         self.assertGreater(pixels[i], 180)
         self.assertLess(pixels[i + 1], 80)
@@ -496,6 +503,64 @@ class PanelTests(unittest.TestCase):
         j = (hy * 1920 + hx) * 4
         self.assertNotEqual(pixels[i:i + 3], pixels[j:j + 3])
         self.assertNotIn(b"super-secret-token", bytes(pixels))
+
+    def test_aspect_fit_covers_the_plane_and_keeps_the_buffer(self):
+        import gc
+        import tracemalloc
+
+        import numpy as np
+
+        from webrtcsays_panel.fast_compose import CallCanvas
+        from webrtcsays_panel.layout import BAR, CONNECT, fit_frame
+        from webrtcsays_panel.overlay_app import _UPLOAD_BUF, _upload
+        from webrtcsays_panel.present import pixel_nbytes
+
+        self.assertEqual(fit_frame(640, 360), (0, 0, 1920, 1080))
+        self.assertEqual(fit_frame(1920, 1080), (0, 0, 1920, 1080))
+        self.assertEqual(fit_frame(640, 480), (240, 0, 1440, 1080))
+        self.assertEqual(fit_frame(1440, 1080), (240, 0, 1440, 1080))
+
+        canvas = CallCanvas()
+        held = canvas.pixels
+        canvas.set_status(["WEBRTCSAYS.AI", "process: running"])
+        wide = np.zeros((360, 640, 4), dtype=np.uint8)
+        wide[:, :] = (20, 40, 200, 0)
+        self.assertEqual(canvas.paint_video(wide), "scale")
+        self.assertIs(canvas.pixels, held)
+        self.assertEqual(tuple(canvas.pixels[100, 0]), (20, 40, 200, 255))
+        self.assertEqual(tuple(canvas.pixels[1000, 40]), (20, 40, 200, 255))
+        self.assertEqual(tuple(canvas.pixels[CONNECT[1] + 8, CONNECT[0] + 8]), (26, 159, 255, 255))
+
+        box = np.zeros((480, 640, 4), dtype=np.uint8)
+        box[:, :] = (10, 180, 30, 0)
+        tracemalloc.start()
+        for i in range(12):
+            canvas.paint_video(wide if i % 2 == 0 else box)
+        gc.collect()
+        current, _peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        self.assertLess(current, 8 * 1024 * 1024)
+        self.assertIs(canvas.pixels, held)
+        self.assertEqual(tuple(canvas.pixels[400, 0]), BAR)
+        self.assertEqual(tuple(canvas.pixels[400, 240]), (10, 180, 30, 255))
+        self.assertEqual(tuple(canvas.pixels[400, 1679]), (10, 180, 30, 255))
+        self.assertEqual(tuple(canvas.pixels[400, 1680]), BAR)
+        self.assertEqual(tuple(canvas.pixels[100, 1700]), (14, 20, 27, 255))
+        self.assertEqual(tuple(canvas.pixels[CONNECT[1] + 8, CONNECT[0] + 8]), (26, 159, 255, 255))
+        self.assertTrue((canvas.pixels[:, :, 3] == 255).all())
+        self.assertEqual(pixel_nbytes(canvas.pixels), 1920 * 1080 * 4)
+
+        seen = []
+
+        class Sink:
+            def setOverlayRaw(self, handle, buf, width, height, stride):
+                seen.append((handle, buf, width, height, stride, len(buf)))
+
+        _UPLOAD_BUF["buf"] = None
+        _upload(Sink(), 1, canvas.pixels)
+        _upload(Sink(), 1, canvas.pixels)
+        self.assertEqual(seen[0][1], seen[1][1])
+        self.assertEqual(seen[0][2:], (1920, 1080, 4, 1920 * 1080 * 4))
 
     def test_overlay_click_hits_connect_and_not_the_remote_key(self):
         self.assertNotEqual(OVERLAY_KEY, REMOTE_VIDEO_OVERLAY_KEY)

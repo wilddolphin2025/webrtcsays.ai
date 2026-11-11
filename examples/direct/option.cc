@@ -401,6 +401,7 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --token-file=<path>                Bearer token file (or env DIRECT_SIGNAL_TOKEN). Never logged.\n"
       "  --token-query                      Also put the token in the WebSocket path. Default is the Authorization header only.\n"
       "  --turns-file=<json>                TURN urls and credentials from a file. The file is not logged.\n"
+      "  --ice-policy=all|relay             all uses every candidate. relay gathers TURN only.\n"
       "  --token-env=<name>                 Env var that holds the bearer token (default DIRECT_SIGNAL_TOKEN)\n"
       "  --ca-file=<pem>                    CA bundle used to verify the signaling TLS certificate\n"
       "  --stun=stun:host:port              STUN server (repeatable, hostnames only)\n"
@@ -409,7 +410,9 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --fps=30                           Send frame rate, 1..60 (default 30)\n"
       "  --video-source=pattern|camera|screen|image  pattern if unset; image repeats a PNG\n"
       "  --image-file=<png>                 PNG still for --video-source=image. Letterboxed, not a capture.\n"
-      "  --remote-window=auto|openvr|sdl|none  Show incoming video. auto prefers an OpenVR overlay.\n"
+      "  --remote-window=auto|openvr|sdl|app|none  app writes frames for the call app and opens no overlay.\n"
+      "  --remote-frame=<path>              Shared frame file used with --remote-window=app.\n"
+      "  --remote-slot=WIDTHxHEIGHT         Fit app frames inside this box. Aspect is kept.\n"
       "  --audio=dummy                      Use a fake audio device (no Pulse/PipeWire)\n"
       "  --stats=<seconds>                  Log a GetStats JSON line on this interval\n"
       "  --duration=<seconds>               Hang up and exit after this many seconds\n"
@@ -434,9 +437,11 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--call_setup_timeout_ms", "--media_grace_ms", "--hangup_ack_timeout_ms", "--tts_voice",
     "--signal-url", "--signal_url", "--token-file", "--token_file",
     "--token-query", "--no-token-query", "--turns-file", "--turns_file",
+    "--ice-policy", "--ice_policy",
     "--token-env", "--token_env", "--ca-file", "--ca_file", "--stun",
     "--codec", "--res", "--fps", "--video-source", "--video_source",
     "--image-file", "--image_file", "--remote-window", "--remote_window",
+    "--remote-frame", "--remote_frame", "--remote-slot", "--remote_slot",
     "--audio", "--stats", "--duration",
     "--help"
   };
@@ -774,6 +779,9 @@ Options parseOptions(const std::vector<std::string>& args) {
     } else if (arg.find("--token-env=") == 0 || arg.find("--token_env=") == 0) {
         const auto eq = arg.find('=');
         opts.token_env = stripQuotes(arg.substr(eq + 1));
+    } else if (arg.find("--ice-policy=") == 0 || arg.find("--ice_policy=") == 0) {
+        const auto eq = arg.find('=');
+        opts.ice_policy = stripQuotes(arg.substr(eq + 1));
     } else if (arg.find("--ca-file=") == 0 || arg.find("--ca_file=") == 0) {
         const auto eq = arg.find('=');
         opts.ca_file = stripQuotes(arg.substr(eq + 1));
@@ -810,6 +818,17 @@ Options parseOptions(const std::vector<std::string>& args) {
     } else if (arg.find("--remote-window=") == 0 || arg.find("--remote_window=") == 0) {
         const auto eq = arg.find('=');
         opts.remote_window = arg.substr(eq + 1);
+    } else if (arg.find("--remote-frame=") == 0 || arg.find("--remote_frame=") == 0) {
+        const auto eq = arg.find('=');
+        opts.remote_frame = stripQuotes(arg.substr(eq + 1));
+    } else if (arg.find("--remote-slot=") == 0 || arg.find("--remote_slot=") == 0) {
+        const auto eq = arg.find('=');
+        const std::string spec = arg.substr(eq + 1);
+        const auto x = spec.find('x');
+        if (x != std::string::npos) {
+            opts.remote_slot_w = std::atoi(spec.substr(0, x).c_str());
+            opts.remote_slot_h = std::atoi(spec.substr(x + 1).c_str());
+        }
     } else if (arg.find("--audio=") == 0) {
         opts.audio = arg.substr(8);
     } else if (arg.find("--stats=") == 0) {
@@ -1015,8 +1034,15 @@ Options parseOptions(const std::vector<std::string>& args) {
     opts.video_codec = codec;
   }
   if (opts.remote_window != "auto" && opts.remote_window != "openvr" &&
-      opts.remote_window != "sdl" && opts.remote_window != "none") {
-    opts.parse_error = "remote window must be auto, openvr, sdl, or none";
+      opts.remote_window != "sdl" && opts.remote_window != "app" &&
+      opts.remote_window != "none") {
+    opts.parse_error = "remote window must be auto, openvr, sdl, app, or none";
+  }
+  if (opts.remote_window == "app" && opts.remote_frame.empty()) {
+    opts.parse_error = "app remote window needs --remote-frame";
+  }
+  if (opts.ice_policy != "all" && opts.ice_policy != "relay") {
+    opts.parse_error = "ice policy must be all or relay";
   }
 
   RTC_LOG(LS_INFO) << "Mode used " << opts.mode; // Log final mode value

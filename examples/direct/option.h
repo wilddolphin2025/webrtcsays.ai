@@ -120,12 +120,16 @@ struct Options {
     std::string token_env{"DIRECT_SIGNAL_TOKEN"};
     bool token_in_query = false;        // default: Authorization header only
     std::string turns_file{};           // JSON TURN account; credentials stay in the file
+    std::string ice_policy{"all"};      // all or relay; relay is a test of TURN only
     std::string ca_file{};              // PEM bundle for TLS verification
     std::vector<std::string> stun_urls; // stun:host:port, hostnames only
     std::string video_codec{};          // empty = H.264 then VP8/VP9; "h264" forces H.264
     std::string video_source{};         // pattern, camera, screen, or image
     std::string image_file{};           // PNG still used when video_source is image
-    std::string remote_window{"auto"};  // auto, openvr, sdl, or none
+    std::string remote_window{"auto"};  // auto, openvr, sdl, app, or none
+    std::string remote_frame{};         // shared frame file for remote_window=app
+    int remote_slot_w = 0;              // app video rectangle, 0 = native size
+    int remote_slot_h = 0;
     int video_width = 0;
     int video_height = 0;
     int video_fps = 0;                  // 1..60, 30 if video is on and unset

@@ -38,6 +38,7 @@ def directcall_argv(
         "--signal-url=" + SIGNAL_URL,
         "--token-file=" + token,
         "--stun=stun:stun.l.google.com:19302",
+        "--video",
         "--video-source=image",
         "--image-file=" + image,
         "--res=1920x1080",

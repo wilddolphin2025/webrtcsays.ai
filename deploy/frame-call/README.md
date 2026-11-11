@@ -39,7 +39,7 @@ Connect reads that same token file and GETs `https://rtc.wilddolphin.us/demo/tur
 
 The view shows WebRTCsays.AI, the remote picture, a local still preview, Connect, and Hangup.
 
-- Connect starts one directcall on cores 2, 3, 4, and 7. The still is sent at 1920x1080 and 30 fps for at most 15 minutes. Launch does not start the call. Connect again while that same process is alive does not start another.
+- Connect starts one directcall on cores 2, 3, 4, and 7. The command passes `--video` explicitly, with the still at 1920x1080 and 30 fps, for at most 15 minutes. It does not pass `--audio=dummy`, so the caller's default audio track stays enabled. Launch does not start the call. Connect again while that same process is alive does not start another.
 - Hangup checks the pid, start time, executable, and full argv, then SIGTERM. SIGKILL follows only if it is still that process.
 - Closing the app stops the owned call.
 - The guard uses the hottest thermal zone, not only zone0. At or above 80C for 6 seconds, or the panel or the call at or above 7 GiB RSS, stops the owned call and exits the panel.

@@ -10,7 +10,7 @@ THERMAL_LIMIT_C = 80.0
 THERMAL_SUSTAIN_SEC = 6.0
 
 
-def directcall_argv(binary, image, token, duration_sec=DEFAULT_DURATION_SEC):
+def directcall_argv(binary, image, token, frame_path, duration_sec=DEFAULT_DURATION_SEC):
     binary = str(binary)
     image = str(image)
     token = str(token)
@@ -31,7 +31,8 @@ def directcall_argv(binary, image, token, duration_sec=DEFAULT_DURATION_SEC):
         "--image-file=" + image,
         "--res=1920x1080",
         "--fps=30",
-        "--remote-window=openvr",
+        "--remote-window=app",
+        "--remote-frame=" + str(frame_path),
         "--stats=5",
         "--duration=" + str(duration),
     ]
@@ -43,4 +44,5 @@ def default_paths(home):
         "binary": root / "directcall",
         "image": root / "VR-Babelfish-1080p.png",
         "token": root / "token",
+        "frame": Path(home) / "babelfish" / "call" / "app" / "remote.frame",
     }

@@ -31,7 +31,11 @@ class Session:
 
     def argv(self):
         return directcall_argv(
-            self.paths["binary"], self.paths["image"], self.paths["token"], self.duration_sec
+            self.paths["binary"],
+            self.paths["image"],
+            self.paths["token"],
+            self.paths["frame"],
+            self.duration_sec,
         )
 
     def preflight(self):

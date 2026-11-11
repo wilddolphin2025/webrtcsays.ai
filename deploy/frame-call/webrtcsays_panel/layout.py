@@ -1,13 +1,19 @@
-"""Pixel layout for the headset panel. Origin is the top left."""
+"""Fullscreen call view. Origin is the top left of the 1920x1080 call image."""
 
-WIDTH = 1280
-HEIGHT = 720
+WIDTH = 1920
+HEIGHT = 1080
+# Remote video fills the view above the controls.
+REMOTE = (0, 0, 1920, 820)
+PREVIEW = (1560, 24, 328, 184)
+CONNECT = (32, 860, 900, 188)
+HANGUP = (988, 860, 900, 188)
+BUTTONS = {"connect": CONNECT, "hangup": HANGUP}
 
-# The button band is vertically centered so a top/bottom mouse-origin
-# mistake still lands on the same controls.
-CONNECT = (48, 290, 560, 140)
-DISCONNECT = (672, 290, 560, 140)
-BUTTONS = {"connect": CONNECT, "disconnect": DISCONNECT}
+# Head-locked surface. 2.6 m wide at 1.05 m is about 102 degrees across.
+SURFACE_WIDTH_METERS = 2.6
+SURFACE_DISTANCE_METERS = 1.05
+# Not an eye-buffer Submit. The far periphery of the headset can remain outside this image.
+PRESENTER = "fov-call-surface"
 
 
 def hit_button(px, py):
@@ -15,3 +21,8 @@ def hit_button(px, py):
         if x <= px < x + w and y <= py < y + h:
             return name
     return None
+
+
+def remote_covers_most_of_the_view():
+    _, _, w, h = REMOTE
+    return w * h > (WIDTH * HEIGHT) // 2

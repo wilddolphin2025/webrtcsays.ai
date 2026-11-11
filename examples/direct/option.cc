@@ -409,7 +409,8 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --fps=30                           Send frame rate, 1..60 (default 30)\n"
       "  --video-source=pattern|camera|screen|image  pattern if unset; image repeats a PNG\n"
       "  --image-file=<png>                 PNG still for --video-source=image. Letterboxed, not a capture.\n"
-      "  --remote-window=auto|openvr|sdl|none  Show incoming video. auto prefers an OpenVR overlay.\n"
+      "  --remote-window=auto|openvr|sdl|app|none  app writes frames for the call app and opens no overlay.\n"
+      "  --remote-frame=<path>              Frame file used with --remote-window=app.\n"
       "  --audio=dummy                      Use a fake audio device (no Pulse/PipeWire)\n"
       "  --stats=<seconds>                  Log a GetStats JSON line on this interval\n"
       "  --duration=<seconds>               Hang up and exit after this many seconds\n"
@@ -437,6 +438,7 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--token-env", "--token_env", "--ca-file", "--ca_file", "--stun",
     "--codec", "--res", "--fps", "--video-source", "--video_source",
     "--image-file", "--image_file", "--remote-window", "--remote_window",
+    "--remote-frame", "--remote_frame",
     "--audio", "--stats", "--duration",
     "--help"
   };
@@ -810,6 +812,9 @@ Options parseOptions(const std::vector<std::string>& args) {
     } else if (arg.find("--remote-window=") == 0 || arg.find("--remote_window=") == 0) {
         const auto eq = arg.find('=');
         opts.remote_window = arg.substr(eq + 1);
+    } else if (arg.find("--remote-frame=") == 0 || arg.find("--remote_frame=") == 0) {
+        const auto eq = arg.find('=');
+        opts.remote_frame = stripQuotes(arg.substr(eq + 1));
     } else if (arg.find("--audio=") == 0) {
         opts.audio = arg.substr(8);
     } else if (arg.find("--stats=") == 0) {
@@ -1015,8 +1020,12 @@ Options parseOptions(const std::vector<std::string>& args) {
     opts.video_codec = codec;
   }
   if (opts.remote_window != "auto" && opts.remote_window != "openvr" &&
-      opts.remote_window != "sdl" && opts.remote_window != "none") {
-    opts.parse_error = "remote window must be auto, openvr, sdl, or none";
+      opts.remote_window != "sdl" && opts.remote_window != "app" &&
+      opts.remote_window != "none") {
+    opts.parse_error = "remote window must be auto, openvr, sdl, app, or none";
+  }
+  if (opts.remote_window == "app" && opts.remote_frame.empty()) {
+    opts.parse_error = "app remote window needs --remote-frame";
   }
 
   RTC_LOG(LS_INFO) << "Mode used " << opts.mode; // Log final mode value

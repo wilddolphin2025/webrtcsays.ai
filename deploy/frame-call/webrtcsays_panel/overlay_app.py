@@ -11,14 +11,15 @@ from pathlib import Path
 
 from webrtcsays_panel import APP_NAME, OVERLAY_KEY
 from webrtcsays_panel.command import CORES
-from webrtcsays_panel.layout import BUTTONS, HEIGHT, WIDTH
+from webrtcsays_panel.compose import compose, read_remote_frame
+from webrtcsays_panel.layout import HEIGHT, SURFACE_DISTANCE_METERS, SURFACE_WIDTH_METERS, WIDTH
 from webrtcsays_panel.overlay_input import clicks_from_events
 from webrtcsays_panel.owner import ProcFs
 from webrtcsays_panel.session import Session
 from webrtcsays_panel.command import default_paths
 
 # Left of and closer than directcall's remote-video overlay at x=0, y=1.3, z=-2.
-CONTROL_WIDTH_METERS = 1.1
+CONTROL_WIDTH_METERS = SURFACE_WIDTH_METERS
 
 
 class _Mouse:
@@ -92,7 +93,7 @@ def write_state(path, session):
 def handle_click(session, name):
     if name == "connect":
         return session.connect()
-    if name == "disconnect":
+    if name == "hangup":
         return session.disconnect()
     return "ignored"
 
@@ -110,23 +111,13 @@ def make_session(home=None):
     )
 
 
-def draw(surface, title_font, body_font, lines):
-    import pygame
-
-    surface.fill((27, 40, 56))
-    surface.blit(title_font.render(lines[0], True, (255, 255, 255)), (48, 36))
-    for name, (x, y, w, h) in BUTTONS.items():
-        color = (26, 159, 255) if name == "connect" else (42, 71, 94)
-        pygame.draw.rect(surface, color, pygame.Rect(x, y, w, h), border_radius=12)
-        label = "Connect" if name == "connect" else "Disconnect"
-        ink = (14, 20, 27) if name == "connect" else (199, 213, 224)
-        surface.blit(title_font.render(label, True, ink), (x + 36, y + 48))
-    y = 460
-    for line in lines[1:]:
-        surface.blit(body_font.render(line, True, (199, 213, 224)), (48, y))
-        y += 32
-        if y > HEIGHT - 24:
-            break
+def call_image(session):
+    remote = read_remote_frame(_read_bytes(session.paths["frame"]))
+    remote_pixels = remote_size = None
+    if remote:
+        remote_size = (remote[0], remote[1])
+        remote_pixels = remote[3]
+    return compose(panel_lines(session), remote_pixels, remote_size)
 
 
 def snapshot_event(event):
@@ -140,7 +131,9 @@ def _open_overlay():
     openvr.init(openvr.VRApplication_Overlay)
     overlay = openvr.IVROverlay()
     handle = overlay.createOverlay(OVERLAY_KEY, APP_NAME)
-    overlay.setOverlayWidthInMeters(handle, CONTROL_WIDTH_METERS)
+    overlay.setOverlayWidthInMeters(handle, SURFACE_WIDTH_METERS)
+    if hasattr(overlay, "setOverlayCurvature"):
+        overlay.setOverlayCurvature(handle, 0.35)
     overlay.setOverlayInputMethod(handle, openvr.VROverlayInputMethod_Mouse)
     scale = openvr.HmdVector2_t()
     scale.v[0] = WIDTH
@@ -150,20 +143,24 @@ def _open_overlay():
     matrix.m[0][0] = 1
     matrix.m[1][1] = 1
     matrix.m[2][2] = 1
-    matrix.m[0][3] = -0.95
-    matrix.m[1][3] = 0.85
-    matrix.m[2][3] = -1.6
+    matrix.m[0][3] = 0
+    matrix.m[1][3] = 1.6
+    matrix.m[2][3] = -SURFACE_DISTANCE_METERS
     overlay.setOverlayTransformAbsolute(handle, openvr.TrackingUniverseStanding, matrix)
     overlay.showOverlay(handle)
     return openvr, overlay, handle
 
 
-def _upload(overlay, handle, surface):
-    import pygame
-
-    raw = pygame.image.tobytes(surface, "RGBA")
-    buf = (c_uint8 * len(raw)).from_buffer_copy(raw)
+def _upload(overlay, handle, pixels):
+    buf = (c_uint8 * len(pixels)).from_buffer_copy(pixels)
     overlay.setOverlayRaw(handle, buf, WIDTH, HEIGHT, 4)
+
+
+def _read_bytes(path):
+    try:
+        return Path(path).read_bytes()
+    except OSError:
+        return None
 
 
 def _read_optional(path):
@@ -182,14 +179,6 @@ def _request_stop(flag):
 
 
 def main():
-    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
-    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
-    import pygame
-
-    pygame.font.init()
-    surface = pygame.Surface((WIDTH, HEIGHT))
-    title_font = pygame.font.Font(None, 72)
-    body_font = pygame.font.Font(None, 36)
     session = make_session()
     state_path = Path.home() / "babelfish" / "call" / "app" / "state.txt"
     flag = {"stop": False}
@@ -214,11 +203,8 @@ def main():
             status = ""
             if session.identity is not None:
                 status = _read_optional("/proc/%s/status" % session.identity.pid)
-            lines = panel_lines(session)
             session.poll(thermal, status)
-            lines = panel_lines(session)
-            draw(surface, title_font, body_font, lines)
-            _upload(overlay, handle, surface)
+            _upload(overlay, handle, call_image(session))
             try:
                 state_path.parent.mkdir(parents=True, exist_ok=True)
                 write_state(state_path, session)

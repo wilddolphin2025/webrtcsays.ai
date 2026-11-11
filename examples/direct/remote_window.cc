@@ -245,13 +245,37 @@ void I420ToRgba(const webrtc::I420BufferInterface& src,
   }
 }
 
+bool WriteAppFrame(const std::string& path, const uint8_t* rgba, int width, int height,
+                   uint32_t index) {
+  const std::string tmp = path + ".tmp";
+  FILE* file = std::fopen(tmp.c_str(), "wb");
+  if (!file) return false;
+  const uint32_t header[4] = {0x314D5246u, static_cast<uint32_t>(width),
+                              static_cast<uint32_t>(height), index};
+  const size_t pixels = static_cast<size_t>(width) * height * 4;
+  const bool ok = std::fwrite(header, sizeof(header), 1, file) == 1 &&
+                  std::fwrite(rgba, 1, pixels, file) == pixels;
+  std::fclose(file);
+  if (!ok) {
+    std::remove(tmp.c_str());
+    return false;
+  }
+  if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+    std::remove(tmp.c_str());
+    return false;
+  }
+  return true;
+}
+
 class Presenter : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
  public:
-  Presenter(RemoteWindowChoice choice, bool openvr_ready, bool sdl_ready, bool sdl_fallback)
+  Presenter(RemoteWindowChoice choice, bool openvr_ready, bool sdl_ready, bool sdl_fallback,
+            std::string frame_path)
       : choice_(choice),
         openvr_ready_(openvr_ready),
         sdl_ready_(sdl_ready),
-        sdl_fallback_(sdl_fallback) {
+        sdl_fallback_(sdl_fallback),
+        frame_path_(std::move(frame_path)) {
     thread_ = std::thread([this] { Loop(); });
   }
 
@@ -297,7 +321,12 @@ class Presenter : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
     OpenVrFns openvr;
     SdlFns sdl;
     RemoteWindowChoice active = RemoteWindowChoice::kNone;
-    if (choice_ == RemoteWindowChoice::kOpenVr && openvr_ready_ && openvr.Load() &&
+    if (choice_ == RemoteWindowChoice::kApp) {
+      if (!frame_path_.empty()) {
+        active = RemoteWindowChoice::kApp;
+        std::fprintf(stderr, "remote window: app frame file (no overlay)\n");
+      }
+    } else if (choice_ == RemoteWindowChoice::kOpenVr && openvr_ready_ && openvr.Load() &&
         openvr.Start()) {
       active = RemoteWindowChoice::kOpenVr;
     }
@@ -332,7 +361,9 @@ class Presenter : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
         }
         received = received_;
       }
-      if (!rgba.empty() && active == RemoteWindowChoice::kOpenVr) {
+      if (!rgba.empty() && active == RemoteWindowChoice::kApp) {
+        if (WriteAppFrame(frame_path_, rgba.data(), width, height, ++frame_index_)) ++presented_;
+      } else if (!rgba.empty() && active == RemoteWindowChoice::kOpenVr) {
         if (openvr.Present(rgba.data(), width, height)) ++presented_;
       } else if (!rgba.empty() && active == RemoteWindowChoice::kSdl) {
         if (sdl.Present(rgba.data(), width, height)) ++presented_;
@@ -354,6 +385,8 @@ class Presenter : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
   bool openvr_ready_;
   bool sdl_ready_;
   bool sdl_fallback_;
+  std::string frame_path_;
+  uint32_t frame_index_ = 0;
   std::mutex mu_;
   std::vector<uint8_t> rgba_;
   int width_ = 0;
@@ -389,7 +422,11 @@ bool SdlLibraryPresent() {
 }  // namespace
 
 std::unique_ptr<webrtc::VideoSinkInterface<webrtc::VideoFrame>> StartRemoteVideoWindow(
-    const std::string& requested) {
+    const std::string& requested, const std::string& frame_path) {
+  if (requested == "app" && frame_path.empty()) {
+    std::fprintf(stderr, "remote window app needs a frame path\n");
+    return nullptr;
+  }
   const bool openvr = OpenVrLibraryPresent();
   const bool sdl = SdlLibraryPresent();
   const RemoteWindowChoice choice = ChooseRemoteWindow(requested, openvr, sdl);
@@ -397,5 +434,5 @@ std::unique_ptr<webrtc::VideoSinkInterface<webrtc::VideoFrame>> StartRemoteVideo
     std::fprintf(stderr, "remote window not shown (%s)\n", requested.c_str());
     return nullptr;
   }
-  return std::make_unique<Presenter>(choice, openvr, sdl, requested == "auto");
+  return std::make_unique<Presenter>(choice, openvr, sdl, requested == "auto", frame_path);
 }

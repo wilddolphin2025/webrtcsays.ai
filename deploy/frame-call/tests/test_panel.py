@@ -90,8 +90,14 @@ class PanelTests(unittest.TestCase):
         self.fake = FakeProc(self.proc_root)
         self.spawned = []
         self.clock = Clock()
+        self.frame = self.home / "remote.frame"
         self.session = Session(
-            {"binary": self.binary, "image": self.image, "token": self.token},
+            {
+                "binary": self.binary,
+                "image": self.image,
+                "token": self.token,
+                "frame": self.frame,
+            },
             self.fake.proc,
             self.spawn,
             self.affinity,
@@ -113,7 +119,7 @@ class PanelTests(unittest.TestCase):
         self.cores = (pid, set(cores))
 
     def test_command_is_bearer_file_and_still_image(self):
-        argv = directcall_argv(self.binary, self.image, self.token)
+        argv = directcall_argv(self.binary, self.image, self.token, self.frame)
         text = " ".join(argv)
         self.assertIn("--token-file=" + str(self.token), argv)
         self.assertNotIn("super-secret-token", text)
@@ -121,7 +127,8 @@ class PanelTests(unittest.TestCase):
         self.assertIn("--res=1920x1080", argv)
         self.assertIn("--fps=30", argv)
         self.assertIn("--video-source=image", argv)
-        self.assertIn("--remote-window=openvr", argv)
+        self.assertIn("--remote-window=app", argv)
+        self.assertIn("--remote-frame=" + str(self.frame), argv)
         self.assertIn("--duration=900", argv)
         self.assertNotIn("pkill", text)
 
@@ -238,6 +245,24 @@ class PanelTests(unittest.TestCase):
         self.session.poll("85000\n", "VmRSS:\t1000 kB\n")
         self.assertIn("thermal", self.session.error)
 
+    def test_fullscreen_call_image_shows_remote_video_and_hangup(self):
+        from webrtcsays_panel.compose import compose
+        from webrtcsays_panel.layout import REMOTE, remote_covers_most_of_the_view
+        self.assertTrue(remote_covers_most_of_the_view())
+        red = bytes([220, 20, 20, 255]) * 4
+        pixels = compose(["WEBRTCSAYS.AI", "PROCESS: STOPPED"], red, (2, 2))
+        x = REMOTE[0] + 100
+        y = REMOTE[1] + 100
+        i = (y * 1920 + x) * 4
+        self.assertGreater(pixels[i], 180)
+        self.assertLess(pixels[i + 1], 80)
+        from webrtcsays_panel.layout import HANGUP
+        hx = HANGUP[0] + 40
+        hy = HANGUP[1] + 40
+        j = (hy * 1920 + hx) * 4
+        self.assertNotEqual(pixels[i:i + 3], pixels[j:j + 3])
+        self.assertNotIn(b"super-secret-token", bytes(pixels))
+
     def test_overlay_click_hits_connect_and_not_the_remote_key(self):
         self.assertNotEqual(OVERLAY_KEY, REMOTE_VIDEO_OVERLAY_KEY)
 
@@ -249,9 +274,12 @@ class PanelTests(unittest.TestCase):
                 self.x = x
                 self.y = y
 
-        center_y = HEIGHT - 360
-        self.assertEqual(clicks_from_events([Event(328, center_y)]), ["connect"])
-        self.assertEqual(clicks_from_events([Event(952, center_y)]), ["disconnect"])
+        from webrtcsays_panel.layout import CONNECT, HANGUP
+        cx = CONNECT[0] + CONNECT[2] // 2
+        cy = HEIGHT - (CONNECT[1] + CONNECT[3] // 2)
+        hx = HANGUP[0] + HANGUP[2] // 2
+        self.assertEqual(clicks_from_events([Event(cx, cy)]), ["connect"])
+        self.assertEqual(clicks_from_events([Event(hx, cy)]), ["hangup"])
         self.assertEqual(hit_button(1, 1), None)
         self.assertEqual(self.session.connect(), "started")
 
@@ -272,9 +300,10 @@ class PanelTests(unittest.TestCase):
         other.write_text("Name=Babelfish Live\nExec=/bin/true\n", encoding="utf-8")
         old = apps / "WebRTCsays.AI.desktop"
         old.write_text("Name=old\n", encoding="utf-8")
-        result = install_tree(source, self.home, "20261111")
+        install_tree(source, self.home, "20261111")
         self.assertEqual(other.read_text(encoding="utf-8"), "Name=Babelfish Live\nExec=/bin/true\n")
-        self.assertEqual(result["backup"].read_text(encoding="utf-8"), "Name=old\n")
+        self.assertEqual(old.read_text(encoding="utf-8"), "Name=old\n")
+        self.assertFalse((self.home / "babelfish" / "call" / "app" / "WebRTCsays.AI.desktop").exists())
         desktop = (source / "WebRTCsays.AI.desktop").read_text(encoding="utf-8")
         self.assertIn("Name=WebRTCsays.AI", desktop)
         self.assertNotIn("steamos-add-to-steam", desktop)

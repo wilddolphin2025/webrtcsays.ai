@@ -21,7 +21,7 @@
   <main class="wrap">
     <section class="card" aria-labelledby="view-heading">
       <h2 id="view-heading">Frame viewer</h2>
-      <p>Receives the Frame's call in this room. No camera or microphone is requested. Playback starts from the Connect button so iPhone Safari can show the picture.</p>
+      <p>Connect shares this computer's screen and microphone, then shows the Frame's picture. The microphone is the browser mic, not system or game audio. The Frame picture is the still image directcall is sending, not a capture of the game. Playback starts from Connect so iPhone Safari can show the picture.</p>
       <div class="row">
         <button id="view-connect" class="btn primary" type="button">Connect</button>
         <button id="view-disconnect" class="btn" type="button">Disconnect</button>
@@ -29,6 +29,7 @@
         <span id="view-codec" class="hint">codec pending</span>
       </div>
       <video id="view-remote" autoplay playsinline webkit-playsinline></video>
+      <audio id="view-remote-audio" autoplay playsinline></audio>
     </section>
     <section class="card" aria-labelledby="log-heading">
       <h2 id="log-heading">Log</h2>

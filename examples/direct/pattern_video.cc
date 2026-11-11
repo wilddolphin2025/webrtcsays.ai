@@ -12,6 +12,8 @@
 #include <cstring>
 #include <dlfcn.h>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "api/video/i420_buffer.h"
 #include "api/video/video_frame.h"
@@ -259,6 +261,66 @@ class Pump : public DirectVideoPump {
 
 }  // namespace
 
+class StillPump : public DirectVideoPump {
+ public:
+  StillPump(webrtc::scoped_refptr<webrtc::FakeVideoTrackSource> source,
+            std::vector<uint8_t> i420,
+            int width,
+            int height,
+            int fps)
+      : source_(std::move(source)),
+        i420_(std::move(i420)),
+        width_(width),
+        height_(height),
+        fps_(std::max(1, fps)) {}
+
+  ~StillPump() override { Stop(); }
+
+  void Stop() override {
+    if (running_.exchange(false)) {
+      if (thread_.joinable()) thread_.join();
+    }
+  }
+
+  void Start() {
+    running_ = true;
+    thread_ = std::thread([this] { Loop(); });
+  }
+
+ private:
+  void Loop() {
+    const int y_size = width_ * height_;
+    const int c_size = (width_ / 2) * (height_ / 2);
+    const uint8_t* y_plane = i420_.data();
+    const uint8_t* u_plane = y_plane + y_size;
+    const uint8_t* v_plane = u_plane + c_size;
+    const auto interval = std::chrono::microseconds(1000000 / fps_);
+    auto next = std::chrono::steady_clock::now();
+    while (running_.load()) {
+      auto buffer = webrtc::I420Buffer::Copy(width_, height_, y_plane, width_, u_plane,
+                                             width_ / 2, v_plane, width_ / 2);
+      webrtc::VideoFrame frame = webrtc::VideoFrame::Builder()
+                                     .set_video_frame_buffer(buffer)
+                                     .set_timestamp_us(webrtc::TimeMicros())
+                                     .set_rotation(webrtc::kVideoRotation_0)
+                                     .build();
+      source_->InjectFrame(frame);
+      next += interval;
+      const auto now = std::chrono::steady_clock::now();
+      if (now < next) std::this_thread::sleep_until(next);
+      else next = now;
+    }
+  }
+
+  webrtc::scoped_refptr<webrtc::FakeVideoTrackSource> source_;
+  std::vector<uint8_t> i420_;
+  int width_;
+  int height_;
+  int fps_;
+  std::atomic<bool> running_{false};
+  std::thread thread_;
+};
+
 std::unique_ptr<DirectVideoPump> StartDirectVideoPump(
     webrtc::scoped_refptr<webrtc::FakeVideoTrackSource> source,
     int width,
@@ -266,6 +328,17 @@ std::unique_ptr<DirectVideoPump> StartDirectVideoPump(
     int fps,
     bool screen) {
   auto pump = std::make_unique<Pump>(std::move(source), width, height, fps, screen);
+  pump->Start();
+  return pump;
+}
+
+std::unique_ptr<DirectVideoPump> StartStillVideoPump(
+    webrtc::scoped_refptr<webrtc::FakeVideoTrackSource> source,
+    std::vector<uint8_t> i420,
+    int width,
+    int height,
+    int fps) {
+  auto pump = std::make_unique<StillPump>(std::move(source), std::move(i420), width, height, fps);
   pump->Start();
   return pump;
 }

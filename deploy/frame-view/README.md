@@ -1,6 +1,48 @@
 # Frame viewer
 
-A separate answering page and loopback room router. The Frame runs the existing `directcall` caller and the browser answers. The Slim robot routes stay on their current locations. No SFU.
+A separate answering page and loopback room router. The Frame runs `directcall` as the caller. The browser answers, shares its screen and microphone, and shows the Frame's outgoing picture. The Slim robot routes stay on their current locations. No SFU.
+
+The live viewer is `https://rtc.wilddolphin.us/demo/view/frame101` with socket `wss://rtc.wilddolphin.us:443/demo/view/ws/frame101`. That deployment proved the authenticated route. It did not prove real media. The router on `127.0.0.1:3461` is a separate process from Slim. A Slim segfault that predates this route is not a viewer failure.
+
+## Tonight's media
+
+Outgoing Frame video is a PNG still, repeated at the requested size and frame rate. `--video-source=pattern` remains available. `--video-source=screen` is still the X11 root window and is not a capture of the SteamVR compositor. Game capture is not in this change.
+
+Incoming browser video is shown only when a real window starts:
+
+- `openvr` submits frames to an `IVROverlay_028` overlay in the already-running SteamVR session. That is the headset panel. This VM cannot see the headset, so the overlay is not claimed to have been seen.
+- `sdl` opens a desktop window on `DISPLAY`. SSH on the Frame leaves `DISPLAY` unset. A desktop window is not the compositor view.
+- `auto` uses the overlay when `libopenvr_api.so` loads, and otherwise the SDL window when `DISPLAY` is set. If the overlay library loads but SteamVR rejects it, auto then tries the SDL window and says so.
+- `none` leaves the incoming frames undecoded into a window.
+
+The browser microphone is `getUserMedia({audio:true, video:false})`. It is not system audio and not game audio. `getDisplayMedia` is called with `audio:false`, so the share dialog is not asked for tab audio. Chrome can share tab audio only when a page asks for it; this page does not. The Frame plays remote audio through the Pulse default sink and captures the Pulse default source. This program does not call `pactl` and does not change Steam, PipeWire, or device settings.
+
+H.264 is preferred in both directions. The requested send size is 1920x1080 at 30 fps. The browser shows the `getStats` inbound and outbound sizes. Those sizes are the actual media. A preference does not force the other side to send 1080p30.
+
+Copy `VR-Babelfish-1080p.png` into `~/babelfish/` on the Frame. Run from that directory, on cores 2, 3, 4, and 7, and stop the process if it stays at or above 80C or its resident memory approaches 7GB:
+
+```sh
+taskset -c 2,3,4,7 ./directcall \
+  --mode=caller \
+  --user_name=frame \
+  --target_name=viewer \
+  --room_name=frame101 \
+  --encryption \
+  --signal-url=wss://rtc.wilddolphin.us:443/demo/view/ws/frame101 \
+  --token-file=/path/to/token \
+  --stun=stun:stun.l.google.com:19302 \
+  --video-source=image \
+  --image-file="$HOME/babelfish/VR-Babelfish-1080p.png" \
+  --res=1920x1080 \
+  --fps=30 \
+  --remote-window=auto \
+  --stats=5 \
+  --duration=60
+```
+
+The token stays in `Authorization: Bearer` unless `--token-query` is added. A successful still source logs `video source: image` with the source size and the letterbox. A pattern log means the PNG was not the source. A successful incoming picture logs `remote video: shown=openvr` or `shown=sdl` with received and display sizes. `shown=none` means no window was opened.
+
+The nginx regex locations are single-quoted so `{0,63}` and `$` stay literal. That is the quoting required before `nginx -t` accepts the file. This repository change does not reload the host. The host copy was already quoted by DevOps.
 
 Nothing in this directory was installed on the production VPS. DevOps reviews and installs it. Leave `scripts/deploy/deploy_directcall_remote.sh` unused.
 
@@ -11,7 +53,7 @@ Nothing in this directory was installed on the production VPS. DevOps reviews an
 | PR 17 auth gate, backup/secret ownership, and Babelfish palette | `1dfe20dbc1088e6f51f74e2baf99c1201d23d0e2` on `cursor/stage1-demo-auth-0e0e` | `auth_request /_demo_auth`, `@demo_login`, `demo_noargs`, cookie `wsdemo` with `Path=/`, login and call pages at 14px/1.4 |
 | PR 18 loopback bind | `69289a61609c73b4a68b0244e43012e3c31d4c72` on `cursor/signaling-loopback-bind-0e0e` | Slim callee on `127.0.0.1:3459` only. The viewer router is a different process on `127.0.0.1:3461` |
 
-Both pull requests are unmerged. The live host is still auth `5fe64695` plus host workarounds. Apply the steps below when installing PR 17 at `1dfe20dbc1088e6f51f74e2baf99c1201d23d0e2`, after `d715d3f97d` (backup and secret ownership) and `1dfe20dbc1` (palette). DevOps keeps the palette pages. This branch does not contain `deploy/webrtcsays-demo/`.
+The viewer route from the merged PR 19 is already on the host. PR 17's palette pages stay on `cursor/stage1-demo-auth-0e0e`. This branch does not contain `deploy/webrtcsays-demo/`. The auth patch below is only for a checkout that does not already allow `/demo/view/`.
 
 PR 17 `authenticated_client` allows `X-Original-URI` only when the path is exactly `/demo/`, `/demo/index.html`, `/demo/turn`, `/demo/ws`, or `/ws`. A viewer URI would be 401 with a valid cookie until the patch below is applied. `safe_next` allows only `/demo/`, `/demo/index.html`, and `/demo/turn`, so login would return to `/demo/` instead of the viewer.
 
@@ -39,25 +81,7 @@ The room is the last path label. `frame101` is the suggested room so it stays of
 
 ## Frame command
 
-Header-only bearer token. Omit `--token-query`. Omit `--codec=h264` until a browser in this room has negotiated H.264. Forcing H.264 made the current Slim robot send `BYE`.
-
-```sh
-./directcall \
-  --mode=caller \
-  --user_name=frame \
-  --target_name=viewer \
-  --room_name=frame101 \
-  --encryption \
-  --signal-url=wss://rtc.wilddolphin.us:443/demo/view/ws/frame101 \
-  --token-file=/path/to/token \
-  --stun=stun:stun.l.google.com:19302 \
-  --turns-file=/etc/webrtcsays-demo/frame-turns.json \
-  --res=1920x1080 \
-  --fps=30 \
-  --video-source=pattern \
-  --stats=5 \
-  --duration=60
-```
+Use the still-image command in "Tonight's media". `--video-source=pattern` is the other outgoing source. Omit `--token-query`. Omit `--codec=h264` until a browser in this room has negotiated H.264. Forcing H.264 made the current Slim robot send `BYE`.
 
 `--turns-file` is optional. Copy `config/turns.example.json` on the host and replace the placeholders there. The process logs that TURN is configured and does not log the username or credential. `/demo/turn` remains the current static temporary account. This page does not mint REST credentials.
 

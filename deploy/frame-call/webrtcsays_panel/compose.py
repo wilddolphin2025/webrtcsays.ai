@@ -150,12 +150,14 @@ def write_png(path, pixels, width=WIDTH, height=HEIGHT):
 
 
 def read_remote_frame(blob):
-    if blob is None or len(blob) < 16:
+    if blob is None or len(blob) < 64:
         return None
     magic, width, height, index = struct.unpack_from("<IIII", blob, 0)
     if magic != 0x314D5246 or width <= 0 or height <= 0 or width > 4096 or height > 4096:
         return None
-    need = 16 + width * height * 4
+    if index % 2:
+        return None
+    need = 64 + width * height * 4
     if len(blob) < need:
         return None
-    return width, height, index, blob[16:need]
+    return width, height, index, blob[64:need]

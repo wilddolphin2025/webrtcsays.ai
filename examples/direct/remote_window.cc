@@ -13,7 +13,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <mutex>
+#include <sys/mman.h>
+#include <unistd.h>
 #include <string>
 #include <thread>
 #include <vector>
@@ -245,37 +248,61 @@ void I420ToRgba(const webrtc::I420BufferInterface& src,
   }
 }
 
-bool WriteAppFrame(const std::string& path, const uint8_t* rgba, int width, int height,
-                   uint32_t index) {
-  const std::string tmp = path + ".tmp";
-  FILE* file = std::fopen(tmp.c_str(), "wb");
-  if (!file) return false;
-  const uint32_t header[4] = {0x314D5246u, static_cast<uint32_t>(width),
-                              static_cast<uint32_t>(height), index};
-  const size_t pixels = static_cast<size_t>(width) * height * 4;
-  const bool ok = std::fwrite(header, sizeof(header), 1, file) == 1 &&
-                  std::fwrite(rgba, 1, pixels, file) == pixels;
-  std::fclose(file);
-  if (!ok) {
-    std::remove(tmp.c_str());
-    return false;
+// One shared mapping for the life of the call. Odd index means a write is in
+// progress. Even index, after the pixels, is a stable frame. No per-frame file.
+struct AppFrameMap {
+  int fd = -1;
+  uint8_t* base = nullptr;
+  size_t bytes = 0;
+  uint32_t index = 0;
+
+  bool Open(const std::string& path, int max_w, int max_h) {
+    bytes = 64 + static_cast<size_t>(max_w) * max_h * 4;
+    fd = open(path.c_str(), O_RDWR | O_CREAT, 0600);
+    if (fd < 0) return false;
+    if (ftruncate(fd, static_cast<off_t>(bytes)) != 0) return false;
+    void* mapped = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (mapped == MAP_FAILED) return false;
+    base = static_cast<uint8_t*>(mapped);
+    uint32_t* header = reinterpret_cast<uint32_t*>(base);
+    header[0] = 0x314D5246u;
+    header[3] = 0;
+    return true;
   }
-  if (std::rename(tmp.c_str(), path.c_str()) != 0) {
-    std::remove(tmp.c_str());
-    return false;
+
+  bool Write(const uint8_t* rgba, int width, int height) {
+    if (!base) return false;
+    const size_t pixels = static_cast<size_t>(width) * height * 4;
+    if (64 + pixels > bytes) return false;
+    uint32_t* header = reinterpret_cast<uint32_t*>(base);
+    header[1] = static_cast<uint32_t>(width);
+    header[2] = static_cast<uint32_t>(height);
+    header[3] = index * 2 + 1;
+    std::atomic_thread_fence(std::memory_order_release);
+    std::memcpy(base + 64, rgba, pixels);
+    std::atomic_thread_fence(std::memory_order_release);
+    ++index;
+    header[3] = index * 2;
+    return true;
   }
-  return true;
-}
+
+  ~AppFrameMap() {
+    if (base) munmap(base, bytes);
+    if (fd >= 0) close(fd);
+  }
+};
 
 class Presenter : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
  public:
   Presenter(RemoteWindowChoice choice, bool openvr_ready, bool sdl_ready, bool sdl_fallback,
-            std::string frame_path)
+            std::string frame_path, int slot_w, int slot_h)
       : choice_(choice),
         openvr_ready_(openvr_ready),
         sdl_ready_(sdl_ready),
         sdl_fallback_(sdl_fallback),
-        frame_path_(std::move(frame_path)) {
+        frame_path_(std::move(frame_path)),
+        slot_w_(slot_w),
+        slot_h_(slot_h) {
     thread_ = std::thread([this] { Loop(); });
   }
 
@@ -293,7 +320,10 @@ class Presenter : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
     if (src_w <= 0 || src_h <= 0 || src_w > 4096 || src_h > 4096) return;
     int dst_w = src_w;
     int dst_h = src_h;
-    if (dst_w > kMaxEdge || dst_h > kMaxEdge) {
+    if (slot_w_ >= 2 && slot_h_ >= 2) {
+      dst_w = slot_w_ & ~1;
+      dst_h = slot_h_ & ~1;
+    } else if (dst_w > kMaxEdge || dst_h > kMaxEdge) {
       if (dst_w * 9 >= dst_h * 16) {
         dst_w = kMaxEdge;
         dst_h = std::max(2, src_h * kMaxEdge / src_w);
@@ -304,10 +334,9 @@ class Presenter : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
       dst_w &= ~1;
       dst_h &= ~1;
     }
-    std::vector<uint8_t> rgba;
-    I420ToRgba(*i420, dst_w, dst_h, rgba);
+    I420ToRgba(*i420, dst_w, dst_h, scratch_);
     std::lock_guard<std::mutex> lock(mu_);
-    rgba_.swap(rgba);
+    rgba_.swap(scratch_);
     width_ = dst_w;
     height_ = dst_h;
     src_width_ = src_w;
@@ -362,7 +391,11 @@ class Presenter : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
         received = received_;
       }
       if (!rgba.empty() && active == RemoteWindowChoice::kApp) {
-        if (WriteAppFrame(frame_path_, rgba.data(), width, height, ++frame_index_)) ++presented_;
+        if (!frame_map_.base && !frame_map_.Open(frame_path_, kMaxEdge, kMaxEdge)) {
+          std::fprintf(stderr, "remote frame map failed\n");
+        } else if (frame_map_.Write(rgba.data(), width, height)) {
+          ++presented_;
+        }
       } else if (!rgba.empty() && active == RemoteWindowChoice::kOpenVr) {
         if (openvr.Present(rgba.data(), width, height)) ++presented_;
       } else if (!rgba.empty() && active == RemoteWindowChoice::kSdl) {
@@ -386,9 +419,12 @@ class Presenter : public webrtc::VideoSinkInterface<webrtc::VideoFrame> {
   bool sdl_ready_;
   bool sdl_fallback_;
   std::string frame_path_;
-  uint32_t frame_index_ = 0;
+  int slot_w_ = 0;
+  int slot_h_ = 0;
+  AppFrameMap frame_map_;
   std::mutex mu_;
   std::vector<uint8_t> rgba_;
+  std::vector<uint8_t> scratch_;
   int width_ = 0;
   int height_ = 0;
   int src_width_ = 0;
@@ -422,7 +458,7 @@ bool SdlLibraryPresent() {
 }  // namespace
 
 std::unique_ptr<webrtc::VideoSinkInterface<webrtc::VideoFrame>> StartRemoteVideoWindow(
-    const std::string& requested, const std::string& frame_path) {
+    const std::string& requested, const std::string& frame_path, int slot_w, int slot_h) {
   if (requested == "app" && frame_path.empty()) {
     std::fprintf(stderr, "remote window app needs a frame path\n");
     return nullptr;
@@ -434,5 +470,6 @@ std::unique_ptr<webrtc::VideoSinkInterface<webrtc::VideoFrame>> StartRemoteVideo
     std::fprintf(stderr, "remote window not shown (%s)\n", requested.c_str());
     return nullptr;
   }
-  return std::make_unique<Presenter>(choice, openvr, sdl, requested == "auto", frame_path);
+  return std::make_unique<Presenter>(choice, openvr, sdl, requested == "auto", frame_path, slot_w,
+                                   slot_h);
 }

@@ -11,7 +11,8 @@ from pathlib import Path
 
 from webrtcsays_panel import APP_NAME, OVERLAY_KEY
 from webrtcsays_panel.command import CORES
-from webrtcsays_panel.compose import compose, read_remote_frame
+from webrtcsays_panel.compose import read_remote_frame
+from webrtcsays_panel.fast_compose import CallCanvas
 from webrtcsays_panel.layout import HEIGHT, SURFACE_DISTANCE_METERS, SURFACE_WIDTH_METERS, WIDTH
 from webrtcsays_panel.overlay_input import clicks_from_events
 from webrtcsays_panel.owner import ProcFs
@@ -114,13 +115,14 @@ def make_session(home=None):
     )
 
 
-def call_image(session):
-    remote = read_remote_frame(_read_bytes(session.paths["frame"]))
-    remote_pixels = remote_size = None
-    if remote:
-        remote_size = (remote[0], remote[1])
-        remote_pixels = remote[3]
-    return compose(panel_lines(session), remote_pixels, remote_size)
+def frame_view(blob):
+    parsed = read_remote_frame(blob)
+    if not parsed:
+        return None
+    width, height, index, pixels = parsed
+    if index % 2:
+        return None
+    return width, height, index, pixels
 
 
 def snapshot_event(event):
@@ -190,7 +192,7 @@ def _frame_index(path):
     if len(header) < 16:
         return None
     magic, _width, _height, index = struct.unpack("<IIII", header)
-    if magic != 0x314D5246:
+    if magic != 0x314D5246 or index % 2:
         return None
     return index
 
@@ -235,6 +237,7 @@ def main():
         vr = _open_overlay()
         openvr, overlay, handle = vr
         budget = UploadBudget()
+        canvas = CallCanvas()
         while not flag["stop"] and not session.stop_panel:
             events = []
             current = openvr.VREvent_t()
@@ -252,9 +255,17 @@ def main():
                 child_status = _read_optional("/proc/%s/status" % session.identity.pid)
             self_status = _read_optional("/proc/self/status")
             session.poll(None, child_status, self_status, zones)
-            signature = (tuple(panel_lines(session)), _frame_index(session.paths["frame"]))
-            if budget.should_upload(signature, time.time()):
-                _upload(overlay, handle, call_image(session))
+            lines = tuple(panel_lines(session))
+            index = _frame_index(session.paths["frame"])
+            if budget.should_upload((lines, index), time.time()):
+                canvas.set_status(lines)
+                view = frame_view(_read_bytes(session.paths["frame"]))
+                if view:
+                    import numpy as np
+                    width, height, _index, pixels = view
+                    src = np.frombuffer(pixels, dtype=np.uint8).reshape(height, width, 4)
+                    canvas.paint_video(src)
+                _upload(overlay, handle, canvas.pixels)
                 try:
                     state_path.parent.mkdir(parents=True, exist_ok=True)
                     write_state(state_path, session)

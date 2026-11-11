@@ -410,7 +410,8 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --video-source=pattern|camera|screen|image  pattern if unset; image repeats a PNG\n"
       "  --image-file=<png>                 PNG still for --video-source=image. Letterboxed, not a capture.\n"
       "  --remote-window=auto|openvr|sdl|app|none  app writes frames for the call app and opens no overlay.\n"
-      "  --remote-frame=<path>              Frame file used with --remote-window=app.\n"
+      "  --remote-frame=<path>              Shared frame file used with --remote-window=app.\n"
+      "  --remote-slot=WIDTHxHEIGHT         Scale app frames to this video rectangle.\n"
       "  --audio=dummy                      Use a fake audio device (no Pulse/PipeWire)\n"
       "  --stats=<seconds>                  Log a GetStats JSON line on this interval\n"
       "  --duration=<seconds>               Hang up and exit after this many seconds\n"
@@ -438,7 +439,7 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--token-env", "--token_env", "--ca-file", "--ca_file", "--stun",
     "--codec", "--res", "--fps", "--video-source", "--video_source",
     "--image-file", "--image_file", "--remote-window", "--remote_window",
-    "--remote-frame", "--remote_frame",
+    "--remote-frame", "--remote_frame", "--remote-slot", "--remote_slot",
     "--audio", "--stats", "--duration",
     "--help"
   };
@@ -815,6 +816,14 @@ Options parseOptions(const std::vector<std::string>& args) {
     } else if (arg.find("--remote-frame=") == 0 || arg.find("--remote_frame=") == 0) {
         const auto eq = arg.find('=');
         opts.remote_frame = stripQuotes(arg.substr(eq + 1));
+    } else if (arg.find("--remote-slot=") == 0 || arg.find("--remote_slot=") == 0) {
+        const auto eq = arg.find('=');
+        const std::string spec = arg.substr(eq + 1);
+        const auto x = spec.find('x');
+        if (x != std::string::npos) {
+            opts.remote_slot_w = std::atoi(spec.substr(0, x).c_str());
+            opts.remote_slot_h = std::atoi(spec.substr(x + 1).c_str());
+        }
     } else if (arg.find("--audio=") == 0) {
         opts.audio = arg.substr(8);
     } else if (arg.find("--stats=") == 0) {

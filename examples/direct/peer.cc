@@ -532,7 +532,8 @@ void DirectPeer::Start() {
     }
 
     if (is_caller() && opts_.remote_window != "none") {
-        auto sink = StartRemoteVideoWindow(opts_.remote_window, opts_.remote_frame);
+        auto sink = StartRemoteVideoWindow(opts_.remote_window, opts_.remote_frame,
+                                           opts_.remote_slot_w, opts_.remote_slot_h);
         if (sink) SetVideoSink(std::move(sink));
     }
 

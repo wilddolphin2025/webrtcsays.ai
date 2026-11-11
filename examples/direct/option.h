@@ -126,7 +126,9 @@ struct Options {
     std::string video_source{};         // pattern, camera, screen, or image
     std::string image_file{};           // PNG still used when video_source is image
     std::string remote_window{"auto"};  // auto, openvr, sdl, app, or none
-    std::string remote_frame{};         // rgba frame file for remote_window=app
+    std::string remote_frame{};         // shared frame file for remote_window=app
+    int remote_slot_w = 0;              // app video rectangle, 0 = native size
+    int remote_slot_h = 0;
     int video_width = 0;
     int video_height = 0;
     int video_fps = 0;                  // 1..60, 30 if video is on and unset

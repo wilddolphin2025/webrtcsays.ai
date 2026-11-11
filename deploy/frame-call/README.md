@@ -41,7 +41,7 @@ The view shows WebRTCsays.AI, the remote picture, a local still preview, Connect
 - Hangup checks the pid, start time, executable, and full argv, then SIGTERM. SIGKILL follows only if it is still that process.
 - Closing the app stops the owned call.
 - The guard uses the hottest thermal zone, not only zone0. At or above 80C for 6 seconds, or the panel or the call at or above 7 GiB RSS, stops the owned call and exits the panel.
-- While the picture is unchanged, the overlay image is uploaded once. A new remote frame is uploaded at most 4 times a second.
+- While the picture is unchanged, the overlay image is uploaded once. Each new remote frame is copied into that same image with numpy and uploaded. There is no 4 fps cap. The native writer scales into the 1920x820 video rectangle and updates one shared mapping, so the app does not rebuild the buttons per frame.
 
 `process: running` is not a connected call. Send and receive stay `not measured` until stats report a positive frame size.
 
@@ -51,6 +51,6 @@ The view shows WebRTCsays.AI, the remote picture, a local still preview, Connect
 PYTHONPATH=. python3 -m unittest discover -s tests -v
 ```
 
-The tests mock process ownership, stats, guards, and button hits, and they draw the call image. No headset session was started.
+On this machine, copying a moving 1920x820 frame into the call image and into the upload buffer measured about 1140 fps (0.87 ms). Scaling a 1920x1080 frame into that rectangle measured about 67 fps. Both are above 30 fps here. The Frame CPU and the OpenVR `SetOverlayRaw` cost are not in those numbers. A person has not watched a 1080p30 call in the headset.
 
 `WebRTCsays.AI.desktop` in this directory is an unused template. It is not installed.

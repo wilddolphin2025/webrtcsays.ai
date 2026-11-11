@@ -10,7 +10,7 @@ THERMAL_LIMIT_C = 80.0
 THERMAL_SUSTAIN_SEC = 6.0
 
 
-def directcall_argv(binary, image, token, frame_path, duration_sec=DEFAULT_DURATION_SEC):
+def directcall_argv(binary, image, token, frame_path, slot="1920x820", duration_sec=DEFAULT_DURATION_SEC):
     binary = str(binary)
     image = str(image)
     token = str(token)
@@ -33,6 +33,7 @@ def directcall_argv(binary, image, token, frame_path, duration_sec=DEFAULT_DURAT
         "--fps=30",
         "--remote-window=app",
         "--remote-frame=" + str(frame_path),
+        "--remote-slot=" + str(slot),
         "--stats=5",
         "--duration=" + str(duration),
     ]

@@ -129,6 +129,7 @@ class PanelTests(unittest.TestCase):
         self.assertIn("--video-source=image", argv)
         self.assertIn("--remote-window=app", argv)
         self.assertIn("--remote-frame=" + str(self.frame), argv)
+        self.assertIn("--remote-slot=1920x820", argv)
         self.assertIn("--duration=900", argv)
         self.assertNotIn("pkill", text)
 
@@ -253,9 +254,11 @@ class PanelTests(unittest.TestCase):
         for step in range(800):
             self.assertFalse(budget.should_upload(("idle",), step * 0.1))
         self.assertEqual(budget.uploads, 1)
-        self.assertFalse(budget.should_upload(("frame-2",), 0.10))
-        self.assertTrue(budget.should_upload(("frame-2",), 0.25))
+        self.assertTrue(budget.should_upload(("frame-2",), 0.033))
         self.assertEqual(budget.uploads, 2)
+        for frame in range(3, 33):
+            self.assertTrue(budget.should_upload(("frame-%d" % frame,), frame / 30.0))
+        self.assertEqual(budget.uploads, 32)
         root_file = self.home / "babelfish" / "call" / "app" / "direct.root"
         root_file.parent.mkdir(parents=True)
         root_file.write_text("# versioned sender\n" + str(self.direct) + "\n", encoding="utf-8")
@@ -267,6 +270,39 @@ class PanelTests(unittest.TestCase):
         root_file.write_text("\n", encoding="utf-8")
         self.assertIsNone(resolve_direct_root(self.home, {}))
         self.assertNotIn("pr21", str(resolve_direct_root(self.home, {}) or ""))
+
+    def test_moving_1080p_copy_is_faster_than_thirty_fps(self):
+        import time
+        import numpy as np
+        from webrtcsays_panel.fast_compose import CallCanvas
+        from webrtcsays_panel.layout import REMOTE
+        canvas = CallCanvas()
+        canvas.set_status(["WEBRTCSAYS.AI", "PROCESS: STOPPED"])
+        dh, dw = REMOTE[3], REMOTE[2]
+        src = np.random.randint(0, 255, (dh, dw, 4), dtype=np.uint8)
+        frames = 90
+        for _ in range(3):
+            src[0, 0, 0] = 1
+            canvas.paint_video(src)
+        started = time.perf_counter()
+        for i in range(frames):
+            src[i % dh, i % dw, 0] = i % 255
+            mode = canvas.paint_video(src)
+        elapsed = time.perf_counter() - started
+        self.assertEqual(mode, "copy")
+        self.assertGreaterEqual(frames / elapsed, 30.0)
+        mismatched = np.random.randint(0, 255, (1080, 1920, 4), dtype=np.uint8)
+        for _ in range(2):
+            canvas.paint_video(mismatched)
+        started = time.perf_counter()
+        scale_frames = 30
+        for i in range(scale_frames):
+            mismatched[0, i, 1] = i % 255
+            mode = canvas.paint_video(mismatched)
+        scale_elapsed = time.perf_counter() - started
+        self.assertEqual(mode, "scale")
+        self.assertGreaterEqual(scale_frames / scale_elapsed, 30.0)
+        print("copy_fps %.1f scale_fps %.1f" % (frames / elapsed, scale_frames / scale_elapsed))
 
     def test_self_memory_and_hottest_zone(self):
         from webrtcsays_panel.guards import hottest_celsius

@@ -4,12 +4,12 @@ import struct
 import zlib
 
 from webrtcsays_panel.layout import (
-    BUTTONS,
     CONNECT,
     HANGUP,
     HEIGHT,
     PREVIEW,
     REMOTE,
+    STATUS,
     WIDTH,
 )
 
@@ -110,26 +110,45 @@ def _text(pixels, x, y, text, scale, color):
         cursor += 6 * scale
 
 
+def _center_text(pixels, rect, text, scale, color):
+    x0, y0, w, h = rect
+    width = 6 * scale * len(text)
+    height = 7 * scale
+    _text(
+        pixels,
+        x0 + max(0, (w - width) // 2),
+        y0 + max(0, (h - height) // 2),
+        text,
+        scale,
+        color,
+    )
+
+
 def compose(lines, remote=None, remote_size=None, preview=None, preview_size=None):
     pixels = _blank()
     _fill(pixels, REMOTE, (8, 12, 18))
     if remote and remote_size:
         _blit(pixels, REMOTE, remote, remote_size[0], remote_size[1])
     else:
-        _text(pixels, 48, 360, "REMOTE VIDEO NOT MEASURED", 4, (199, 213, 224))
+        _center_text(pixels, REMOTE, "REMOTE VIDEO NOT MEASURED", 4, (199, 213, 224))
     _fill(pixels, PREVIEW, (14, 20, 27))
     if preview and preview_size:
         _blit(pixels, PREVIEW, preview, preview_size[0], preview_size[1])
     else:
         _text(pixels, PREVIEW[0] + 16, PREVIEW[1] + 70, "LOCAL STILL", 3, (199, 213, 224))
+    _fill(pixels, STATUS, (23, 38, 46))
+    shown = [line for line in lines[:2] if line]
+    if len(shown) == 1:
+        _center_text(pixels, STATUS, shown[0], 3, (214, 217, 220))
+    elif len(shown) == 2:
+        top = (STATUS[0], STATUS[1], STATUS[2], STATUS[3] // 2)
+        bottom = (STATUS[0], STATUS[1] + STATUS[3] // 2, STATUS[2], STATUS[3] // 2)
+        _center_text(pixels, top, shown[0], 2, (214, 217, 220))
+        _center_text(pixels, bottom, shown[1], 2, (214, 217, 220))
     _fill(pixels, CONNECT, (26, 159, 255))
     _fill(pixels, HANGUP, (42, 71, 94))
-    _text(pixels, CONNECT[0] + 250, CONNECT[1] + 70, "CONNECT", 6, (14, 20, 27))
-    _text(pixels, HANGUP[0] + 280, HANGUP[1] + 70, "HANGUP", 6, (199, 213, 224))
-    y = 790
-    for line in lines[:3]:
-        _text(pixels, 36, y, line, 2, (214, 217, 220))
-        y += 22
+    _center_text(pixels, CONNECT, "CONNECT", 6, (14, 20, 27))
+    _center_text(pixels, HANGUP, "HANGUP", 6, (199, 213, 224))
     return pixels
 
 

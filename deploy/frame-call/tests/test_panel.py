@@ -348,6 +348,48 @@ class PanelTests(unittest.TestCase):
         self.assertNotIn("setOverlayTransformAbsolute", source)
         self.assertNotIn("TrackingUniverseStanding", source)
 
+    def test_controls_are_centered_and_hits_match_the_paint(self):
+        from webrtcsays_panel.compose import compose
+        from webrtcsays_panel.layout import (
+            CONNECT,
+            HANGUP,
+            REMOTE,
+            STATUS,
+            WIDTH,
+            hit_button,
+            horizontal_degrees,
+            overlaps,
+            rect_center,
+        )
+
+        self.assertFalse(overlaps(CONNECT, HANGUP))
+        self.assertFalse(overlaps(CONNECT, REMOTE))
+        self.assertFalse(overlaps(HANGUP, REMOTE))
+        self.assertFalse(overlaps(STATUS, CONNECT))
+        self.assertFalse(overlaps(STATUS, HANGUP))
+        self.assertFalse(overlaps(STATUS, REMOTE))
+        for rect in (CONNECT, HANGUP, STATUS):
+            self.assertLess(abs(horizontal_degrees(rect_center(rect)[0])), 16)
+        midpoint = (rect_center(CONNECT)[0] + rect_center(HANGUP)[0]) / 2
+        self.assertLess(abs(midpoint - WIDTH / 2), 2)
+        self.assertGreater(CONNECT[0], 400)
+        pixels = compose(["WEBRTCSAYS.AI", "PROCESS: STOPPED"])
+        def rgb(x, y):
+            i = (int(y) * WIDTH + int(x)) * 4
+            return tuple(pixels[i:i + 3])
+        ccx, ccy = rect_center(CONNECT)
+        hcx, hcy = rect_center(HANGUP)
+        self.assertEqual(hit_button(int(ccx), int(ccy)), "connect")
+        self.assertEqual(hit_button(int(hcx), int(hcy)), "hangup")
+        self.assertEqual(rgb(CONNECT[0] + 12, CONNECT[1] + 12), (26, 159, 255))
+        self.assertEqual(rgb(HANGUP[0] + 12, HANGUP[1] + 12), (42, 71, 94))
+        self.assertEqual(rgb(ccx, ccy), (14, 20, 27))
+        self.assertIsNone(hit_button(CONNECT[0] + CONNECT[2] + 4, int(ccy)))
+        self.assertIsNone(hit_button(WIDTH // 2, REMOTE[3] // 2))
+        self.assertIsNone(hit_button(40, 900))
+        self.assertNotEqual(rgb(40, 900), (26, 159, 255))
+        self.assertEqual(rgb(STATUS[0] + 8, STATUS[1] + 4), (23, 38, 46))
+
     def test_fullscreen_call_image_shows_remote_video_and_hangup(self):
         from webrtcsays_panel.compose import compose
         from webrtcsays_panel.layout import REMOTE, remote_covers_most_of_the_view

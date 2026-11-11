@@ -231,6 +231,8 @@ class DIRECT_API DirectApplication : public webrtc::PeerConnectionObserver {
   // Add video track if source is available
   void AddVideoTrackIfSourceAvailable();
   void EnsureVideoSendActive();
+  // H.264 first (or forced), resolution and frame rate on the video sender.
+  void ConfigureOutgoingVideo();
 
 #if defined(WEBRTC_IOS) && defined(__OBJC__)
   // Getter methods for video tracks (iOS only)
@@ -391,6 +393,9 @@ class DIRECT_API DirectApplication : public webrtc::PeerConnectionObserver {
 
 };
 
+class DirectCallStats;
+class DirectVideoPump;
+
 class DIRECT_API DirectPeer : public DirectApplication {
  public:
   DirectPeer(Options opts);
@@ -477,6 +482,12 @@ class DIRECT_API DirectPeer : public DirectApplication {
 
   // Marks the start of a call and arms the setup timeout.
   void BeginCall();
+  void MarkSessionStart();
+  void EnsureLocalVideoSource();
+  void StartCallStatsIfEnabled();
+  std::chrono::steady_clock::time_point session_origin_{};
+  std::unique_ptr<DirectCallStats> call_stats_;
+  std::unique_ptr<DirectVideoPump> video_pump_;
   // Role-specific work after EndCall() has torn down media: close the
   // signaling socket and wake the outer control loop.
   virtual void OnCallEnded(bool notified_remote);
@@ -578,6 +589,9 @@ class DIRECT_API DirectCaller : public DirectPeer {
 
   // Connect and send messages
   bool Connect();
+  // Browser-style signaling over an already open WebSocket: HELLO, then INVITE.
+  void BeginHandshake();
+  void OnSignalingText(const std::string& message);
 
   bool Connect(const char* ip, int port);
 #if defined(__APPLE__)

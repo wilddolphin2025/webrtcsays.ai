@@ -12,6 +12,9 @@
 
 #include "wsock.h"
 
+#include <openssl/x509.h>
+#include <openssl/x509_vfy.h>
+
 const absl::string_view base64_chars =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -242,8 +245,38 @@ bool WebSocketClient::setup_ssl_context() {
     return false;
   }
 
-  // Set verification mode to NONE - accept self-signed certificates
-  SSL_CTX_set_verify(ssl_ctx_, SSL_VERIFY_NONE, nullptr);
+  if (config_.verify_tls) {
+    SSL_CTX_set_verify(ssl_ctx_, SSL_VERIFY_PEER, nullptr);
+    bool loaded = false;
+    auto try_file = [&](const std::string& path) {
+      if (path.empty()) return false;
+      if (SSL_CTX_load_verify_locations(ssl_ctx_, path.c_str(), nullptr) != 1) return false;
+      loaded = true;
+      return true;
+    };
+    try_file(config_.ca_file);
+    if (!loaded) {
+      if (const char* env = std::getenv("SSL_CERT_FILE")) try_file(env);
+    }
+    if (!loaded) {
+      const char* kBundles[] = {"/etc/ssl/certs/ca-certificates.crt",
+                                "/etc/ssl/cert.pem",
+                                "/etc/pki/tls/certs/ca-bundle.crt"};
+      for (const char* bundle : kBundles) {
+        if (access(bundle, R_OK) == 0 && try_file(bundle)) break;
+      }
+    }
+    SSL_CTX_set_default_verify_paths(ssl_ctx_);
+    if (!loaded) {
+      APP_LOG(AS_ERROR) << "TLS verification is required but no CA bundle was found. "
+                           "Pass --ca-file or set SSL_CERT_FILE.";
+      SSL_CTX_free(ssl_ctx_);
+      ssl_ctx_ = nullptr;
+      return false;
+    }
+  } else {
+    SSL_CTX_set_verify(ssl_ctx_, SSL_VERIFY_NONE, nullptr);
+  }
 
   // Set modern cipher list
   if (SSL_CTX_set_cipher_list(ssl_ctx_, "HIGH:!aNULL:!kRSA:!PSK:!SRP:!MD5:!RC4") != 1) {
@@ -253,8 +286,8 @@ bool WebSocketClient::setup_ssl_context() {
   // Enable TLS extensions and SNI
   SSL_CTX_set_options(ssl_ctx_, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
 
-  // Load client certificate if provided
-  if (!config_.cert_file_path.empty()) {
+  // Load client certificate if provided. A missing default cert.pem is normal.
+  if (!config_.cert_file_path.empty() && access(config_.cert_file_path.c_str(), R_OK) == 0) {
     APP_LOG(AS_INFO) << "Loading client certificate from: " << config_.cert_file_path;
     if (SSL_CTX_use_certificate_file(ssl_ctx_, config_.cert_file_path.c_str(), SSL_FILETYPE_PEM) <= 0) {
       log_ssl_error("Failed to load certificate file");
@@ -263,7 +296,7 @@ bool WebSocketClient::setup_ssl_context() {
   }
 
   // Load private key if provided
-  if (!config_.key_file_path.empty()) {
+  if (!config_.key_file_path.empty() && access(config_.key_file_path.c_str(), R_OK) == 0) {
     APP_LOG(AS_INFO) << "Loading private key from: " << config_.key_file_path;
     if (SSL_CTX_use_PrivateKey_file(ssl_ctx_, config_.key_file_path.c_str(), SSL_FILETYPE_PEM) <= 0) {
       log_ssl_error("Failed to load private key file");
@@ -301,6 +334,15 @@ bool WebSocketClient::perform_ssl_handshake() {
     log_ssl_error("Failed to set SNI hostname");
     // Continue anyway, SNI is not critical
   }
+  if (config_.verify_tls) {
+    // namelen 0 is not "use strlen" here; pass the host length explicitly.
+    if (SSL_set1_host(ssl_, config_.host.c_str()) != 1) {
+      APP_LOG(AS_ERROR) << "Failed to pin TLS hostname";
+      SSL_free(ssl_);
+      ssl_ = nullptr;
+      return false;
+    }
+  }
 
   // Perform SSL handshake
   int connect_result = SSL_connect(ssl_);
@@ -317,17 +359,44 @@ bool WebSocketClient::perform_ssl_handshake() {
   APP_LOG(AS_INFO) << "SSL connection established with " << SSL_get_cipher(ssl_)
                    << ", protocol: " << SSL_get_version(ssl_);
 
-  // Verify certificate (optional, we're using SSL_VERIFY_NONE)
-  X509* cert = SSL_get_peer_certificate(ssl_);
-  if (cert) {
-    APP_LOG(AS_INFO) << "Server certificate verified";
-    X509_free(cert);
-  } else {
-    APP_LOG(AS_WARNING) << "No server certificate received";
+  if (config_.verify_tls) {
+    const long verify = SSL_get_verify_result(ssl_);
+    if (verify != X509_V_OK) {
+      APP_LOG(AS_ERROR) << "TLS certificate verification failed: "
+                        << X509_verify_cert_error_string(verify);
+      SSL_free(ssl_);
+      ssl_ = nullptr;
+      return false;
+    }
+    APP_LOG(AS_INFO) << "TLS certificate verified for host " << config_.host;
   }
 
   return true;
 }
+
+namespace {
+std::string RedactHandshake(std::string text) {
+  const std::string needle = "token=";
+  size_t pos = 0;
+  while ((pos = text.find(needle, pos)) != std::string::npos) {
+    const size_t start = pos + needle.size();
+    size_t end = text.find_first_of(" &\r\n", start);
+    if (end == std::string::npos) end = text.size();
+    text.replace(start, end - start, "[redacted]");
+    pos = start + std::strlen("[redacted]");
+  }
+  const std::string auth = "Authorization:";
+  pos = 0;
+  while ((pos = text.find(auth, pos)) != std::string::npos) {
+    const size_t start = pos + auth.size();
+    size_t end = text.find("\r\n", start);
+    if (end == std::string::npos) end = text.size();
+    text.replace(start, end - start, " [redacted]");
+    pos = start + std::strlen(" [redacted]");
+  }
+  return text;
+}
+}  // namespace
 
 bool WebSocketClient::send_http_handshake() {
   std::string path = "/";
@@ -335,9 +404,13 @@ bool WebSocketClient::send_http_handshake() {
     path = config_.headers.at("path");
   }
 
+  const bool default_port = (use_ssl_ && config_.port == "443") ||
+                            (!use_ssl_ && config_.port == "80");
   std::ostringstream request;
   request << "GET " << path << " HTTP/1.1\r\n";
-  request << "Host: " << config_.host << ":" << config_.port << "\r\n";
+  request << "Host: " << config_.host;
+  if (!default_port) request << ":" << config_.port;
+  request << "\r\n";
   request << "Connection: Upgrade\r\n";
   request << "Pragma: no-cache\r\n";
   request << "Cache-Control: no-cache\r\n";
@@ -356,7 +429,7 @@ bool WebSocketClient::send_http_handshake() {
   request << "\r\n";
 
   std::string request_str = request.str();
-  APP_LOG(AS_INFO) << "Sending HTTP handshake: " << request_str;
+  APP_LOG(AS_INFO) << "Sending HTTP handshake: " << RedactHandshake(request_str);
 
   int bytes_written;
   if (use_ssl_) {

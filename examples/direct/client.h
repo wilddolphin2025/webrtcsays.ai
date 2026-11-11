@@ -55,6 +55,9 @@ public:
     ~DirectClient();
 
     bool connectToSignalingServer(const std::string& server_host, const std::string& server_port);
+    // Explicit wss://host:port/path. `token` is sent as a bearer header and a
+    // token query parameter and is not logged.
+    bool connectToWebSocketUrl(const SignalEndpoint& endpoint, const std::string& token);
     bool startTcpServer(int listen_port);  // For callee to act as TCP server
     void disconnect();
     void registerWithRoom(const std::string& room_name);
@@ -167,6 +170,7 @@ public:
 
     bool Initialize() override;
     bool Connect();
+    bool SendMessage(const std::string& message) override;
     void Disconnect() override;
     bool IsConnected() const;
     void RunOnBackgroundThread();
@@ -198,6 +202,8 @@ public:
     void OnIceConnectionChange(webrtc::PeerConnectionInterface::IceConnectionState new_state) override;
     
 private:
+    bool ConnectSignalUrl(const std::string& url);
+    bool browser_signaling_ = false;
     void onPeerJoined(const std::string& peer_id);
     void onPeerAddressResolved(const std::string& peer_id, const std::string& ip, int port);
     // initiateWebRTCCall now implemented in DirectPeer base

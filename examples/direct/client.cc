@@ -18,6 +18,7 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <regex>
+#include <algorithm>
 #include "status.h"
 #include "video.h"
 #include "pc/video_track_source.h"
@@ -86,10 +87,55 @@ bool DirectCallerClient::Initialize() {
     return true;
 }
 
+bool DirectCallerClient::SendMessage(const std::string& message) {
+    if (browser_signaling_ && signaling_client_ && signaling_client_->isConnected() &&
+        signaling_client_->ws_client()) {
+        return signaling_client_->ws_client()->send_message(message);
+    }
+    return DirectCaller::SendMessage(message);
+}
+
+bool DirectCallerClient::ConnectSignalUrl(const std::string& url) {
+    SignalEndpoint endpoint;
+    std::string error;
+    if (!ParseSignalUrl(url, endpoint, error)) {
+        fprintf(stderr, "%s\n", error.c_str());
+        return false;
+    }
+    const std::string token = LoadSignalToken(opts_, error);
+    if (!error.empty()) {
+        fprintf(stderr, "%s\n", error.c_str());
+        return false;
+    }
+    std::string visible_path = endpoint.path;
+    const auto query = visible_path.find('?');
+    if (query != std::string::npos) visible_path.resize(query);
+    fprintf(stderr, "signaling %s://%s:%d%s tls_verify=on auth=%s\n",
+            endpoint.ssl ? "wss" : "ws", endpoint.host.c_str(), endpoint.port,
+            visible_path.c_str(), token.empty() ? "none" : "bearer");
+
+    auto* ws = signaling_client_->ws_client().get();
+    ws->set_allow_reconnect(false);
+    ws->set_reconnect_callback(nullptr);
+    ws->set_message_callback([this](const std::string& message) {
+        auto deliver = [this, message] { this->OnSignalingText(message); };
+        if (auto* nt = this->network_thread()) nt->PostTask(std::move(deliver));
+        else deliver();
+    });
+    if (!signaling_client_->connectToWebSocketUrl(endpoint, token)) return false;
+    browser_signaling_ = true;
+    MarkSessionStart();
+    BeginHandshake();
+    return true;
+}
+
 bool DirectCallerClient::Connect() {
     if (!initialized_) {
         APP_LOG(AS_ERROR) << "DirectCallerClient not initialized";
         return false;
+    }
+    if (!opts_.signal_url.empty()) {
+        return ConnectSignalUrl(opts_.signal_url);
     }
 
     // Set up callbacks for signaling server communication
@@ -156,9 +202,26 @@ bool DirectCallerClient::Connect() {
     std::string pub_ip;
     uint16_t    pub_port = 0;
     bool        stun_ok  = false;
-    int tmp_sock = ::socket(AF_INET, SOCK_DGRAM, 0);
+    std::string stun_host;
+    int stun_port = 19302;
+    if (!opts_.stun_urls.empty()) {
+        std::string rest = opts_.stun_urls.front();
+        const auto scheme = rest.find(':');
+        if (scheme != std::string::npos) rest = rest.substr(scheme + 1);
+        if (rest.rfind("//", 0) == 0) rest = rest.substr(2);
+        const auto cut = rest.find_first_of("/?");
+        if (cut != std::string::npos) rest = rest.substr(0, cut);
+        const auto colon = rest.rfind(':');
+        if (colon != std::string::npos && rest.find(':') == colon) {
+            stun_host = rest.substr(0, colon);
+            stun_port = std::atoi(rest.substr(colon + 1).c_str());
+        } else if (std::count(rest.begin(), rest.end(), ':') == 0) {
+            stun_host = rest;
+        }
+    }
+    int tmp_sock = stun_host.empty() ? -1 : ::socket(AF_INET, SOCK_DGRAM, 0);
     if (tmp_sock >= 0) {
-        stun_ok = stun_discover(tmp_sock, "stun.l.google.com", 19302,
+        stun_ok = stun_discover(tmp_sock, stun_host.c_str(), stun_port,
                                   pub_ip, pub_port);
         ::close(tmp_sock);
     }
@@ -1118,6 +1181,34 @@ DirectClient::~DirectClient() {
         // No network thread – just delete client if still present.
         ws_client_.reset();
     }
+}
+
+bool DirectClient::connectToWebSocketUrl(const SignalEndpoint& endpoint,
+                                           const std::string& token) {
+    if (connected_) return true;
+    WebSocketClient::Config cfg;
+    cfg.host = endpoint.host;
+    cfg.port = std::to_string(endpoint.port);
+    cfg.use_ssl = endpoint.ssl;
+    cfg.verify_tls = endpoint.ssl;
+    cfg.ca_file = opts_.ca_file;
+    cfg.cert_file_path = opts_.webrtc_cert_path;
+    cfg.key_file_path = opts_.webrtc_key_path;
+    cfg.headers["path"] = AppendTokenQuery(endpoint.path, token);
+    if (!token.empty()) cfg.headers["Authorization"] = "Bearer " + token;
+    if (!ws_client_->connect(cfg)) {
+        APP_LOG(AS_ERROR) << "Failed to connect signaling WebSocket";
+        return false;
+    }
+    if (!ws_client_->send_websocket_handshake_with_headers()) {
+        APP_LOG(AS_ERROR) << "WebSocket HTTP handshake failed";
+        return false;
+    }
+    ws_client_->start_listening();
+    connected_ = true;
+    APP_LOG(AS_INFO) << "Connected to signaling WebSocket host " << cfg.host
+                     << " port " << cfg.port;
+    return true;
 }
 
 bool DirectClient::connectToSignalingServer(const std::string& server_host,

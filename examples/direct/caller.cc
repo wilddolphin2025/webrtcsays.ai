@@ -58,10 +58,13 @@ DirectCaller::DirectCaller(Options opts)
         remote_addr_ = webrtc::SocketAddress(ip, port);
     }
 #else
-    std::string ip;
-    int port = 0;    
-    ParseIpAndPort(opts.address, ip, port);
-    remote_addr_ = webrtc::SocketAddress(ip, port);
+    if (opts.signal_url.empty() && opts.address.find("://") == std::string::npos &&
+        !opts.address.empty()) {
+        std::string ip;
+        int port = 0;
+        ParseIpAndPort(opts.address, ip, port);
+        remote_addr_ = webrtc::SocketAddress(ip, port);
+    }
 #endif // #if TARGET_OS_IOS || TARGET_OS_OSX
 }
 
@@ -183,16 +186,23 @@ bool DirectCaller::Connect() {
     return network_thread()->BlockingCall(std::move(task));
 }
 
+void DirectCaller::BeginHandshake() {
+    hello_attempts_ = 0;
+    welcome_received_ = false;
+    SendHelloWithRetry();
+}
+
+void DirectCaller::OnSignalingText(const std::string& message) {
+    OnMessage(nullptr,
+              reinterpret_cast<const unsigned char*>(message.data()),
+              message.size(),
+              remote_addr_);
+}
+
 void DirectCaller::OnConnect(webrtc::AsyncPacketSocket* socket) {
     RTC_LOG(LS_INFO) << "Connected to " << remote_addr_.ToString();
     UpdateState(DirectCaller::State::Connected);  // Update state on successful connection
-    
-    // Reset handshake tracking state for a fresh connection
-    hello_attempts_ = 0;
-    welcome_received_ = false;
-
-    // Kick-off HELLO (with automatic retries)
-    SendHelloWithRetry();
+    BeginHandshake();
 }
 
 void DirectCaller::OnMessage(webrtc::AsyncPacketSocket* socket,
@@ -382,7 +392,10 @@ void DirectCaller::SendHelloWithRetry() {
         return;
     }
 
-    if (SendMessage(Msg::kHello)) {
+    const std::string hello = opts_.target_name.empty()
+                                  ? std::string(Msg::kHello)
+                                  : (std::string(Msg::kHelloPrefix) + opts_.target_name);
+    if (SendMessage(hello)) {
         fprintf(stderr, "Caller: HELLO attempt %d sent\n", hello_attempts_ + 1);
     } else {
         fprintf(stderr, "Caller: HELLO attempt %d FAILED to send\n", hello_attempts_ + 1);

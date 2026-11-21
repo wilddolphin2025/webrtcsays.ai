@@ -1,6 +1,8 @@
 #include "client.h"
+#include "signaling_bind.h"
 #include "wsock.h"
 #include "direct.h"
+#include <cstdio>
 #include <iostream>
 #include <sstream>
 #include <thread>
@@ -513,7 +515,9 @@ bool DirectCalleeClient::StartListening() {
     std::string signaling_address = opts_.address;  // e.g. "127.0.0.1:3456"
 
     // First, set up WebRTC listener using DirectCallee (this will update opts_.address)
-    setupWebRTCListener();
+    if (!setupWebRTCListener()) {
+        return false;
+    }
     
     // Set up callbacks to receive incoming calls via signaling server
     signaling_client_->setHelloReceivedCallback([this](const std::string& peer_id) {
@@ -724,20 +728,34 @@ bool DirectCalleeClient::SendMessage(const std::string& message) {
     return DirectCallee::SendMessage(message);
 }
 
-void DirectCalleeClient::setupWebRTCListener() {
+bool DirectCalleeClient::setupWebRTCListener() {
     APP_LOG(AS_INFO) << "DirectCalleeClient: Setting up WebRTC listener on port " << local_port_;
-    
-    // Ensure opts_ has the correct listen address to avoid conflict with signaling port
-    opts_.address = "0.0.0.0:" + std::to_string(local_port_);
+
+    // Record the TCP listen address. Empty signaling_bind stays 0.0.0.0,
+    // matching binaries that always called bind(INADDR_ANY). A dotted address
+    // is stored here and used by DirectCallee::StartListening. This string is
+    // not an ICE candidate filter.
+    std::string listen_host = "0.0.0.0";
+    if (!opts_.signaling_bind.empty()) {
+      in_addr_t bind_addr = 0;
+      std::string bind_error;
+      if (!ResolveSignalingBind(opts_.signaling_bind, &bind_addr, &bind_error)) {
+        APP_LOG(AS_ERROR) << "signaling bind refused: " << bind_error;
+        fprintf(stderr, "signaling bind refused: %s\n", bind_error.c_str());
+        return false;
+      }
+      listen_host = opts_.signaling_bind;
+    }
+    opts_.address = listen_host + ":" + std::to_string(local_port_);
 
     if (!DirectCallee::Initialize()) {
         APP_LOG(AS_ERROR) << "DirectCalleeClient: base initialization failed";
-        return;
+        return false;
     }
 
     if (!DirectCallee::StartListening()) {
         APP_LOG(AS_ERROR) << "Failed to start WebRTC listener on port " << local_port_;
-        return;
+        return false;
     }
 
     // Ensure a local video source is ready so the SDP answer advertises sendrecv.
@@ -780,6 +798,7 @@ void DirectCalleeClient::setupWebRTCListener() {
     }
 
     APP_LOG(AS_INFO) << "DirectCalleeClient: WebRTC listener started on port " << local_port_;
+    return true;
 }
 
 void DirectCalleeClient::publishAddressToSignalingServer() {
@@ -878,7 +897,9 @@ void DirectCalleeClient::onIncomingCall(const std::string& peer_id, const std::s
 
     if (!listening_) {
         APP_LOG(AS_INFO) << "DirectCalleeClient: Not listening, starting WebRTC listener";
-        setupWebRTCListener();
+        if (!setupWebRTCListener()) {
+            return;
+        }
         listening_ = true;
     }
 

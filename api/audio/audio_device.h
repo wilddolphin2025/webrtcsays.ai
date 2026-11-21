@@ -11,17 +11,17 @@
 #ifndef API_AUDIO_AUDIO_DEVICE_H_
 #define API_AUDIO_AUDIO_DEVICE_H_
 
+#include <cstdint>
 #include <optional>
+
 #include "api/audio/audio_device_defines.h"
 #include "api/ref_count.h"
-#include "api/scoped_refptr.h"
-#include "api/task_queue/task_queue_factory.h"
 
 namespace webrtc {
 
 class AudioDeviceModuleForTest;
 
-class AudioDeviceModule : public webrtc::RefCountInterface {
+class AudioDeviceModule : public RefCountInterface {
  public:
   enum AudioLayer {
     kPlatformDefaultAudio = 0,
@@ -57,17 +57,16 @@ class AudioDeviceModule : public webrtc::RefCountInterface {
     double total_samples_duration_s = 0;
     double total_playout_delay_s = 0;
     uint64_t total_samples_count = 0;
+
+    // Capture stats.
+    double dropped_samples_duration_s = 0;
+    uint64_t dropped_samples_events = 0;
+    double total_capture_samples_duration_s = 0;
+    double total_capture_delay_s = 0;
+    uint64_t total_capture_samples_count = 0;
   };
 
  public:
-  // Creates a default ADM for usage in production code.
-  static rtc::scoped_refptr<AudioDeviceModule> Create(
-      AudioLayer audio_layer, TaskQueueFactory* task_queue_factory);
-  // Creates an ADM with support for extra test methods. Don't use this factory
-  // in production code.
-  static rtc::scoped_refptr<AudioDeviceModuleForTest> CreateForTest(
-      AudioLayer audio_layer, TaskQueueFactory* task_queue_factory);
-
   // Retrieve the currently utilized audio layer
   virtual int32_t ActiveAudioLayer(AudioLayer* audioLayer) const = 0;
 

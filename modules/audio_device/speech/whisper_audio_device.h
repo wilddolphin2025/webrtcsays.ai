@@ -1,7 +1,7 @@
 /*
- *  (c) 2025, wilddolphin2022 
+ *  (c) 2025, wilddolphin2025 
  *  For WebRTCsays.ai project
- *  https://github.com/wilddolphin2022
+ *  https://github.com/wilddolphin2025
  *
  *  Use of this source code is governed by a BSD-style license
  *  that can be found in the LICENSE file in the root of the source
@@ -13,6 +13,7 @@
 #ifndef AUDIO_DEVICE_WHISPER_AUDIO_DEVICE_H_
 #define AUDIO_DEVICE_WHISPER_AUDIO_DEVICE_H_
 
+#include <atomic>
 #include <string>
 #include <memory>
 #include <queue>
@@ -132,9 +133,17 @@ class WhisperAudioDevice : public SpeechAudioDevice {
 
   void SetTTSBuffer(const uint16_t* buffer, size_t buffer_size);
 
+  // Interrupt LLaMa and TTS when remote user speaks (barge-in)
+  void interruptLlama();
+
  private:
   bool RecThreadProcess();
   bool PlayThreadProcess();
+  // TTS, Whisper, and Llama used to start only from InitPlayout. A browser
+  // call can be sending (recording) long before any remote audio packet
+  // arrives, and playout never starts until then. Start the engines from
+  // whichever side comes up first. Caller must hold mutex_.
+  void StartSpeechEngines();
 
   webrtc::TaskQueueFactory* _task_queue_factory;
 
@@ -144,8 +153,8 @@ class WhisperAudioDevice : public SpeechAudioDevice {
   int8_t* _playoutBuffer;
 
   Mutex mutex_;
-  rtc::PlatformThread _ptrThreadRec;
-  rtc::PlatformThread _ptrThreadPlay;
+  webrtc::PlatformThread _ptrThreadRec;
+  webrtc::PlatformThread _ptrThreadPlay;
 
   size_t _recordingFramesIn10MS;
   size_t _playoutFramesIn10MS;
@@ -155,6 +164,7 @@ class WhisperAudioDevice : public SpeechAudioDevice {
 
   bool _recording;
   bool _playing;
+  bool _engines_started = false;
   
   int64_t _lastCallPlayoutMillis;
   int64_t _lastCallRecordMillis;
@@ -166,6 +176,7 @@ class WhisperAudioDevice : public SpeechAudioDevice {
   WhillatsSetResponseCallback _whisperCallback;
   WhillatsSetLanguageCallback _languageCallback;
   WhillatsSetResponseCallback _llamaResponseCallback;
+  WhillatsSetTranscriptCallback _transcriptCallback;
   
   // Protects concurrent access to _whisper_transcriber across the playout
   // thread and control thread (StartPlayout / StopPlayout).
@@ -177,12 +188,39 @@ class WhisperAudioDevice : public SpeechAudioDevice {
   std::queue<std::string> _textQueue;
   absl::Mutex _queueMutex;
   std::condition_variable _queueCondition;
+
+ public:
+  // Llama streams one sentence per callback; a single-producer/single-consumer
+  // ring keeps sentences that arrive while earlier ones are still being spoken.
+  // Written with C-only operations by the Llama callback thread (head) and
+  // drained by the recording thread (tail).
+  static constexpr uint32_t kLlamaPendingSlots = 16;
+  static constexpr size_t kLlamaPendingBytes = 1024;
+  char _llamaPending[kLlamaPendingSlots][kLlamaPendingBytes];
+  std::atomic<uint32_t> _llamaPendingHead{0};
+  std::atomic<uint32_t> _llamaPendingTail{0};
+  std::atomic<bool> _llamaDropPending{false};
+  // Bumped by the transcript callback whenever Whisper hears words (interim or
+  // final); barge-in triggers on recognised speech rather than raw energy.
+  std::atomic<uint32_t> _heardSpeech{0};
+ private:
+  void drainLlamaPending();
   
   std::vector<uint16_t> _ttsBuffer;  // Instance member to hold TTS audio
   size_t _ttsIndex = 0;  // Instance member to track buffer index
 
   std::mutex audio_buffer_mutex;
   std::condition_variable buffer_cv;
+
+  // Barge-in: interrupt LLaMa/TTS when Whisper recognises remote speech while
+  // TTS is playing. Word-confirmed triggering ignores noise and echo bursts,
+  // so the guards can be much shorter than with an energy threshold.
+  std::atomic<bool> _isSpeaking{false};
+  std::atomic<int64_t> _lastInterruptMillis{0};
+  std::atomic<int64_t> _ttsStartedMillis{0};
+  uint32_t _heardSpeechSeen = 0;
+  static constexpr int64_t kInterruptCooldownMs = 2000;   // min gap between interrupts
+  static constexpr int64_t kMinTTSPlayMs = 800;           // let TTS play at least this long before barge-in
 };
 
 }  // namespace webrtc

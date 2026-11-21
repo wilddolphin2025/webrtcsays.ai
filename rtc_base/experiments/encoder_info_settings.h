@@ -11,12 +11,13 @@
 #ifndef RTC_BASE_EXPERIMENTS_ENCODER_INFO_SETTINGS_H_
 #define RTC_BASE_EXPERIMENTS_ENCODER_INFO_SETTINGS_H_
 
+#include <cstdint>
 #include <optional>
-#include <string>
 #include <vector>
 
 #include "absl/strings/string_view.h"
 #include "api/field_trials_view.h"
+#include "api/video/video_codec_type.h"
 #include "api/video_codecs/video_encoder.h"
 #include "rtc_base/experiments/field_trial_parser.h"
 
@@ -38,8 +39,8 @@ class EncoderInfoSettings {
   bool apply_alignment_to_all_simulcast_layers() const {
     return apply_alignment_to_all_simulcast_layers_.Get();
   }
-  std::vector<VideoEncoder::ResolutionBitrateLimits> resolution_bitrate_limits()
-      const {
+  const std::vector<VideoEncoder::ResolutionBitrateLimits>&
+  resolution_bitrate_limits() const {
     return resolution_bitrate_limits_;
   }
 
@@ -51,7 +52,7 @@ class EncoderInfoSettings {
                                                  int frame_size_pixels);
 
   static std::vector<VideoEncoder::ResolutionBitrateLimits>
-  GetDefaultSinglecastBitrateLimitsWhenQpIsUntrusted();
+  GetDefaultSinglecastBitrateLimitsWhenQpIsUntrusted(VideoCodecType codec_type);
 
   static std::optional<VideoEncoder::ResolutionBitrateLimits>
   GetSinglecastBitrateLimitForResolutionWhenQpIsUntrusted(

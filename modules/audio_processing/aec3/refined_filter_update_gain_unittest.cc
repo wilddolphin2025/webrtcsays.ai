@@ -11,24 +11,34 @@
 #include "modules/audio_processing/aec3/refined_filter_update_gain.h"
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
+#include <memory>
 #include <numeric>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "api/audio/echo_canceller3_config.h"
 #include "api/environment/environment.h"
-#include "api/environment/environment_factory.h"
 #include "modules/audio_processing/aec3/adaptive_fir_filter.h"
 #include "modules/audio_processing/aec3/adaptive_fir_filter_erl.h"
+#include "modules/audio_processing/aec3/aec3_common.h"
+#include "modules/audio_processing/aec3/aec3_fft.h"
 #include "modules/audio_processing/aec3/aec_state.h"
+#include "modules/audio_processing/aec3/block.h"
 #include "modules/audio_processing/aec3/coarse_filter_update_gain.h"
+#include "modules/audio_processing/aec3/delay_estimate.h"
 #include "modules/audio_processing/aec3/render_delay_buffer.h"
 #include "modules/audio_processing/aec3/render_signal_analyzer.h"
 #include "modules/audio_processing/aec3/subtractor_output.h"
 #include "modules/audio_processing/logging/apm_data_dumper.h"
 #include "modules/audio_processing/test/echo_canceller_test_tools.h"
+#include "rtc_base/checks.h"
 #include "rtc_base/numerics/safe_minmax.h"
 #include "rtc_base/random.h"
 #include "rtc_base/strings/string_builder.h"
+#include "test/create_test_environment.h"
 #include "test/gtest.h"
 
 namespace webrtc {
@@ -162,10 +172,10 @@ void RunFilterUpdateTest(const Environment& env,
                    e_refined.begin(),
                    [&](float a, float b) { return a - b * kScale; });
     std::for_each(e_refined.begin(), e_refined.end(),
-                  [](float& a) { a = rtc::SafeClamp(a, -32768.f, 32767.f); });
+                  [](float& a) { a = SafeClamp(a, -32768.f, 32767.f); });
     fft.ZeroPaddedFft(e_refined, Aec3Fft::Window::kRectangular, &E_refined);
-    for (size_t k = 0; k < kBlockSize; ++k) {
-      s[k] = kScale * s_scratch[k + kFftLengthBy2];
+    for (size_t l = 0; l < kBlockSize; ++l) {
+      s[l] = kScale * s_scratch[l + kFftLengthBy2];
     }
 
     // Apply the coarse filter.
@@ -175,7 +185,7 @@ void RunFilterUpdateTest(const Environment& env,
                    e_coarse.begin(),
                    [&](float a, float b) { return a - b * kScale; });
     std::for_each(e_coarse.begin(), e_coarse.end(),
-                  [](float& a) { a = rtc::SafeClamp(a, -32768.f, 32767.f); });
+                  [](float& a) { a = SafeClamp(a, -32768.f, 32767.f); });
     fft.ZeroPaddedFft(e_coarse, Aec3Fft::Window::kRectangular, &E_coarse);
 
     // Compute spectra for future use.
@@ -219,13 +229,13 @@ void RunFilterUpdateTest(const Environment& env,
 }
 
 std::string ProduceDebugText(int filter_length_blocks) {
-  rtc::StringBuilder ss;
+  StringBuilder ss;
   ss << "Length: " << filter_length_blocks;
   return ss.Release();
 }
 
 std::string ProduceDebugText(size_t delay, int filter_length_blocks) {
-  rtc::StringBuilder ss;
+  StringBuilder ss;
   ss << "Delay: " << delay << ", ";
   ss << ProduceDebugText(filter_length_blocks);
   return ss.Release();
@@ -257,7 +267,7 @@ TEST(RefinedFilterUpdateGainDeathTest, NullDataOutputGain) {
 
 // Verifies that the gain formed causes the filter using it to converge.
 TEST(RefinedFilterUpdateGain, GainCausesFilterToConverge) {
-  const Environment env = CreateEnvironment();
+  const Environment env = CreateTestEnvironment();
   std::vector<int> blocks_with_echo_path_changes;
   std::vector<int> blocks_with_saturation;
   for (size_t filter_length_blocks : {12, 20, 30}) {
@@ -288,7 +298,7 @@ TEST(RefinedFilterUpdateGain, GainCausesFilterToConverge) {
 // Verifies that the magnitude of the gain on average decreases for a
 // persistently exciting signal.
 TEST(RefinedFilterUpdateGain, DecreasingGain) {
-  const Environment env = CreateEnvironment();
+  const Environment env = CreateTestEnvironment();
   std::vector<int> blocks_with_echo_path_changes;
   std::vector<int> blocks_with_saturation;
 
@@ -322,7 +332,7 @@ TEST(RefinedFilterUpdateGain, DecreasingGain) {
 // Verifies that the gain is zero when there is saturation and that the internal
 // error estimates cause the gain to increase after a period of saturation.
 TEST(RefinedFilterUpdateGain, SaturationBehavior) {
-  const Environment env = CreateEnvironment();
+  const Environment env = CreateTestEnvironment();
   std::vector<int> blocks_with_echo_path_changes;
   std::vector<int> blocks_with_saturation;
   for (int k = 99; k < 200; ++k) {
@@ -367,7 +377,7 @@ TEST(RefinedFilterUpdateGain, SaturationBehavior) {
 // Verifies that the gain increases after an echo path change.
 // TODO(peah): Correct and reactivate this test.
 TEST(RefinedFilterUpdateGain, DISABLED_EchoPathChangeBehavior) {
-  const Environment env = CreateEnvironment();
+  const Environment env = CreateTestEnvironment();
   for (size_t filter_length_blocks : {12, 20, 30}) {
     SCOPED_TRACE(ProduceDebugText(filter_length_blocks));
     std::vector<int> blocks_with_echo_path_changes;

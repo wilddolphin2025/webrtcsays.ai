@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'">
+  <title>Frame viewer</title>
+  <link rel="stylesheet" href="/demo/view/assets/view.css">
+</head>
+<body class="wsdemo">
+  <header class="top">
+    <div class="wrap topin">
+      <div class="brand">
+        <h1 class="wm">WebRTCSays</h1>
+        <p class="by">by Wilddolphin LLC</p>
+      </div>
+    </div>
+  </header>
+  <main class="wrap">
+    <section class="card" aria-labelledby="view-heading">
+      <h2 id="view-heading">Frame viewer</h2>
+      <p>Receives the Frame's call in this room. No camera or microphone is requested. Playback starts from the Connect button so iPhone Safari can show the picture.</p>
+      <div class="row">
+        <button id="view-connect" class="btn primary" type="button">Connect</button>
+        <button id="view-disconnect" class="btn" type="button">Disconnect</button>
+        <span id="view-status" class="hint">idle</span>
+        <span id="view-codec" class="hint">codec pending</span>
+      </div>
+      <video id="view-remote" autoplay playsinline webkit-playsinline></video>
+    </section>
+    <section class="card" aria-labelledby="log-heading">
+      <h2 id="log-heading">Log</h2>
+      <pre id="view-log"></pre>
+    </section>
+  </main>
+  <script src="/demo/view/assets/view.js"></script>
+</body>
+</html>

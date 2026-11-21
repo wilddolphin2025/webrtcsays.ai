@@ -11,16 +11,18 @@
 #ifndef MODULES_RTP_RTCP_SOURCE_RECEIVE_STATISTICS_IMPL_H_
 #define MODULES_RTP_RTCP_SOURCE_RECEIVE_STATISTICS_IMPL_H_
 
-#include <algorithm>
-#include <functional>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
 
+#include "absl/functional/any_invocable.h"
 #include "api/units/time_delta.h"
 #include "api/units/timestamp.h"
 #include "modules/rtp_rtcp/include/receive_statistics.h"
+#include "modules/rtp_rtcp/include/rtp_rtcp_defines.h"
 #include "modules/rtp_rtcp/source/rtcp_packet/report_block.h"
 #include "rtc_base/bitrate_tracker.h"
 #include "rtc_base/containers/flat_map.h"
@@ -33,7 +35,7 @@ namespace webrtc {
 // Extends StreamStatistician with methods needed by the implementation.
 class StreamStatisticianImplInterface : public StreamStatistician {
  public:
-  virtual ~StreamStatisticianImplInterface() = default;
+  ~StreamStatisticianImplInterface() override = default;
   virtual void MaybeAppendReportBlockAndReset(
       std::vector<rtcp::ReportBlock>& report_blocks) = 0;
   virtual void SetMaxReorderingThreshold(int max_reordering_threshold) = 0;
@@ -160,13 +162,13 @@ class StreamStatisticianLocked : public StreamStatisticianImplInterface {
 };
 
 // Thread-compatible implementation.
-class ReceiveStatisticsImpl : public ReceiveStatistics {
+class ReceiveStatisticsImpl final : public ReceiveStatistics {
  public:
   ReceiveStatisticsImpl(
       Clock* clock,
-      std::function<std::unique_ptr<StreamStatisticianImplInterface>(
+      absl::AnyInvocable<std::unique_ptr<StreamStatisticianImplInterface>(
           uint32_t ssrc,
-          Clock* clock)> stream_statistician_factory);
+          Clock* clock) const> stream_statistician_factory);
   ~ReceiveStatisticsImpl() override = default;
 
   // Implements ReceiveStatisticsProvider.
@@ -185,8 +187,9 @@ class ReceiveStatisticsImpl : public ReceiveStatistics {
   StreamStatisticianImplInterface* GetOrCreateStatistician(uint32_t ssrc);
 
   Clock* const clock_;
-  std::function<std::unique_ptr<StreamStatisticianImplInterface>(uint32_t ssrc,
-                                                                 Clock* clock)>
+  const absl::AnyInvocable<std::unique_ptr<StreamStatisticianImplInterface>(
+      uint32_t ssrc,
+      Clock* clock) const>
       stream_statistician_factory_;
   // The index within `all_ssrcs_` that was last returned.
   size_t last_returned_ssrc_idx_;
@@ -197,13 +200,13 @@ class ReceiveStatisticsImpl : public ReceiveStatistics {
 
 // Thread-safe implementation wrapping access to ReceiveStatisticsImpl with a
 // mutex.
-class ReceiveStatisticsLocked : public ReceiveStatistics {
+class ReceiveStatisticsLocked final : public ReceiveStatistics {
  public:
   explicit ReceiveStatisticsLocked(
       Clock* clock,
-      std::function<std::unique_ptr<StreamStatisticianImplInterface>(
+      absl::AnyInvocable<std::unique_ptr<StreamStatisticianImplInterface>(
           uint32_t ssrc,
-          Clock* clock)> stream_statitician_factory)
+          Clock* clock) const> stream_statitician_factory)
       : impl_(clock, std::move(stream_statitician_factory)) {}
   ~ReceiveStatisticsLocked() override = default;
   std::vector<rtcp::ReportBlock> RtcpReportBlocks(size_t max_blocks) override {

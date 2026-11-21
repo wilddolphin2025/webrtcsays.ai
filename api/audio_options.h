@@ -16,7 +16,7 @@
 
 #include "rtc_base/system/rtc_export.h"
 
-namespace cricket {
+namespace webrtc {
 
 // Options that can be applied to a VoiceMediaChannel or a VoiceMediaEngine.
 // Used to be flags, but that makes it hard to selectively apply options.
@@ -40,7 +40,7 @@ struct RTC_EXPORT AudioOptions {
   // (until Apple fixes the bug) for a device with non-functioning AEC. May
   // improve performance on that particular device, but will cause unpredictable
   // behavior in all other cases. See http://bugs.webrtc.org/8682.
-  std::optional<bool> ios_force_software_aec_HACK;
+  [[deprecated]] std::optional<bool> ios_force_software_aec_HACK;
 #endif
   // Audio processing to adjust the sensitivity of the local mic dynamically.
   std::optional<bool> auto_gain_control;
@@ -68,6 +68,7 @@ struct RTC_EXPORT AudioOptions {
   std::optional<bool> init_recording_on_send;
 };
 
-}  // namespace cricket
+}  //  namespace webrtc
+
 
 #endif  // API_AUDIO_OPTIONS_H_

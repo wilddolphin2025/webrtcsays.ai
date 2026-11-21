@@ -8,23 +8,21 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include <stdio.h>
-
 #ifndef TEST_TESTSUPPORT_FILE_UTILS_H_
 #define TEST_TESTSUPPORT_FILE_UTILS_H_
 
+#include <cstdio>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include "absl/base/attributes.h"
 #include "absl/strings/string_view.h"
 
 namespace webrtc {
 namespace test {
 
 // Slash or backslash, depending on platform.
-ABSL_CONST_INIT extern const absl::string_view kPathDelimiter;
+constinit extern const absl::string_view kPathDelimiter;
 
 // Returns the absolute path to the output directory where log files and other
 // test artifacts should be put. The output directory is generally a directory
@@ -90,6 +88,9 @@ bool CreateDir(absl::string_view directory_name);
 // Removes a directory, which must already be empty.
 bool RemoveDir(absl::string_view directory_name);
 
+// Removes all the files inside a non-empty directory and the directory itself.
+bool RemoveNonEmptyDir(absl::string_view directory_name);
+
 // Removes a file.
 bool RemoveFile(absl::string_view file_name);
 
@@ -103,6 +104,9 @@ bool DirExists(absl::string_view directory_name);
 
 // Strips the rightmost path segment from a path.
 std::string DirName(absl::string_view path);
+
+// Returns the rightmost path segment from a path.
+absl::string_view FileName(absl::string_view path);
 
 // File size of the supplied file in bytes. Will return 0 if the file is
 // empty or if the file does not exist/is readable.

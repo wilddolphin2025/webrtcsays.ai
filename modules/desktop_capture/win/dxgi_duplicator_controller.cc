@@ -13,15 +13,26 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
-#include "modules/desktop_capture/desktop_capture_types.h"
+#include "api/scoped_refptr.h"
+#include "modules/desktop_capture/desktop_frame.h"
+#include "modules/desktop_capture/desktop_geometry.h"
+#include "modules/desktop_capture/shared_desktop_frame.h"
+#include "modules/desktop_capture/win/d3d_device.h"
+#include "modules/desktop_capture/win/dxgi_adapter_duplicator.h"
 #include "modules/desktop_capture/win/dxgi_frame.h"
-#include "modules/desktop_capture/win/screen_capture_utils.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
+#include "rtc_base/synchronization/mutex.h"
+#include "rtc_base/thread.h"
 #include "rtc_base/time_utils.h"
-#include "system_wrappers/include/sleep.h"
 
 namespace webrtc {
 
@@ -67,12 +78,12 @@ std::string DxgiDuplicatorController::ResultName(
 }
 
 // static
-rtc::scoped_refptr<DxgiDuplicatorController>
+webrtc::scoped_refptr<DxgiDuplicatorController>
 DxgiDuplicatorController::Instance() {
   // The static instance won't be deleted to ensure it can be used by other
   // threads even during program exiting.
   static DxgiDuplicatorController* instance = new DxgiDuplicatorController();
-  return rtc::scoped_refptr<DxgiDuplicatorController>(instance);
+  return scoped_refptr<DxgiDuplicatorController>(instance);
 }
 
 // static
@@ -189,12 +200,12 @@ DxgiDuplicatorController::Result DxgiDuplicatorController::DoDuplicate(
     return Result::INITIALIZATION_FAILED;
   }
 
-  if (!frame->Prepare(SelectedDesktopSize(monitor_id), monitor_id,
-                      GetDeviceScaleFactor(monitor_id))) {
+  if (!frame->Prepare(SelectedDesktopSize(monitor_id), monitor_id)) {
     return Result::FRAME_PREPARE_FAILED;
   }
 
   frame->frame()->mutable_updated_region()->Clear();
+  frame->frame()->set_device_scale_factor(GetDeviceScaleFactor(monitor_id));
 
   if (DoDuplicateUnlocked(frame->context(), monitor_id, frame->frame())) {
     succeeded_duplications_++;
@@ -384,8 +395,18 @@ bool DxgiDuplicatorController::DoDuplicateOne(Context* context,
 
 int64_t DxgiDuplicatorController::GetNumFramesCaptured(int monitor_id) const {
   int64_t min = INT64_MAX;
+  if (monitor_id < 0) {
+    for (const auto& duplicator : duplicators_) {
+      min = std::min(min, duplicator.GetNumFramesCaptured(monitor_id));
+    }
+    return min;
+  }
   for (const auto& duplicator : duplicators_) {
-    min = std::min(min, duplicator.GetNumFramesCaptured(monitor_id));
+    if (monitor_id >= duplicator.screen_count()) {
+      monitor_id -= duplicator.screen_count();
+    } else {
+      return duplicator.GetNumFramesCaptured(monitor_id);
+    }
   }
   return min;
 }
@@ -394,7 +415,7 @@ DesktopSize DxgiDuplicatorController::desktop_size() const {
   return desktop_rect_.size();
 }
 
-std::optional<int32_t> DxgiDuplicatorController::GetDeviceScaleFactor(
+std::optional<float> DxgiDuplicatorController::GetDeviceScaleFactor(
     int monitor_id) const {
   if (monitor_id < 0) {
     return std::nullopt;
@@ -494,7 +515,7 @@ bool DxgiDuplicatorController::EnsureFrameCaptured(Context* context,
     shared_frame = fallback_frame.get();
   }
 
-  const int64_t start_ms = rtc::TimeMillis();
+  const int64_t start_ms = TimeMillis();
   while (GetNumFramesCaptured(monitor_id) < frames_to_skip) {
     if (monitor_id < 0) {
       if (!DoDuplicateAll(context, shared_frame)) {
@@ -511,7 +532,7 @@ bool DxgiDuplicatorController::EnsureFrameCaptured(Context* context,
       break;
     }
 
-    if (rtc::TimeMillis() - start_ms > timeout_ms) {
+    if (TimeMillis() - start_ms > timeout_ms) {
       RTC_LOG(LS_ERROR) << "Failed to capture " << frames_to_skip
                         << " frames "
                            "within "
@@ -521,7 +542,7 @@ bool DxgiDuplicatorController::EnsureFrameCaptured(Context* context,
 
     // Sleep `ms_per_frame` before attempting to capture the next frame to
     // ensure the video adapter has time to update the screen.
-    webrtc::SleepMs(ms_per_frame);
+    Thread::SleepMs(ms_per_frame);
   }
   // When capturing multiple monitors, we need to update the captured region to
   // prevent flickering by re-setting context. See

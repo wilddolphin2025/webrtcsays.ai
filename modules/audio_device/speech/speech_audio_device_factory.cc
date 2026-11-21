@@ -1,7 +1,7 @@
 /*
- *  (c) 2025, wilddolphin2022 
+ *  (c) 2025, wilddolphin2025 
  *  For WebRTCsays.ai project
- *  https://github.com/wilddolphin2022/webrtcsays.ai
+ *  https://github.com/wilddolphin2025/webrtcsays.ai
  *
  *  Use of this source code is governed by a BSD-style license
  *  that can be found in the LICENSE file in the root of the source
@@ -31,6 +31,7 @@ std::unique_ptr<TaskQueueFactory> SpeechAudioDeviceFactory::_taskQueueFactory;
 std::unique_ptr<WhillatsTranscriber> SpeechAudioDeviceFactory::_whisperDevice;
 std::unique_ptr<WhillatsLlama> SpeechAudioDeviceFactory::_llamaDevice;
 std::unique_ptr<WhillatsTTS> SpeechAudioDeviceFactory::_ttsDevice;
+std::unique_ptr<TalkingFace> SpeechAudioDeviceFactory::_talkingFace;
 
 std::string SpeechAudioDeviceFactory::_whisperModelFilename;
 std::string SpeechAudioDeviceFactory::_llamaModelFilename;
@@ -40,6 +41,10 @@ std::string SpeechAudioDeviceFactory::_yuvFilename;
 YUVData SpeechAudioDeviceFactory::_yuvData;
 bool SpeechAudioDeviceFactory::_whisperEnabled = false;
 bool SpeechAudioDeviceFactory::_llamaEnabled = false;
+int SpeechAudioDeviceFactory::_whisperThreads = 0;
+int SpeechAudioDeviceFactory::_llamaThreads = 0;
+int SpeechAudioDeviceFactory::_ttsThreads = 0;
+std::string SpeechAudioDeviceFactory::_ttsVoice;
 
 // Static queue and mutex for enqueued TTS text tasks
 std::unique_ptr<TaskQueueBase, TaskQueueDeleter> SpeechAudioDeviceFactory::_textToSpeakQueue;
@@ -47,8 +52,10 @@ absl::Mutex SpeechAudioDeviceFactory::_textToSpeakQueueMutex;
 
 WhillatsTTS* SpeechAudioDeviceFactory::CreateWhillatsTTS(WhillatsSetAudioCallback &ttsCallback) {
 
-  if(_ttsDevice)
+  if(_ttsDevice) {
+    _ttsDevice->setCallback(ttsCallback);
     return _ttsDevice.get();
+  }
 
   _ttsDevice = std::make_unique<WhillatsTTS>(ttsCallback);
   return _ttsDevice.get();
@@ -57,8 +64,11 @@ WhillatsTTS* SpeechAudioDeviceFactory::CreateWhillatsTTS(WhillatsSetAudioCallbac
 WhillatsTranscriber* SpeechAudioDeviceFactory::CreateWhillatsTranscriber
   (WhillatsSetResponseCallback &whisperCallback, WhillatsSetLanguageCallback &languageCallback) {
   if(_whisperEnabled) {
-    if(_whisperDevice)
+    if(_whisperDevice) {
+      _whisperDevice->setCallback(whisperCallback);
+      _whisperDevice->setLanguageCallback(languageCallback);
       return _whisperDevice.get();
+    }
 
     _whisperDevice = std::make_unique<WhillatsTranscriber>(_whisperModelFilename.c_str(), whisperCallback, languageCallback);
     return _whisperDevice.get();
@@ -68,13 +78,31 @@ WhillatsTranscriber* SpeechAudioDeviceFactory::CreateWhillatsTranscriber
 
 WhillatsLlama* SpeechAudioDeviceFactory::CreateWhillatsLlama(WhillatsSetResponseCallback &llamaCallback) {
   if(_llamaEnabled) {
-    if(_llamaDevice)
+    if(_llamaDevice) {
+      _llamaDevice->setCallback(llamaCallback);
       return _llamaDevice.get();
+    }
 
     _llamaDevice = std::make_unique<WhillatsLlama>(_llamaModelFilename.c_str(), _llavaMMProjFilename.c_str(), llamaCallback);
     return _llamaDevice.get();
   }
   return nullptr;
+}
+
+void SpeechAudioDeviceFactory::PreloadLlama(WhillatsSetResponseCallback &llamaCallback) {
+  if (!_llamaEnabled) return;
+  if (!_llamaDevice) {
+    RTC_LOG(LS_INFO) << "PreloadLlama: creating and loading model " << _llamaModelFilename;
+    _llamaDevice = std::make_unique<WhillatsLlama>(_llamaModelFilename.c_str(), _llavaMMProjFilename.c_str(), llamaCallback);
+  }
+  if (_llamaDevice && !_llamaDevice->isRunning()) {
+    RTC_LOG(LS_INFO) << "PreloadLlama: starting model...";
+    if (_llamaDevice->start()) {
+      RTC_LOG(LS_INFO) << "PreloadLlama: model loaded and ready";
+    } else {
+      RTC_LOG(LS_ERROR) << "PreloadLlama: failed to load model";
+    }
+  }
 }
 
 void SpeechAudioDeviceFactory::NotifyText(const std::string& text, const std::string& language) { 
@@ -85,6 +113,7 @@ void SpeechAudioDeviceFactory::NotifyText(const std::string& text, const std::st
     if(tts) {
       // Starting TTS via notifications, avoiding audio processor. Valuable for iOS.
       tts->start(false);
+      ApplyTTSVoice();
     }
   }
   if(_ttsDevice)
@@ -98,7 +127,7 @@ void SpeechAudioDeviceFactory::SpeakText(const std::string& text, const std::str
 
 void SpeechAudioDeviceFactory::AskLlama(const std::string& text, const std::string& language) { 
   if(_llamaDevice)
-    _llamaDevice->askLlama(text.c_str());
+    _llamaDevice->askLlama(text.c_str(), language.c_str());
 }
 
 void SpeechAudioDeviceFactory::SetWhisperModelFilename(absl::string_view whisper_model_filename) {
@@ -115,6 +144,26 @@ void SpeechAudioDeviceFactory::SetLlavaMMProjFilename(absl::string_view llava_mm
 
 void SpeechAudioDeviceFactory::SetWavFilename(absl::string_view wav_filename) {
   _wavFilename = wav_filename;
+}
+
+void SpeechAudioDeviceFactory::SetTalkingFaceImage(const std::string& path) {
+  _talkingFace = std::make_unique<TalkingFace>();
+  if (!_talkingFace->loadImage(path.c_str())) {
+    RTC_LOG(LS_ERROR) << "Failed to load talking face image: " << path;
+    _talkingFace.reset();
+  } else {
+    RTC_LOG(LS_INFO) << "Talking face loaded: " << path;
+  }
+}
+
+void SpeechAudioDeviceFactory::SetTalkingFaceImageFromMemory(const uint8_t* data, int size, int dummy1, int dummy2) {
+  _talkingFace = std::make_unique<TalkingFace>();
+  if (!_talkingFace->loadImageFromMemory(data, size, 0, 0)) {
+    RTC_LOG(LS_ERROR) << "Failed to load talking face image from memory";
+    _talkingFace.reset();
+  } else {
+    RTC_LOG(LS_INFO) << "Talking face loaded from memory";
+  }
 }
 
 void SpeechAudioDeviceFactory::SetYuvFilename(absl::string_view yuv_filename, int width, int height) {
@@ -150,6 +199,22 @@ AudioDeviceGeneric* SpeechAudioDeviceFactory::CreateSpeechAudioDevice() {
   }
 
   return static_cast<AudioDeviceGeneric*>(whisper_audio_device);
+}
+
+}  // namespace webrtc
+
+namespace webrtc {
+
+void SpeechAudioDeviceFactory::SetTTSVoice(const std::string& voice) {
+  _ttsVoice = voice;
+  ApplyTTSVoice();
+}
+
+void SpeechAudioDeviceFactory::ApplyTTSVoice() {
+  if (_ttsDevice && !_ttsVoice.empty() && !_ttsDevice->setVoice(_ttsVoice.c_str())) {
+    RTC_LOG(LS_WARNING) << "TTS backend has no voice cloning; ignoring voice "
+                        << _ttsVoice;
+  }
 }
 
 }  // namespace webrtc

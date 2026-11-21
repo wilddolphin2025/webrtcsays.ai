@@ -1,7 +1,7 @@
 /*
- *  (c) 2025, wilddolphin2022 
+ *  (c) 2025, wilddolphin2025 
  *  For WebRTCsays.ai project
- *  https://github.com/wilddolphin2022
+ *  https://github.com/wilddolphin2025
  *
  *  Use of this source code is governed by a BSD-style license
  *  that can be found in the LICENSE file in the root of the source
@@ -98,13 +98,56 @@ struct Options {
     std::string turns{};
     std::string vpn{};
     std::string camera{};
-    std::string bonjour_name{}; // Name for Bonjour advertisement/discovery
+    std::string talking_face{}; // Path to avatar image for animated face
+    std::string bonjour_name{};
     std::string user_name{}; // Name of this user (for registration)
     std::string target_name{}; // Name of user to call (for caller mode)
     std::string room_name{}; // Room name to join
     std::string language{}; // Language to use for speech
     std::vector<std::string> whispers{}; // Whispers to use for speech
+    int whisper_threads = 0; // 0 = auto (hardware_concurrency)
+    int llama_threads = 0;   // 0 = auto (hardware_concurrency)
+    int tts_threads = 0;     // 0 = auto (hardware_concurrency)
+    bool websocket_signaling = true;  // expose raw WebSocket signaling endpoint
+    int websocket_port = 3457;        // raw WebSocket signaling port
+    int call_setup_timeout_ms = 45000;  // INVITE -> media connected
+    int media_grace_ms = 10000;         // tolerated PeerConnection "disconnected"
+    int hangup_ack_timeout_ms = 2000;   // BYE -> 200 OK before force-close
+    std::string tts_voice{};            // default cloned voice (Pocket TTS clip name)
+    // Public signaling. Hostnames only; port and path come from the URL.
+    std::string signal_url{};           // wss://host:443/demo/ws
+    std::string token_file{};           // bearer token file; never logged
+    std::string token_env{"DIRECT_SIGNAL_TOKEN"};
+    bool token_in_query = false;        // default: Authorization header only
+    std::string turns_file{};           // JSON TURN account; credentials stay in the file
+    std::string ca_file{};              // PEM bundle for TLS verification
+    std::vector<std::string> stun_urls; // stun:host:port, hostnames only
+    std::string video_codec{};          // empty = H.264 then VP8/VP9; "h264" forces H.264
+    std::string video_source{};         // pattern, camera, or screen
+    int video_width = 0;
+    int video_height = 0;
+    int video_fps = 0;                  // 1..60, 30 if video is on and unset
+    int stats_interval_sec = 0;
+    int call_duration_sec = 0;
+    std::string audio{};                // "dummy" forces the fake audio device
+    std::string parse_error{};
 };
+
+struct SignalEndpoint {
+    bool ssl = true;
+    std::string host;
+    int port = 443;
+    std::string path{"/"};
+};
+
+bool IsNumericHost(const std::string& host);
+bool ParseSignalUrl(const std::string& url, SignalEndpoint& out, std::string& error);
+bool IceUrlUsesHostname(const std::string& url, std::string& error);
+std::string UrlEncode(const std::string& in);
+// Reads --token-file or the env named by token_env. The returned secret must
+// not be written to logs.
+std::string LoadSignalToken(const Options& opts, std::string& error);
+std::string AppendTokenQuery(std::string path, const std::string& token);
 
 // Function to parse command line string to above options
 DIRECT_API Options parseOptions(const char* argString);
@@ -117,10 +160,10 @@ DIRECT_API std::string getUsage(const Options opts);
 
 DIRECT_API void DirectSetLoggingLevel(LoggingSeverity level);
 
-DIRECT_API rtc::scoped_refptr<rtc::RTCCertificate> DirectLoadCertificateFromEnv(Options opts);
+DIRECT_API webrtc::scoped_refptr<webrtc::RTCCertificate> DirectLoadCertificateFromEnv(Options opts);
 DIRECT_API uint32_t DirectCreateRandomId();
 DIRECT_API std::string DirectCreateRandomUuid();
-DIRECT_API void DirectThreadSetName(rtc::Thread* thread, const char* name);
+DIRECT_API void DirectThreadSetName(webrtc::Thread* thread, const char* name);
 DIRECT_API webrtc::IceCandidateInterface* DirectCreateIceCandidate(const char* sdp_mid,
     int sdp_mline_index,
     const char* sdp,

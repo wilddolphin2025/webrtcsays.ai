@@ -18,12 +18,13 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <regex>
+#include <algorithm>
 #include "status.h"
 #include "video.h"
 #include "pc/video_track_source.h"
 
 // Forward declaration from peer.cc so we can create a camera source here.
-rtc::scoped_refptr<webrtc::VideoTrackSourceInterface>
+webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface>
 CreateCameraVideoSource(class DirectPeer*, const Options&);
 
 // DirectCallerClient Implementation
@@ -31,10 +32,10 @@ CreateCameraVideoSource(class DirectPeer*, const Options&);
 DirectCallerClient::DirectCallerClient(const Options& opts)
     : DirectCaller(opts), initialized_(false) {
     resolved_target_port_ = 0;   
-    if (!rtc::Thread::Current()) {
-        rtc::ThreadManager::Instance()->WrapCurrentThread();
+    if (!webrtc::Thread::Current()) {
+        webrtc::ThreadManager::Instance()->WrapCurrentThread();
     }
-    owner_thread_ = rtc::Thread::Current();
+    owner_thread_ = webrtc::Thread::Current();
     signaling_client_ = std::make_unique<DirectClient>(opts);
     // Busy when caller already in an active call
     signaling_client_->setIsBusyCallback([this]() {
@@ -65,7 +66,10 @@ DirectCallerClient::DirectCallerClient(const Options& opts)
     });    
 }
 
-DirectCallerClient::~DirectCallerClient() { Disconnect(); }
+DirectCallerClient::~DirectCallerClient() {
+    Disconnect();
+    Cleanup();
+}
 
 bool DirectCallerClient::Initialize() {
     if (initialized_) {
@@ -83,10 +87,55 @@ bool DirectCallerClient::Initialize() {
     return true;
 }
 
+bool DirectCallerClient::SendMessage(const std::string& message) {
+    if (browser_signaling_ && signaling_client_ && signaling_client_->isConnected() &&
+        signaling_client_->ws_client()) {
+        return signaling_client_->ws_client()->send_message(message);
+    }
+    return DirectCaller::SendMessage(message);
+}
+
+bool DirectCallerClient::ConnectSignalUrl(const std::string& url) {
+    SignalEndpoint endpoint;
+    std::string error;
+    if (!ParseSignalUrl(url, endpoint, error)) {
+        fprintf(stderr, "%s\n", error.c_str());
+        return false;
+    }
+    const std::string token = LoadSignalToken(opts_, error);
+    if (!error.empty()) {
+        fprintf(stderr, "%s\n", error.c_str());
+        return false;
+    }
+    std::string visible_path = endpoint.path;
+    const auto query = visible_path.find('?');
+    if (query != std::string::npos) visible_path.resize(query);
+    fprintf(stderr, "signaling %s://%s:%d%s tls_verify=on auth=%s\n",
+            endpoint.ssl ? "wss" : "ws", endpoint.host.c_str(), endpoint.port,
+            visible_path.c_str(), token.empty() ? "none" : "bearer");
+
+    auto* ws = signaling_client_->ws_client().get();
+    ws->set_allow_reconnect(false);
+    ws->set_reconnect_callback(nullptr);
+    ws->set_message_callback([this](const std::string& message) {
+        auto deliver = [this, message] { this->OnSignalingText(message); };
+        if (auto* nt = this->network_thread()) nt->PostTask(std::move(deliver));
+        else deliver();
+    });
+    if (!signaling_client_->connectToWebSocketUrl(endpoint, token)) return false;
+    browser_signaling_ = true;
+    MarkSessionStart();
+    BeginHandshake();
+    return true;
+}
+
 bool DirectCallerClient::Connect() {
     if (!initialized_) {
         APP_LOG(AS_ERROR) << "DirectCallerClient not initialized";
         return false;
+    }
+    if (!opts_.signal_url.empty()) {
+        return ConnectSignalUrl(opts_.signal_url);
     }
 
     // Set up callbacks for signaling server communication
@@ -108,18 +157,26 @@ bool DirectCallerClient::Connect() {
             this->onPeerAddressResolved(user_id, ip, port);
         });
 
-    // Try to connect to signaling server for name resolution
     std::string server_host; int server_port_int = 0;
     ParseIpAndPort(opts_.address, server_host, server_port_int);
+
+    bool is_local = (server_host == "127.0.0.1" || server_host == "localhost");
+    if (is_local && !opts_.target_name.empty()) {
+        fprintf(stderr, "Caller: local address, direct TCP to %s:%d\n",
+                server_host.c_str(), server_port_int);
+        bool ok = DirectCaller::Connect(server_host.c_str(), server_port_int);
+        fprintf(stderr, "Caller: Connect returned %s\n", ok ? "true" : "false");
+        return ok;
+    }
+
     if (!signaling_client_->connectToSignalingServer(server_host, std::to_string(server_port_int))) {
         APP_LOG(AS_WARNING) << "Failed to connect to signaling server, falling back to direct connection";
         
-        // Fall back to direct connection if target is specified
         if (!opts_.target_name.empty()) {
             APP_LOG(AS_INFO) << "DirectCallerClient: Attempting direct connection to " << opts_.target_name;
-            // For local testing, connect to localhost where callee is listening
-            std::string target_ip = "127.0.0.1";  // Local machine where callee is running
-            int target_port = 8888;  // Default port for DirectCallee
+            std::string target_ip;
+            int target_port = 0;
+            ParseIpAndPort(opts_.address, target_ip, target_port);
             
             APP_LOG(AS_INFO) << "DirectCallerClient: Connecting directly to " << target_ip << ":" << target_port;
             initiateWebRTCCall(target_ip, target_port);
@@ -145,9 +202,26 @@ bool DirectCallerClient::Connect() {
     std::string pub_ip;
     uint16_t    pub_port = 0;
     bool        stun_ok  = false;
-    int tmp_sock = ::socket(AF_INET, SOCK_DGRAM, 0);
+    std::string stun_host;
+    int stun_port = 19302;
+    if (!opts_.stun_urls.empty()) {
+        std::string rest = opts_.stun_urls.front();
+        const auto scheme = rest.find(':');
+        if (scheme != std::string::npos) rest = rest.substr(scheme + 1);
+        if (rest.rfind("//", 0) == 0) rest = rest.substr(2);
+        const auto cut = rest.find_first_of("/?");
+        if (cut != std::string::npos) rest = rest.substr(0, cut);
+        const auto colon = rest.rfind(':');
+        if (colon != std::string::npos && rest.find(':') == colon) {
+            stun_host = rest.substr(0, colon);
+            stun_port = std::atoi(rest.substr(colon + 1).c_str());
+        } else if (std::count(rest.begin(), rest.end(), ':') == 0) {
+            stun_host = rest;
+        }
+    }
+    int tmp_sock = stun_host.empty() ? -1 : ::socket(AF_INET, SOCK_DGRAM, 0);
     if (tmp_sock >= 0) {
-        stun_ok = stun_discover(tmp_sock, "stun.l.google.com", 19302,
+        stun_ok = stun_discover(tmp_sock, stun_host.c_str(), stun_port,
                                   pub_ip, pub_port);
         ::close(tmp_sock);
     }
@@ -242,9 +316,9 @@ bool DirectCallerClient::IsConnected() const {
 }
 
 void DirectCallerClient::RunOnBackgroundThread() {
-    // If we are currently on an rtc::Thread (i.e., WebRTC internal thread),
+    // If we are currently on an webrtc::Thread (i.e., WebRTC internal thread),
     // spawn a native thread to satisfy the DCHECK in DirectApplication.
-    if (rtc::Thread::Current()) {
+    if (webrtc::Thread::Current()) {
         std::thread([this]() {
             DirectCaller::RunOnBackgroundThread();
         }).detach();
@@ -405,6 +479,7 @@ DirectCalleeClient::DirectCalleeClient(const Options& opts)
 
 DirectCalleeClient::~DirectCalleeClient() {
     StopListening();
+    Cleanup();
 }
 
 bool DirectCalleeClient::Initialize() {
@@ -483,13 +558,13 @@ bool DirectCalleeClient::StartListening() {
     // Forward raw INVITE lines (with JSON payload) so DirectPeer can extract agent info.
     signaling_client_->setInviteReceivedCallback([this](const std::string& raw_message) {
         // Pass through to DirectPeer message handler; no socket context in WSS path.
-        this->HandleMessage(nullptr, raw_message, rtc::SocketAddress());
+        this->HandleMessage(nullptr, raw_message, webrtc::SocketAddress());
     });
     
     // Forward raw WAITING lines (with JSON payload) so DirectPeer can extract agent info.
     signaling_client_->setWaitingReceivedCallback([this](const std::string& raw_message) {
         // Pass through to DirectPeer message handler; no socket context in WSS path.
-        this->HandleMessage(nullptr, raw_message, rtc::SocketAddress());
+        this->HandleMessage(nullptr, raw_message, webrtc::SocketAddress());
     });
 
     // Try to connect to signaling server to register our presence
@@ -497,8 +572,17 @@ bool DirectCalleeClient::StartListening() {
     std::string server_host; int server_port_int = 0;
     ParseIpAndPort(signaling_address, server_host, server_port_int);
 
-    auto try_register = [this, server_host, server_port_int]() {
-        const int kMaxAttempts = 30; // ~30 seconds with 1-s spacing
+    // Skip signaling server if it points to our own listener (would self-connect)
+    bool is_self = (server_host == "127.0.0.1" || server_host == "localhost" || server_host == "0.0.0.0")
+                   && server_port_int == local_port_;
+    if (is_self) {
+        fprintf(stderr, "Callee: signaling address matches own listener, skipping self-connect\n");
+    }
+
+    auto try_register = [this, server_host, server_port_int, is_self]() {
+        if (is_self) return;
+
+        const int kMaxAttempts = 30;
         int attempt = 0;
         while (!this->should_quit_.load() && attempt < kMaxAttempts) {
             if (signaling_client_->connectToSignalingServer(server_host, std::to_string(server_port_int))) {
@@ -506,7 +590,7 @@ bool DirectCalleeClient::StartListening() {
                 signaling_client_->registerWithRoom(opts_.room_name);
                 publishAddressToSignalingServer();
                 APP_LOG(AS_INFO) << "DirectCalleeClient registered with signaling server";
-                return; // success
+                return;
             }
             ++attempt;
             APP_LOG(AS_WARNING) << "Attempt " << attempt << " to connect to signaling server failed – retrying in 1 s";
@@ -584,38 +668,38 @@ void DirectCalleeClient::ResetConnectionClosedEvent() {
 }
 
 void DirectCalleeClient::SignalQuit() {
-    // Fire-and-forget cleanup so the main thread can continue immediately.
-    auto self = shared_from_this();
-    std::thread([self]() mutable {
-        APP_LOG(AS_INFO) << "DirectCalleeClient: Async quit starting";
+    APP_LOG(AS_INFO) << "DirectCalleeClient: synchronous quit starting";
+    shutting_down_.store(true);
+    should_quit_.store(true);
+    listening_ = false;
 
-        // Close sockets on the correct (network) thread to avoid race with
-        // rtc::PhysicalSocketServer internals.
-        if (self->tcp_socket_) {
-            auto s = self->tcp_socket_.release();
-            self->network_thread()->PostTask([s]() {
-                s->Close();
-                delete s;
-            });
+    auto close_tcp = [this]() {
+        if (tcp_socket_) {
+            auto* s = tcp_socket_.release();
+            s->Close();
+            delete s;
         }
+    };
+    if (network_thread() && !network_thread()->IsCurrent()) {
+        network_thread()->BlockingCall(close_tcp);
+    } else {
+        close_tcp();
+    }
 
-        if (self->listen_socket_) {
-            auto ls = std::move(self->listen_socket_);
-            self->network_thread()->PostTask([ls = std::move(ls)]() mutable {
-                ls.reset();
-            });
+    auto close_listener = [this]() {
+        if (listen_socket_) {
+            listen_socket_.reset();
         }
+    };
+    if (network_thread() && !network_thread()->IsCurrent()) {
+        network_thread()->BlockingCall(close_listener);
+    } else {
+        close_listener();
+    }
 
-        // Heavy WebRTC teardown runs on the signaling thread; no need to wait.
-        self->signaling_thread()->PostTask([self]() {
-            self->DirectApplication::Disconnect();
-        });
-
-        // Signal any WaitUntilConnectionClosed() callers right away.
-        self->connection_closed_event_.Set();
-
-        APP_LOG(AS_INFO) << "DirectCalleeClient: Async quit posted";
-    }).detach();
+    DirectApplication::Disconnect();
+    connection_closed_event_.Set();
+    APP_LOG(AS_INFO) << "DirectCalleeClient: synchronous quit complete";
 }
 
 // -------------------------------------------------------------------
@@ -659,9 +743,14 @@ void DirectCalleeClient::setupWebRTCListener() {
     // Ensure a local video source is ready so the SDP answer advertises sendrecv.
     if (opts_.video) {
         if (!video_source_) {
-            if (!opts_.camera.empty()) {
+            // When using a talking-face avatar, defer video source creation
+            // until the offer/answer path so the PeerConnection attaches the
+            // avatar source instead of seeding an Echo source here.
+            if (!opts_.talking_face.empty()) {
+                APP_LOG(AS_INFO) << "Callee will create talking-face source during answer setup";
+            } else if (!opts_.camera.empty()) {
                 
-                if (rtc::Thread::Current() == signaling_thread()) {
+                if (webrtc::Thread::Current() == signaling_thread()) {
                     video_source_ = CreateCameraVideoSource(this, opts_);
                 } else {
                     signaling_thread()->BlockingCall([this]() {
@@ -669,14 +758,14 @@ void DirectCalleeClient::setupWebRTCListener() {
                     });
                 }                
             }
-            if (!video_source_) {
+            if (!video_source_ && opts_.talking_face.empty()) {
                 APP_LOG(AS_INFO) << "Callee fallback to synthetic video source";
-                if (rtc::Thread::Current() == signaling_thread()) {
-                    auto src = rtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
+                if (webrtc::Thread::Current() == signaling_thread()) {
+                    auto src = webrtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
                     video_source_ = src;
                 } else {
                     signaling_thread()->BlockingCall([this]() {
-                        auto src = rtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
+                        auto src = webrtc::make_ref_counted<webrtc::EchoVideoTrackSource>();
                         video_source_ = src;
                     });
                 }
@@ -830,7 +919,7 @@ void DirectCalleeClient::onIncomingCall(const std::string& peer_id, const std::s
         }
 
         // Set the remote description asynchronously, then generate the answer.
-        set_remote_description_observer_ = rtc::make_ref_counted<LambdaSetRemoteDescriptionObserver>(
+        set_remote_description_observer_ = webrtc::make_ref_counted<LambdaSetRemoteDescriptionObserver>(
             [this, peer_id](webrtc::RTCError error) {
                 if (!error.ok()) {
                     APP_LOG(AS_ERROR) << "DirectCalleeClient: Failed to set remote description: " << error.message();
@@ -855,7 +944,7 @@ void DirectCalleeClient::createAndSendAnswer(const std::string& peer_id) {
 
     webrtc::PeerConnectionInterface::RTCOfferAnswerOptions answer_opts;
 
-    create_session_observer_ = rtc::make_ref_counted<LambdaCreateSessionDescriptionObserver>(
+    create_session_observer_ = webrtc::make_ref_counted<LambdaCreateSessionDescriptionObserver>(
         [this, peer_id](std::unique_ptr<webrtc::SessionDescriptionInterface> desc) {
             std::string local_sdp;
             desc->ToString(&local_sdp);
@@ -888,7 +977,7 @@ void DirectCalleeClient::createAndSendAnswer(const std::string& peer_id) {
                 return;
             }
 
-            set_local_description_observer_ = rtc::make_ref_counted<LambdaSetLocalDescriptionObserver>(
+            set_local_description_observer_ = webrtc::make_ref_counted<LambdaSetLocalDescriptionObserver>(
                 [this, peer_id, local_sdp](webrtc::RTCError error) {
                     if (!error.ok()) {
                         APP_LOG(AS_ERROR) << "DirectCalleeClient: Failed to set local description: " << error.message();
@@ -949,14 +1038,16 @@ void DirectCalleeClient::OnIceCandidate(const webrtc::IceCandidateInterface* can
     APP_LOG(AS_INFO) << "DirectCalleeClient: Sending ICE candidate: " << json_candidate;
 
     const std::string target_id = !active_peer_id_.empty() ? active_peer_id_ : opts_.target_name;
-    if (signaling_client_) {
+    if (signaling_client_ && signaling_client_->isConnected()) {
         signaling_client_->sendIceCandidate(target_id, json_candidate);
     } else {
-        APP_LOG(AS_ERROR) << "DirectCalleeClient: signaling_client_ is null - cannot send ICE candidate";
+        // Fallback: send as raw text string over the local TCP socket to signal_bridge
+        std::string raw_ice = "ICE:" + std::to_string(mline_index) + ":" + sdp;
+        SendMessage(raw_ice);
     }
 
     // Optionally still call base to keep internal bookkeeping but suppress raw socket send
-    // We skip DirectPeer::OnIceCandidate to avoid SendMessage use.
+    // We skip DirectPeer::OnIceCandidate to avoid SendMessage use unless fallback triggers.
 }
 
 void DirectCalleeClient::OnIceConnectionChange(webrtc::PeerConnectionInterface::IceConnectionState new_state) {
@@ -1012,7 +1103,7 @@ DirectClient::DirectClient(const Options& opts)
     invite_received_callback_ = nullptr;
     waiting_received_callback_ = nullptr;
     // Create a dedicated network thread for WebSocket operations first
-    network_thread_ = rtc::Thread::CreateWithSocketServer();
+    network_thread_ = webrtc::Thread::CreateWithSocketServer();
     network_thread_->SetName("WebSocketNetworkThread", nullptr);
     network_thread_->Start();
 
@@ -1044,7 +1135,7 @@ DirectClient::~DirectClient() {
     if (network_thread_) {
         auto* nt = network_thread_.get();
 
-        if (rtc::Thread::Current() == nt) {
+        if (webrtc::Thread::Current() == nt) {
             // Already executing on the network thread – cannot use BlockingCall
             // and cannot join this thread from itself.  Do immediate cleanup
             // then hand-off the join to a detached std::thread.
@@ -1070,7 +1161,7 @@ DirectClient::~DirectClient() {
         } else {
             // Normal case – we are on a different thread and can block.
             if (ws_client_) {
-                rtc::Event done;
+                webrtc::Event done;
                 nt->PostTask([this, &done]() {
                     ws_client_->set_allow_reconnect(false);
                     ws_client_->disconnect();
@@ -1090,6 +1181,36 @@ DirectClient::~DirectClient() {
         // No network thread – just delete client if still present.
         ws_client_.reset();
     }
+}
+
+bool DirectClient::connectToWebSocketUrl(const SignalEndpoint& endpoint,
+                                           const std::string& token) {
+    if (connected_) return true;
+    WebSocketClient::Config cfg;
+    cfg.host = endpoint.host;
+    cfg.port = std::to_string(endpoint.port);
+    cfg.use_ssl = endpoint.ssl;
+    cfg.verify_tls = endpoint.ssl;
+    cfg.ca_file = opts_.ca_file;
+    cfg.cert_file_path = opts_.webrtc_cert_path;
+    cfg.key_file_path = opts_.webrtc_key_path;
+    cfg.headers["path"] = (opts_.token_in_query && !token.empty())
+                              ? AppendTokenQuery(endpoint.path, token)
+                              : endpoint.path;
+    if (!token.empty()) cfg.headers["Authorization"] = "Bearer " + token;
+    if (!ws_client_->connect(cfg)) {
+        APP_LOG(AS_ERROR) << "Failed to connect signaling WebSocket";
+        return false;
+    }
+    if (!ws_client_->send_websocket_handshake_with_headers()) {
+        APP_LOG(AS_ERROR) << "WebSocket HTTP handshake failed";
+        return false;
+    }
+    ws_client_->start_listening();
+    connected_ = true;
+    APP_LOG(AS_INFO) << "Connected to signaling WebSocket host " << cfg.host
+                     << " port " << cfg.port;
+    return true;
 }
 
 bool DirectClient::connectToSignalingServer(const std::string& server_host,

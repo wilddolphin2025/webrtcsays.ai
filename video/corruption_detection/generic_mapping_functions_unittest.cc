@@ -27,6 +27,7 @@ constexpr int kChromaThresholdVp8 = 6;
 constexpr int kChromaThresholdVp9 = 4;
 constexpr int kChromaThresholdAv1 = 4;
 constexpr int kChromaThresholdH264 = 2;
+constexpr int kChromaThresholdH265 = 4;
 
 TEST(GenericMappingFunctionsTest, TestVp8) {
   constexpr VideoCodecType kCodecType = VideoCodecType::kVideoCodecVP8;
@@ -54,8 +55,9 @@ TEST(GenericMappingFunctionsTest, TestVp9) {
   EXPECT_THAT(GetCorruptionFilterSettings(/*qp=*/200, kCodecType),
               FieldsAre(DoubleNear(3.8088, kMaxAbsoluteError), kLumaThreshold,
                         kChromaThresholdVp9));
+  // Cap to legal range [0, 40].
   EXPECT_THAT(GetCorruptionFilterSettings(/*qp=*/255, kCodecType),
-              FieldsAre(DoubleNear(127.8, kMaxAbsoluteError), kLumaThreshold,
+              FieldsAre(DoubleNear(40.0, kMaxAbsoluteError), kLumaThreshold,
                         kChromaThresholdVp9));
 }
 
@@ -70,8 +72,9 @@ TEST(GenericMappingFunctionsTest, TestAv1) {
   EXPECT_THAT(GetCorruptionFilterSettings(/*qp=*/200, kCodecType),
               FieldsAre(DoubleNear(2.8842, kMaxAbsoluteError), kLumaThreshold,
                         kChromaThresholdAv1));
+  // Cap to legal range [0, 40].
   EXPECT_THAT(GetCorruptionFilterSettings(/*qp=*/255, kCodecType),
-              FieldsAre(DoubleNear(176.37, kMaxAbsoluteError), kLumaThreshold,
+              FieldsAre(DoubleNear(40, kMaxAbsoluteError), kLumaThreshold,
                         kChromaThresholdAv1));
 }
 
@@ -83,9 +86,24 @@ TEST(GenericMappingFunctionsTest, TestH264) {
   EXPECT_THAT(GetCorruptionFilterSettings(/*qp=*/30, kCodecType),
               FieldsAre(DoubleNear(4.3047, kMaxAbsoluteError), kLumaThreshold,
                         kChromaThresholdH264));
+  // Cap to legal range [0, 40].
   EXPECT_THAT(GetCorruptionFilterSettings(/*qp=*/51, kCodecType),
-              FieldsAre(DoubleNear(81.0346, kMaxAbsoluteError), kLumaThreshold,
+              FieldsAre(DoubleNear(40.0, kMaxAbsoluteError), kLumaThreshold,
                         kChromaThresholdH264));
+}
+
+TEST(GenericMappingFunctionsTest, TestH265) {
+  constexpr VideoCodecType kCodecType = VideoCodecType::kVideoCodecH265;
+  EXPECT_THAT(GetCorruptionFilterSettings(/*qp=*/10, kCodecType),
+              FieldsAre(DoubleNear(0.481, kMaxAbsoluteError), kLumaThreshold,
+                        kChromaThresholdH265));
+  EXPECT_THAT(GetCorruptionFilterSettings(/*qp=*/30, kCodecType),
+              FieldsAre(DoubleNear(2.2818, kMaxAbsoluteError), kLumaThreshold,
+                        kChromaThresholdH265));
+  // Cap to legal range [0, 40].
+  EXPECT_THAT(GetCorruptionFilterSettings(/*qp=*/51, kCodecType),
+              FieldsAre(DoubleNear(40.0, kMaxAbsoluteError), kLumaThreshold,
+                        kChromaThresholdH265));
 }
 
 }  // namespace

@@ -10,36 +10,47 @@
 
 #include <memory>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "api/environment/environment.h"
+#include "api/rtp_header_extension_id.h"
+#include "api/rtp_parameters.h"
+#include "api/test/video/function_video_decoder_factory.h"
 #include "api/test/video/function_video_encoder_factory.h"
+#include "api/units/timestamp.h"
 #include "api/video/color_space.h"
+#include "api/video/video_frame.h"
 #include "api/video/video_rotation.h"
+#include "api/video/video_sink_interface.h"
+#include "api/video_codecs/sdp_video_format.h"
+#include "api/video_codecs/video_codec.h"
+#include "api/video_codecs/video_decoder_factory.h"
+#include "api/video_codecs/video_encoder_factory.h"
+#include "call/video_receive_stream.h"
+#include "call/video_send_stream.h"
 #include "common_video/test/utilities.h"
-#include "media/base/codec.h"
 #include "media/base/media_constants.h"
-#include "media/engine/internal_decoder_factory.h"
-#include "media/engine/internal_encoder_factory.h"
 #include "modules/video_coding/codecs/h264/include/h264.h"
 #include "modules/video_coding/codecs/vp8/include/vp8.h"
 #include "modules/video_coding/codecs/vp9/include/vp9.h"
 #include "test/call_test.h"
-#include "test/encoder_settings.h"
-#include "test/field_trial.h"
+#include "test/frame_generator_capturer.h"
 #include "test/gtest.h"
+#include "test/time_controller/simulated_time_controller.h"
 #include "test/video_test_constants.h"
+#include "video/config/video_encoder_config.h"
 
 namespace webrtc {
 namespace {
-enum : int {  // The first valid value is 1.
-  kColorSpaceExtensionId = 1,
-  kVideoRotationExtensionId,
-};
-}  // namespace
+constexpr RtpHeaderExtensionId kColorSpaceExtensionId(1);
+constexpr RtpHeaderExtensionId kVideoRotationExtensionId(2);
 
 class CodecEndToEndTest : public test::CallTest {
  public:
-  CodecEndToEndTest() {
+  CodecEndToEndTest()
+      : CallTest(std::make_unique<GlobalSimulatedTimeController>(
+            /*start_time=*/Timestamp::Seconds(1))) {
     RegisterRtpExtension(
         RtpExtension(RtpExtension::kColorSpaceUri, kColorSpaceExtensionId));
     RegisterRtpExtension(RtpExtension(RtpExtension::kVideoRotationUri,
@@ -48,7 +59,7 @@ class CodecEndToEndTest : public test::CallTest {
 };
 
 class CodecObserver : public test::EndToEndTest,
-                      public rtc::VideoSinkInterface<VideoFrame> {
+                      public VideoSinkInterface<VideoFrame> {
  public:
   CodecObserver(int no_frames_to_wait_for,
                 VideoRotation rotation_to_test,
@@ -68,7 +79,7 @@ class CodecObserver : public test::EndToEndTest,
         frame_counter_(0) {}
 
   void PerformTest() override {
-    EXPECT_TRUE(Wait())
+    EXPECT_TRUE(Wait(time_controller()))
         << "Timed out while waiting for enough frames to be decoded.";
   }
 
@@ -207,20 +218,20 @@ TEST_F(CodecEndToEndTest,
 class EndToEndTestH264 : public test::CallTest,
                          public ::testing::WithParamInterface<std::string> {
  public:
-  EndToEndTestH264() : field_trial_(GetParam()) {
+  EndToEndTestH264()
+      : CallTest(std::make_unique<GlobalSimulatedTimeController>(
+            /*start_time=*/Timestamp::Seconds(1))) {
+    field_trials().Set("WebRTC-SpsPpsIdrIsH264Keyframe", GetParam());
     RegisterRtpExtension(RtpExtension(RtpExtension::kVideoRotationUri,
                                       kVideoRotationExtensionId));
   }
-
- private:
-  test::ScopedFieldTrials field_trial_;
 };
 
 INSTANTIATE_TEST_SUITE_P(
     SpsPpsIdrIsKeyframe,
     EndToEndTestH264,
-    ::testing::Values("WebRTC-SpsPpsIdrIsH264Keyframe/Disabled/",
-                      "WebRTC-SpsPpsIdrIsH264Keyframe/Enabled/"));
+    ::testing::Values(/*WebRTC-SpsPpsIdrIsH264Keyframe*/ "Disabled",
+                      /*WebRTC-SpsPpsIdrIsH264Keyframe*/ "Enabled"));
 
 TEST_P(EndToEndTestH264, SendsAndReceivesH264) {
   test::FunctionVideoEncoderFactory encoder_factory(
@@ -247,8 +258,8 @@ TEST_P(EndToEndTestH264, SendsAndReceivesH264VideoRotation90) {
 }
 
 TEST_P(EndToEndTestH264, SendsAndReceivesH264PacketizationMode0) {
-  SdpVideoFormat codec(cricket::kH264CodecName);
-  codec.parameters[cricket::kH264FmtpPacketizationMode] = "0";
+  SdpVideoFormat codec(kH264CodecName);
+  codec.parameters[kH264FmtpPacketizationMode] = "0";
   test::FunctionVideoEncoderFactory encoder_factory(
       [codec](const Environment& env, const SdpVideoFormat& format) {
         return CreateH264Encoder(env, H264EncoderSettings::Parse(codec));
@@ -261,8 +272,8 @@ TEST_P(EndToEndTestH264, SendsAndReceivesH264PacketizationMode0) {
 }
 
 TEST_P(EndToEndTestH264, SendsAndReceivesH264PacketizationMode1) {
-  SdpVideoFormat codec(cricket::kH264CodecName);
-  codec.parameters[cricket::kH264FmtpPacketizationMode] = "1";
+  SdpVideoFormat codec(kH264CodecName);
+  codec.parameters[kH264FmtpPacketizationMode] = "1";
   test::FunctionVideoEncoderFactory encoder_factory(
       [codec](const Environment& env, const SdpVideoFormat& format) {
         return CreateH264Encoder(env, H264EncoderSettings::Parse(codec));
@@ -275,4 +286,5 @@ TEST_P(EndToEndTestH264, SendsAndReceivesH264PacketizationMode1) {
 }
 #endif  // defined(WEBRTC_USE_H264)
 
+}  // namespace
 }  // namespace webrtc

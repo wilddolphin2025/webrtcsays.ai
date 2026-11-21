@@ -11,14 +11,29 @@
 #include "video/encoder_bitrate_adjuster.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "api/field_trials_view.h"
+#include "api/units/data_rate.h"
+#include "api/units/data_size.h"
+#include "api/units/time_delta.h"
+#include "api/units/timestamp.h"
+#include "api/video/video_bitrate_allocation.h"
+#include "api/video/video_codec_constants.h"
+#include "api/video/video_codec_type.h"
+#include "api/video_codecs/video_codec.h"
+#include "api/video_codecs/video_encoder.h"
 #include "modules/video_coding/svc/scalability_mode_util.h"
+#include "rtc_base/checks.h"
 #include "rtc_base/experiments/rate_control_settings.h"
 #include "rtc_base/logging.h"
-#include "rtc_base/time_utils.h"
+#include "system_wrappers/include/clock.h"
+#include "video/encoder_overshoot_detector.h"
+#include "video/rate_utilization_tracker.h"
 
 namespace webrtc {
 namespace {
@@ -41,9 +56,6 @@ struct LayerRateInfo {
   }
 };
 }  // namespace
-constexpr TimeDelta EncoderBitrateAdjuster::kWindowSize;
-constexpr size_t EncoderBitrateAdjuster::kMinFramesSinceLayoutChange;
-constexpr double EncoderBitrateAdjuster::kDefaultUtilizationFactor;
 
 EncoderBitrateAdjuster::EncoderBitrateAdjuster(
     const VideoCodec& codec_settings,
@@ -64,9 +76,16 @@ EncoderBitrateAdjuster::EncoderBitrateAdjuster(
   if (codec_settings.codecType == VideoCodecType::kVideoCodecAV1 &&
       codec_settings.numberOfSimulcastStreams <= 1 &&
       codec_settings.GetScalabilityMode().has_value()) {
-    for (int si = 0; si < ScalabilityModeToNumSpatialLayers(
-                              *(codec_settings.GetScalabilityMode()));
-         ++si) {
+    const int num_spatial_layers = ScalabilityModeToNumSpatialLayers(
+        *(codec_settings.GetScalabilityMode()));
+    for (int si = 0; si < num_spatial_layers; ++si) {
+      if (si >= static_cast<int>(kMaxSpatialLayers)) {
+        RTC_LOG(LS_WARNING)
+            << "AV1 scalability mode specifies " << num_spatial_layers
+            << " spatial layers, which exceeds kMaxSpatialLayers ("
+            << kMaxSpatialLayers << ")";
+        break;
+      }
       if (codec_settings.spatialLayers[si].active) {
         min_bitrates_bps_[si] =
             std::max(codec_settings.minBitrate * 1000,
@@ -76,6 +95,13 @@ EncoderBitrateAdjuster::EncoderBitrateAdjuster(
   } else if (codec_settings.codecType == VideoCodecType::kVideoCodecVP9 &&
              codec_settings.numberOfSimulcastStreams <= 1) {
     for (size_t si = 0; si < codec_settings.VP9().numberOfSpatialLayers; ++si) {
+      if (si >= kMaxSpatialLayers) {
+        RTC_LOG(LS_WARNING)
+            << "VP9 specifies " << codec_settings.VP9().numberOfSpatialLayers
+            << " spatial layers, which exceeds kMaxSpatialLayers ("
+            << kMaxSpatialLayers << ")";
+        break;
+      }
       if (codec_settings.spatialLayers[si].active) {
         min_bitrates_bps_[si] =
             std::max(codec_settings.minBitrate * 1000,
@@ -84,6 +110,13 @@ EncoderBitrateAdjuster::EncoderBitrateAdjuster(
     }
   } else {
     for (size_t si = 0; si < codec_settings.numberOfSimulcastStreams; ++si) {
+      if (si >= kMaxSpatialLayers) {
+        RTC_LOG(LS_WARNING)
+            << "Codec specifies " << codec_settings.numberOfSimulcastStreams
+            << " simulcast streams, which exceeds kMaxSpatialLayers ("
+            << kMaxSpatialLayers << ")";
+        break;
+      }
       if (codec_settings.simulcastStream[si].active) {
         min_bitrates_bps_[si] =
             std::max(codec_settings.minBitrate * 1000,
@@ -360,6 +393,12 @@ void EncoderBitrateAdjuster::OnEncoderInfo(
   // Copy allocation into current state and re-allocate.
   for (size_t si = 0; si < kMaxSpatialLayers; ++si) {
     current_fps_allocation_[si] = encoder_info.fps_allocation[si];
+    if (current_fps_allocation_[si].size() > kMaxTemporalStreams) {
+      RTC_LOG(LS_WARNING) << "fps_allocation has more than "
+                          << kMaxTemporalStreams
+                          << " temporal streams. Truncating.";
+      current_fps_allocation_[si].resize(kMaxTemporalStreams);
+    }
   }
 
   // Trigger re-allocation so that overshoot detectors have correct targets.
@@ -369,15 +408,44 @@ void EncoderBitrateAdjuster::OnEncoderInfo(
 void EncoderBitrateAdjuster::OnEncodedFrame(DataSize size,
                                             int stream_index,
                                             int temporal_index) {
+  if (stream_index < 0 || stream_index >= static_cast<int>(kMaxSpatialLayers) ||
+      temporal_index < 0 ||
+      temporal_index >= static_cast<int>(kMaxTemporalStreams)) {
+    RTC_LOG(LS_WARNING) << "OnEncodedFrame called with invalid layer: "
+                        << "stream_index = " << stream_index
+                        << ", temporal_index = " << temporal_index;
+    return;
+  }
+
   ++frames_since_layout_change_;
   // Detectors may not exist, for instance if ScreenshareLayers is used.
   auto& detector = overshoot_detectors_[stream_index][temporal_index];
   if (detector) {
-    detector->OnEncodedFrame(size.bytes(), rtc::TimeMillis());
+    // Due to http://bugs.webrtc.org/439515766, and sensitivity of some
+    // bandwidth estimation algorithms, this must round down to maintain
+    // behavior with TimeMillis. This may be removed either by migrating the
+    // whole algorithm to use Timestamp/TimeDelta, or when TimeMillis has been
+    // removed.
+    detector->OnEncodedFrame(size.bytes(), clock_.TimeInMicroseconds() / 1000);
   }
   if (media_rate_trackers_[stream_index]) {
     media_rate_trackers_[stream_index]->OnDataProduced(size,
                                                        clock_.CurrentTime());
+  }
+}
+
+void EncoderBitrateAdjuster::OnFrameDropped() {
+  for (size_t si = 0; si < kMaxSpatialLayers; ++si) {
+    for (size_t ti = 0; ti < kMaxTemporalStreams; ++ti) {
+      if (overshoot_detectors_[si][ti]) {
+        overshoot_detectors_[si][ti]->OnEncodedFrame(
+            /*bytes=*/0, clock_.TimeInMicroseconds() / 1000);
+      }
+    }
+    if (media_rate_trackers_[si]) {
+      media_rate_trackers_[si]->OnDataProduced(DataSize::Zero(),
+                                               clock_.CurrentTime());
+    }
   }
 }
 

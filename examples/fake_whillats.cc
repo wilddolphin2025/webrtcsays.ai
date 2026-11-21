@@ -1,7 +1,7 @@
 /*
- *  (c) 2025, wilddolphin2022 
+ *  (c) 2025, wilddolphin2025 
  *  For WebRTCsays.ai project
- *  https://github.com/wilddolphin2022
+ *  https://github.com/wilddolphin2025
  *
  *  Use of this source code is governed by a BSD-style license
  *  that can be found in the LICENSE file in the root of the source
@@ -57,4 +57,4 @@ WhillatsLlama::~WhillatsLlama() {}
 
 bool WhillatsLlama::start() { return false; }
 void WhillatsLlama::stop() {}
-void WhillatsLlama::askLlama(const char*) {}
+void WhillatsLlama::askLlama(const char*, const char*) {}

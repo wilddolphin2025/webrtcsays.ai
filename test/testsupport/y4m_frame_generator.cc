@@ -10,55 +10,48 @@
 
 #include "test/testsupport/y4m_frame_generator.h"
 
-#include <stdio.h>
-#include <string.h>
-
+#include <cstdio>
+#include <cstring>
+#include <optional>
 #include <string>
 
 #include "absl/strings/string_view.h"
 #include "api/scoped_refptr.h"
+#include "api/test/frame_generator_interface.h"
 #include "api/video/i420_buffer.h"
+#include "api/video/video_frame.h"
 #include "rtc_base/checks.h"
 #include "test/testsupport/frame_reader.h"
+#include "test/testsupport/y4m_header_parser.h"
 
 namespace webrtc {
 namespace test {
 
-namespace {
-// Reading 30 bytes from the Y4M header should be enough to get width
-// and heigth.
-// The header starts with: `YUV4MPEG2 W<WIDTH> H<HEIGTH>`.
-constexpr int kHeaderBytesToRead = 30;
-}  // namespace
-
 Y4mFrameGenerator::Y4mFrameGenerator(absl::string_view filename,
                                      RepeatMode repeat_mode)
     : filename_(filename), repeat_mode_(repeat_mode) {
-  // Read resolution from the Y4M header.
-  FILE* file = fopen(filename_.c_str(), "r");
-  RTC_CHECK(file != NULL) << "Cannot open " << filename_;
-  char header[kHeaderBytesToRead];
-  RTC_CHECK(fgets(header, sizeof(header), file) != nullptr)
-      << "File " << filename_ << " is too small";
-  fclose(file);
-  int fps_denominator;
-  RTC_CHECK_EQ(sscanf(header, "YUV4MPEG2 W%zu H%zu F%i:%i", &width_, &height_,
-                      &fps_, &fps_denominator),
-               4);
-  fps_ /= fps_denominator;
-  RTC_CHECK_GT(width_, 0);
-  RTC_CHECK_GT(height_, 0);
+  std::optional<Y4mHeader> header = ParseY4mHeaderFromFile(filename_);
+  RTC_CHECK(header.has_value()) << "Cannot parse Y4M header in " << filename_;
+  RTC_CHECK(header->framerate.has_value())
+      << "Framerate not specified in Y4M header in " << filename_;
+
+  width_ = static_cast<size_t>(header->resolution.width);
+  height_ = static_cast<size_t>(header->resolution.height);
+  // Truncate to integer fps to match legacy behavior (e.g. 24000/1001 -> 23
+  // fps).
+  fps_ = static_cast<int>(header->framerate->millihertz() / 1000);
 
   // Delegate the actual reads (from NextFrame) to a Y4mReader.
-  frame_reader_ = webrtc::test::CreateY4mFrameReader(
+  frame_reader_ = test::CreateY4mFrameReader(
       filename_, ToYuvFrameReaderRepeatMode(repeat_mode_));
 }
 
 Y4mFrameGenerator::VideoFrameData Y4mFrameGenerator::NextFrame() {
-  webrtc::VideoFrame::UpdateRect update_rect{0, 0, static_cast<int>(width_),
-                                             static_cast<int>(height_)};
-  rtc::scoped_refptr<webrtc::I420Buffer> next_frame_buffer =
-      frame_reader_->PullFrame();
+  VideoFrame::UpdateRect update_rect{.offset_x = 0,
+                                     .offset_y = 0,
+                                     .width = static_cast<int>(width_),
+                                     .height = static_cast<int>(height_)};
+  scoped_refptr<I420Buffer> next_frame_buffer = frame_reader_->PullFrame();
 
   if (!next_frame_buffer ||
       (static_cast<size_t>(next_frame_buffer->width()) == width_ &&
@@ -67,9 +60,8 @@ Y4mFrameGenerator::VideoFrameData Y4mFrameGenerator::NextFrame() {
   }
 
   // Allocate a new buffer and return scaled version.
-  rtc::scoped_refptr<webrtc::I420Buffer> scaled_buffer(
-      I420Buffer::Create(width_, height_));
-  webrtc::I420Buffer::SetBlack(scaled_buffer.get());
+  scoped_refptr<I420Buffer> scaled_buffer(I420Buffer::Create(width_, height_));
+  I420Buffer::SetBlack(scaled_buffer.get());
   scaled_buffer->ScaleFrom(*next_frame_buffer->ToI420());
   return VideoFrameData(scaled_buffer, update_rect);
 }

@@ -8,27 +8,33 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <cstddef>
+#include <cstdint>
+#include <span>
 #include <string>
-#include <utility>
 #include <vector>
 
+#include "api/rtp_header_extension_id.h"
+#include "api/rtp_headers.h"
+#include "api/rtp_parameters.h"
+#include "call/audio_receive_stream.h"
+#include "call/audio_send_stream.h"
 #include "modules/rtp_rtcp/include/rtp_header_extension_map.h"
 #include "modules/rtp_rtcp/source/rtp_header_extensions.h"
 #include "modules/rtp_rtcp/source/rtp_packet.h"
+#include "rtc_base/logging.h"
 #include "test/call_test.h"
-#include "test/field_trial.h"
 #include "test/gtest.h"
 #include "test/rtcp_packet_parser.h"
+#include "test/rtp_rtcp_observer.h"
 #include "test/video_test_constants.h"
 
 namespace webrtc {
 namespace test {
 namespace {
 
-enum : int {  // The first valid value is 1.
-  kAudioLevelExtensionId = 1,
-  kTransportSequenceNumberExtensionId,
-};
+constexpr RtpHeaderExtensionId kAudioLevelExtensionId(1);
+constexpr RtpHeaderExtensionId kTransportSequenceNumberExtensionId(2);
 
 class AudioSendTest : public SendTest {
  public:
@@ -38,7 +44,6 @@ class AudioSendTest : public SendTest {
   size_t GetNumAudioStreams() const override { return 1; }
   size_t GetNumFlexfecStreams() const override { return 0; }
 };
-}  // namespace
 
 using AudioSendStreamCallTest = CallTest;
 
@@ -49,7 +54,7 @@ TEST_F(AudioSendStreamCallTest, SupportsCName) {
     CNameObserver() = default;
 
    private:
-    Action OnSendRtcp(rtc::ArrayView<const uint8_t> packet) override {
+    Action OnSendRtcp(std::span<const uint8_t> packet) override {
       RtcpPacketParser parser;
       EXPECT_TRUE(parser.Parse(packet));
       if (parser.sdes()->num_packets() > 0) {
@@ -82,7 +87,7 @@ TEST_F(AudioSendStreamCallTest, NoExtensionsByDefault) {
     NoExtensionsObserver() = default;
 
    private:
-    Action OnSendRtp(rtc::ArrayView<const uint8_t> packet) override {
+    Action OnSendRtp(std::span<const uint8_t> packet) override {
       RtpPacket rtp_packet;
       EXPECT_TRUE(rtp_packet.Parse(packet));  // rtp packet is valid.
       EXPECT_EQ(packet[0] & 0b0001'0000, 0);  // extension bit not set.
@@ -112,7 +117,7 @@ TEST_F(AudioSendStreamCallTest, SupportsAudioLevel) {
       extensions_.Register<AudioLevelExtension>(kAudioLevelExtensionId);
     }
 
-    Action OnSendRtp(rtc::ArrayView<const uint8_t> packet) override {
+    Action OnSendRtp(std::span<const uint8_t> packet) override {
       RtpPacket rtp_packet(&extensions_);
       EXPECT_TRUE(rtp_packet.Parse(packet));
 
@@ -157,7 +162,7 @@ class TransportWideSequenceNumberObserver : public AudioSendTest {
   }
 
  private:
-  Action OnSendRtp(rtc::ArrayView<const uint8_t> packet) override {
+  Action OnSendRtp(std::span<const uint8_t> packet) override {
     RtpPacket rtp_packet(&extensions_);
     EXPECT_TRUE(rtp_packet.Parse(packet));
 
@@ -203,7 +208,7 @@ TEST_F(AudioSendStreamCallTest, SendDtmf) {
     DtmfObserver() = default;
 
    private:
-    Action OnSendRtp(rtc::ArrayView<const uint8_t> packet) override {
+    Action OnSendRtp(std::span<const uint8_t> packet) override {
       RtpPacket rtp_packet;
       EXPECT_TRUE(rtp_packet.Parse(packet));
 
@@ -244,5 +249,6 @@ TEST_F(AudioSendStreamCallTest, SendDtmf) {
   RunBaseTest(&test);
 }
 
+}  // namespace
 }  // namespace test
 }  // namespace webrtc

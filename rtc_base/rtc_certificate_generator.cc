@@ -10,16 +10,20 @@
 
 #include "rtc_base/rtc_certificate_generator.h"
 
-#include <time.h>
-
 #include <algorithm>
+#include <cstdint>
+#include <ctime>
 #include <memory>
+#include <optional>
 #include <utility>
 
+#include "api/scoped_refptr.h"
+#include "api/task_queue/task_queue_base.h"
 #include "rtc_base/checks.h"
+#include "rtc_base/rtc_certificate.h"
 #include "rtc_base/ssl_identity.h"
 
-namespace rtc {
+namespace webrtc {
 
 namespace {
 
@@ -59,8 +63,9 @@ scoped_refptr<RTCCertificate> RTCCertificateGenerator::GenerateCertificate(
   return RTCCertificate::Create(std::move(identity));
 }
 
-RTCCertificateGenerator::RTCCertificateGenerator(Thread* signaling_thread,
-                                                 Thread* worker_thread)
+RTCCertificateGenerator::RTCCertificateGenerator(
+    TaskQueueBase* signaling_thread,
+    TaskQueueBase* worker_thread)
     : signaling_thread_(signaling_thread), worker_thread_(worker_thread) {
   RTC_DCHECK(signaling_thread_);
   RTC_DCHECK(worker_thread_);
@@ -85,4 +90,4 @@ void RTCCertificateGenerator::GenerateCertificateAsync(
   });
 }
 
-}  // namespace rtc
+}  // namespace webrtc

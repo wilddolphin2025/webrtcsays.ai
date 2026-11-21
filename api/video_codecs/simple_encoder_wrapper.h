@@ -22,6 +22,7 @@
 #include "api/scoped_refptr.h"
 #include "api/transport/rtp/dependency_descriptor.h"
 #include "api/units/timestamp.h"
+#include "api/video/resolution.h"
 #include "api/video/video_frame_buffer.h"
 #include "api/video_codecs/video_encoder_factory_interface.h"
 #include "api/video_codecs/video_encoder_interface.h"
@@ -59,11 +60,14 @@ class SimpleEncoderWrapper {
 
   void SetEncodeFps(int fps);
 
-  void Encode(rtc::scoped_refptr<webrtc::VideoFrameBuffer> frame_buffer,
+  void Encode(scoped_refptr<VideoFrameBuffer> frame_buffer,
               bool force_keyframe,
               EncodeResultCallback callback);
 
  private:
+  Resolution ScaleResolutionForSpatialLayer(Resolution resolution,
+                                            int layer_index) const;
+
   std::unique_ptr<VideoEncoderInterface> encoder_;
   std::unique_ptr<ScalableVideoController> svc_controller_;
   ScalableVideoController::StreamLayersConfig layer_configs_;

@@ -11,9 +11,12 @@
 #ifndef MODULES_RTP_RTCP_SOURCE_RTCP_TRANSCEIVER_CONFIG_H_
 #define MODULES_RTP_RTCP_SOURCE_RTCP_TRANSCEIVER_CONFIG_H_
 
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <span>
 #include <string>
 
-#include "api/array_view.h"
 #include "api/rtp_headers.h"
 #include "api/task_queue/task_queue_base.h"
 #include "api/units/time_delta.h"
@@ -78,7 +81,7 @@ class RtpStreamRtcpHandler {
   virtual RtpStats SentStats() = 0;
 
   virtual void OnNack(uint32_t /* sender_ssrc */,
-                      rtc::ArrayView<const uint16_t> /* sequence_numbers */) {}
+                      std::span<const uint16_t> /* sequence_numbers */) {}
   virtual void OnFir(uint32_t /* sender_ssrc */) {}
   virtual void OnPli(uint32_t /* sender_ssrc */) {}
 
@@ -114,7 +117,7 @@ struct RtcpTransceiverConfig {
   Clock* clock = nullptr;
 
   // Transport to send RTCP packets to.
-  std::function<void(rtc::ArrayView<const uint8_t>)> rtcp_transport;
+  std::function<void(std::span<const uint8_t>)> rtcp_transport;
 
   // Queue for scheduling delayed tasks, e.g. sending periodic compound packets.
   TaskQueueBase* task_queue = nullptr;

@@ -14,7 +14,6 @@
 #include <cstdint>
 #include <optional>
 
-#include "absl/base/attributes.h"
 
 namespace webrtc {
 
@@ -38,7 +37,7 @@ class Transport;
 
 enum class ChannelId : int {};
 
-enum class ABSL_MUST_USE_RESULT VoipResult {
+enum class [[nodiscard]] VoipResult {
   // kOk indicates the function was successfully invoked with no error.
   kOk,
   // kInvalidArgument indicates the caller specified an invalid argument, such
@@ -58,7 +57,7 @@ class VoipBase {
   // Creates a channel.
   // Each channel handle maps into one audio media session where each has
   // its own separate module for send/receive rtp packet with one peer.
-  // Caller must set `transport`, webrtc::Transport callback pointer to
+  // Caller must set `transport`, Transport callback pointer to
   // receive rtp/rtcp packets from corresponding media session in VoIP engine.
   // VoipEngine framework expects applications to handle network I/O directly
   // and injection for incoming RTP from remote endpoint is handled via

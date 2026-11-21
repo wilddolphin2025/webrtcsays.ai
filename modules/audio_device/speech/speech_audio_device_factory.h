@@ -1,7 +1,7 @@
 /*
- *  (c) 2025, wilddolphin2022 
+ *  (c) 2025, wilddolphin2025 
  *  For WebRTCsays.ai project
- *  https://github.com/wilddolphin2022/webrtcsays.ai
+ *  https://github.com/wilddolphin2025/webrtcsays.ai
  *
  *  Use of this source code is governed by a BSD-style license
  *  that can be found in the LICENSE file in the root of the source
@@ -14,6 +14,8 @@
 #define AUDIO_DEVICE_SPEECH_AUDIO_DEVICE_FACTORY_H_
 
 #include <stdint.h>
+#include <string.h>
+#include <atomic>
 #include <memory>
 #include <queue>
 #include "absl/synchronization/mutex.h"
@@ -23,6 +25,7 @@
 #include "modules/audio_device/audio_device_generic.h"
 
 #include "modules/third_party/whillats/src/whillats.h"
+#include "modules/third_party/whillats/src/talking_face.h"
 
 namespace webrtc {
 
@@ -50,20 +53,43 @@ class SpeechAudioDeviceFactory {
   static const std::string& GetWavFilename() { return _wavFilename; }
   static const std::string& GetYuvFilename() { return _yuvFilename; }
   static YUVData& GetYuvData() { return _yuvData; }
-  static std::string GetLanguage() { 
+  // Language of the last utterance when Whisper auto-detects, else the configured one.
+  static std::string GetLanguage() {
+    uint64_t packed = _detectedLanguage.load(std::memory_order_relaxed);
+    if (packed) { char code[9] = {}; memcpy(code, &packed, 8); return code; }
     return _whisperDevice ? _whisperDevice->getLanguage() : "en"; }
+  // C-only: called from the transcriber thread.
+  static void NoteDetectedLanguage(const char* code) {
+    uint64_t packed = 0;
+    memcpy(&packed, code, strnlen(code, 8));
+    _detectedLanguage.store(packed, std::memory_order_relaxed); }
   static void NotifyText(const std::string& text, const std::string& language);
   static void SpeakText(const std::string& text, const std::string& language);
   static void AskLlama(const std::string& text, const std::string& language);
 
   static void SetWhisperEnabled(bool enabled) { _whisperEnabled = enabled; }
   static void SetLlamaEnabled(bool enabled) { _llamaEnabled = enabled; }
-  static void SetLanguage(const std::string& language) { 
+  static void SetLanguage(const std::string& language) {
+    _detectedLanguage.store(0, std::memory_order_relaxed);
     if(_whisperDevice) _whisperDevice->setLanguage(language.c_str()); }
 
   static WhillatsTTS* tts() { return _ttsDevice.get(); }
   static WhillatsTranscriber* whisper() { return _whisperDevice.get(); }
   static WhillatsLlama* llama() { return _llamaDevice.get(); }
+
+  static void SetTalkingFaceImage(const std::string& path);
+  static void SetWhisperThreads(int n) { _whisperThreads = n; }
+  static void SetLlamaThreads(int n) { _llamaThreads = n; }
+  static void SetTTSThreads(int n) { _ttsThreads = n; }
+  // Personalized TTS voice (a reference clip name on the TTS server). Takes
+  // effect immediately when TTS is running, else when it starts.
+  static void SetTTSVoice(const std::string& voice);
+  static void ApplyTTSVoice();
+  static int GetWhisperThreads() { return _whisperThreads; }
+  static int GetLlamaThreads() { return _llamaThreads; }
+  static int GetTTSThreads() { return _ttsThreads; }
+  static void SetTalkingFaceImageFromMemory(const uint8_t* data, int size, int dummy1, int dummy2);
+  static TalkingFace* talkingFace() { return _talkingFace.get(); }
 
   static WhillatsTTS* CreateWhillatsTTS(
     WhillatsSetAudioCallback &ttsCallback);
@@ -72,9 +98,11 @@ class SpeechAudioDeviceFactory {
     WhillatsSetLanguageCallback &languageCallback);
   static WhillatsLlama* CreateWhillatsLlama(
     WhillatsSetResponseCallback &llamaCallback);
+  static void PreloadLlama(WhillatsSetResponseCallback &llamaCallback);
 
   friend class WhisperAudioDevice;
  private:
+  static inline std::atomic<uint64_t> _detectedLanguage{0};
   static std::unique_ptr<TaskQueueFactory> _taskQueueFactory;
 
   enum : uint32_t { MAX_FILENAME_LEN = 512 };
@@ -94,6 +122,10 @@ class SpeechAudioDeviceFactory {
   
   static bool _whisperEnabled;
   static bool _llamaEnabled;
+  static int _whisperThreads;
+  static int _llamaThreads;
+  static int _ttsThreads;
+  static std::string _ttsVoice;
 
   // This is a whisper device, to send to whisper
   static std::unique_ptr<WhillatsTranscriber> _whisperDevice;
@@ -101,6 +133,7 @@ class SpeechAudioDeviceFactory {
   static std::unique_ptr<WhillatsLlama> _llamaDevice;
   // This is a tts device, to send to tts
   static std::unique_ptr<WhillatsTTS> _ttsDevice;
+  static std::unique_ptr<TalkingFace> _talkingFace;
 
   // Queue of text to speak
   static std::unique_ptr<TaskQueueBase, TaskQueueDeleter> _textToSpeakQueue;

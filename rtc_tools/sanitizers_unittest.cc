@@ -8,18 +8,16 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include <stddef.h>
-#include <stdio.h>
+#include <cstddef>
+#include <memory>  // IWYU pragma: keep
+#include <random>  // IWYU pragma: keep
 
-#include <memory>
-#include <random>
+#include "rtc_base/checks.h"              // IWYU pragma: keep
+#include "rtc_base/null_socket_server.h"  // IWYU pragma: keep
+#include "rtc_base/thread.h"              // IWYU pragma: keep
+#include "test/gtest.h"                   // IWYU pragma: keep
 
-#include "rtc_base/checks.h"
-#include "rtc_base/null_socket_server.h"
-#include "rtc_base/thread.h"
-#include "test/gtest.h"
-
-namespace rtc {
+namespace webrtc {
 
 namespace {
 
@@ -38,7 +36,9 @@ TEST(SanitizersDeathTest, MemorySanitizer) {
 }
 #endif
 
-#if defined(ADDRESS_SANITIZER)
+// TODO(bugs.webrtc.org/544671141): Reenable this test on windows when it won't
+// timeout. It began to timeout after win SDK update https://crrev.com/c/8088195
+#if defined(ADDRESS_SANITIZER) and !defined(WEBRTC_WIN)
 void HeapUseAfterFree() {
   char* buf = new char[2];
   delete[] buf;
@@ -122,4 +122,4 @@ TEST(SanitizersDeathTest, ThreadSanitizer) {
 
 }  // namespace
 
-}  // namespace rtc
+}  // namespace webrtc

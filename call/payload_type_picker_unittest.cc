@@ -10,10 +10,17 @@
 
 #include "call/payload_type_picker.h"
 
+#include <string>
+
+#include "absl/strings/str_cat.h"
+#include "api/payload_type.h"
+#include "api/rtc_error.h"
+#include "api/rtp_header_extension_id.h"
 #include "api/video_codecs/sdp_video_format.h"
 #include "call/payload_type.h"
 #include "media/base/codec.h"
 #include "media/base/media_constants.h"
+#include "test/create_test_environment.h"
 #include "test/gmock.h"
 #include "test/gtest.h"
 
@@ -21,7 +28,7 @@ namespace webrtc {
 
 using testing::Eq;
 using testing::Ge;
-using testing::Lt;
+using testing::Le;
 using testing::Ne;
 
 TEST(PayloadTypePicker, PayloadTypeAssignmentWorks) {
@@ -43,7 +50,7 @@ TEST(PayloadTypePicker, StoreAndRecall) {
   PayloadTypeRecorder recorder(picker);
   const PayloadType a_payload_type(123);
   const PayloadType not_a_payload_type(44);
-  cricket::Codec a_codec = cricket::CreateVideoCodec(0, "vp8");
+  Codec a_codec = CreateVideoCodec(0, "vp8");
   auto error = recorder.AddMapping(a_payload_type, a_codec);
   ASSERT_TRUE(error.ok());
   auto result = recorder.LookupCodec(a_payload_type);
@@ -62,10 +69,8 @@ TEST(PayloadTypePicker, ModifyingPtIsIgnored) {
   PayloadTypePicker picker;
   PayloadTypeRecorder recorder(picker);
   const PayloadType a_payload_type(123);
-  cricket::Codec a_codec =
-      cricket::CreateVideoCodec(cricket::Codec::kIdNotSet, "vp8");
-  cricket::Codec b_codec =
-      cricket::CreateVideoCodec(cricket::Codec::kIdNotSet, "vp9");
+  Codec a_codec = CreateVideoCodec(Codec::kIdNotSet, "vp8");
+  Codec b_codec = CreateVideoCodec(Codec::kIdNotSet, "vp9");
   recorder.AddMapping(a_payload_type, a_codec);
   auto error = recorder.AddMapping(a_payload_type, b_codec);
   EXPECT_TRUE(error.ok());
@@ -78,10 +83,8 @@ TEST(PayloadTypePicker, ModifyingPtIsAnErrorIfDisallowed) {
   PayloadTypePicker picker;
   PayloadTypeRecorder recorder(picker);
   const PayloadType a_payload_type(123);
-  cricket::Codec a_codec =
-      cricket::CreateVideoCodec(cricket::Codec::kIdNotSet, "vp8");
-  cricket::Codec b_codec =
-      cricket::CreateVideoCodec(cricket::Codec::kIdNotSet, "vp9");
+  Codec a_codec = CreateVideoCodec(Codec::kIdNotSet, "vp8");
+  Codec b_codec = CreateVideoCodec(Codec::kIdNotSet, "vp9");
   recorder.DisallowRedefinition();
   recorder.AddMapping(a_payload_type, a_codec);
   auto error = recorder.AddMapping(a_payload_type, b_codec);
@@ -92,56 +95,10 @@ TEST(PayloadTypePicker, ModifyingPtIsAnErrorIfDisallowed) {
   recorder.ReallowRedefinition();
 }
 
-TEST(PayloadTypePicker, RollbackAndCommit) {
-  PayloadTypePicker picker;
-  PayloadTypeRecorder recorder(picker);
-  const PayloadType a_payload_type(123);
-  const PayloadType b_payload_type(124);
-  const PayloadType not_a_payload_type(44);
-
-  cricket::Codec a_codec = cricket::CreateVideoCodec(0, "vp8");
-
-  cricket::Codec b_codec = cricket::CreateVideoCodec(0, "vp9");
-  auto error = recorder.AddMapping(a_payload_type, a_codec);
-  ASSERT_TRUE(error.ok());
-  recorder.Commit();
-  ASSERT_TRUE(recorder.AddMapping(b_payload_type, b_codec).ok());
-  {
-    auto result = recorder.LookupCodec(a_payload_type);
-    ASSERT_TRUE(result.ok());
-    EXPECT_EQ(result.value(), a_codec);
-  }
-  {
-    auto result = recorder.LookupCodec(b_payload_type);
-    ASSERT_TRUE(result.ok());
-    EXPECT_EQ(result.value(), b_codec);
-  }
-  recorder.Rollback();
-  {
-    auto result = recorder.LookupCodec(a_payload_type);
-    ASSERT_TRUE(result.ok());
-    EXPECT_EQ(result.value(), a_codec);
-  }
-  {
-    auto result = recorder.LookupCodec(b_payload_type);
-    ASSERT_FALSE(result.ok());
-  }
-  ASSERT_TRUE(recorder.AddMapping(b_payload_type, b_codec).ok());
-  // Rollback after a new checkpoint has no effect.
-  recorder.Commit();
-  recorder.Rollback();
-  {
-    auto result = recorder.LookupCodec(b_payload_type);
-    ASSERT_TRUE(result.ok());
-    EXPECT_EQ(result.value(), b_codec);
-  }
-}
-
 TEST(PayloadTypePicker, StaticValueIsGood) {
   PayloadTypePicker picker;
-  cricket::Codec a_codec =
-      cricket::CreateAudioCodec(-1, cricket::kPcmuCodecName, 8000, 1);
-  auto result = picker.SuggestMapping(a_codec, nullptr);
+  Codec a_codec = CreateAudioCodec(-1, kPcmuCodecName, 8000, 1);
+  auto result = picker.SuggestMapping(a_codec);
   // In the absence of existing mappings, PCMU always has 0 as PT.
   ASSERT_TRUE(result.ok());
   EXPECT_EQ(result.value(), PayloadType(0));
@@ -149,8 +106,8 @@ TEST(PayloadTypePicker, StaticValueIsGood) {
 
 TEST(PayloadTypePicker, DynamicValueIsGood) {
   PayloadTypePicker picker;
-  cricket::Codec a_codec = cricket::CreateAudioCodec(-1, "lyra", 8000, 1);
-  auto result = picker.SuggestMapping(a_codec, nullptr);
+  Codec a_codec = CreateAudioCodec(-1, "lyra", 8000, 1);
+  auto result = picker.SuggestMapping(a_codec);
   // This should result in a value from the dynamic range; since this is the
   // first assignment, it should be in the upper range.
   ASSERT_TRUE(result.ok());
@@ -161,9 +118,9 @@ TEST(PayloadTypePicker, DynamicValueIsGood) {
 TEST(PayloadTypePicker, RecordedValueReturned) {
   PayloadTypePicker picker;
   PayloadTypeRecorder recorder(picker);
-  cricket::Codec a_codec = cricket::CreateAudioCodec(-1, "lyra", 8000, 1);
+  Codec a_codec = CreateAudioCodec(-1, "lyra", 8000, 1);
   recorder.AddMapping(47, a_codec);
-  auto result = picker.SuggestMapping(a_codec, &recorder);
+  auto result = picker.SuggestMapping(a_codec);
   ASSERT_TRUE(result.ok());
   EXPECT_EQ(47, result.value());
 }
@@ -172,71 +129,215 @@ TEST(PayloadTypePicker, RecordedValueExcluded) {
   PayloadTypePicker picker;
   PayloadTypeRecorder recorder1(picker);
   PayloadTypeRecorder recorder2(picker);
-  cricket::Codec a_codec = cricket::CreateAudioCodec(-1, "lyra", 8000, 1);
-  cricket::Codec b_codec = cricket::CreateAudioCodec(-1, "mlcodec", 8000, 1);
+  Codec a_codec = CreateAudioCodec(-1, "lyra", 8000, 1);
+  Codec b_codec = CreateAudioCodec(-1, "mlcodec", 8000, 1);
   recorder1.AddMapping(47, a_codec);
   recorder2.AddMapping(47, b_codec);
-  auto result = picker.SuggestMapping(b_codec, &recorder1);
+  auto result = picker.SuggestMapping(b_codec);
   ASSERT_TRUE(result.ok());
   EXPECT_NE(47, result.value());
 }
 
+TEST(PayloadTypePicker, PayloadTypesAreReleasedWithTheirRecorder) {
+  PayloadTypePicker picker;
+  Codec a_codec = CreateAudioCodec(-1, "lyra", 8000, 1);
+  PayloadType payload_type = PayloadType::NotSet();
+  {
+    PayloadTypeRecorder recorder(picker);
+    payload_type = picker.SuggestMapping(a_codec).value();
+    ASSERT_TRUE(recorder.AddMapping(payload_type, a_codec).ok());
+    picker.ReleaseUnusedPayloadTypes();
+    EXPECT_TRUE(picker.IsSeen(payload_type));
+  }
+  picker.ReleaseUnusedPayloadTypes();
+  EXPECT_FALSE(picker.IsSeen(payload_type));
+}
+
+TEST(PayloadTypePicker, RetainOnlyReleasesUnusedPayloadTypes) {
+  PayloadTypePicker picker;
+  PayloadTypeRecorder recorder(picker);
+  const PayloadType kept(96);
+  const PayloadType dropped(97);
+  ASSERT_TRUE(recorder.AddMapping(kept, CreateVideoCodec(96, "vp8")).ok());
+  ASSERT_TRUE(recorder.AddMapping(dropped, CreateVideoCodec(97, "vp9")).ok());
+  recorder.RetainOnly({kept});
+  picker.ReleaseUnusedPayloadTypes();
+  EXPECT_TRUE(picker.IsSeen(kept));
+  EXPECT_FALSE(picker.IsSeen(dropped));
+  EXPECT_TRUE(recorder.LookupCodec(kept).ok());
+  EXPECT_FALSE(recorder.LookupCodec(dropped).ok());
+}
+
+TEST(PayloadTypePicker, ReleasedPayloadTypesAreHandedOutAgain) {
+  PayloadTypePicker picker;
+  Codec a_codec = CreateAudioCodec(-1, "lyra", 8000, 1);
+  Codec b_codec = CreateAudioCodec(-1, "mlcodec", 8000, 1);
+  PayloadType a_payload_type = picker.SuggestMapping(a_codec).value();
+  picker.ReleaseUnusedPayloadTypes();
+  EXPECT_EQ(picker.SuggestMapping(b_codec).value(), a_payload_type);
+}
+
+TEST(PayloadTypePicker, ReleasedPayloadTypeReassignedDoesNotCollideOnReuse) {
+  PayloadTypePicker picker;
+  Codec a_codec = CreateAudioCodec(-1, "lyra", 8000, 1);
+  Codec b_codec = CreateAudioCodec(-1, "mlcodec", 8000, 1);
+  PayloadType a_pt = PayloadType::NotSet();
+  {
+    PayloadTypeRecorder recorder1(picker);
+    a_pt = picker.SuggestMapping(a_codec).value();
+    ASSERT_TRUE(recorder1.AddMapping(a_pt, a_codec).ok());
+  }
+  picker.ReleaseUnusedPayloadTypes();
+
+  PayloadTypeRecorder recorder2(picker);
+  PayloadType b_pt = picker.SuggestMapping(b_codec).value();
+  ASSERT_TRUE(recorder2.AddMapping(b_pt, b_codec).ok());
+  EXPECT_EQ(b_pt, a_pt);
+
+  PayloadType a_new_pt = picker.SuggestMapping(a_codec).value();
+  EXPECT_NE(a_new_pt, b_pt);
+}
+
+TEST(PayloadTypePicker, ReleasedPayloadTypeReassignedUpdatesMappingTable) {
+  PayloadTypePicker picker;
+  Codec a_codec = CreateAudioCodec(-1, "lyra", 8000, 1);
+  Codec b_codec = CreateAudioCodec(-1, "mlcodec", 8000, 1);
+  PayloadType a_pt = picker.SuggestMapping(a_codec).value();
+  EXPECT_EQ(picker.LookupCodec(a_pt), a_codec);
+
+  picker.ReleaseUnusedPayloadTypes();
+
+  PayloadType b_pt = picker.SuggestMapping(b_codec).value();
+  EXPECT_EQ(b_pt, a_pt);
+  EXPECT_EQ(picker.LookupCodec(b_pt), b_codec);
+
+  // Stringification should only contain the updated mapping for this payload
+  // type, not a stale entry for a_codec.
+  std::string stringified = absl::StrCat(picker);
+  EXPECT_THAT(stringified,
+              testing::HasSubstr(absl::StrCat("\n ", b_pt, ":", b_codec)));
+  EXPECT_THAT(stringified, testing::Not(testing::HasSubstr(
+                               absl::StrCat("\n ", a_pt, ":", a_codec))));
+}
+
+TEST(PayloadTypePicker, DefaultPayloadTypesStayReserved) {
+  PayloadTypePicker picker;
+  picker.ReleaseUnusedPayloadTypes();
+  // 111 is the payload type that opus is customarily given.
+  EXPECT_TRUE(picker.IsSeen(PayloadType(111)));
+}
+
 TEST(PayloadTypePicker, AudioGetsHigherRange) {
   PayloadTypePicker picker;
-  cricket::Codec an_audio_codec =
-      cricket::CreateAudioCodec(-1, "lyra", 8000, 1);
-  auto result = picker.SuggestMapping(an_audio_codec, nullptr).value();
+  Codec an_audio_codec = CreateAudioCodec(-1, "lyra", 8000, 1);
+  auto result = picker.SuggestMapping(an_audio_codec).value();
   EXPECT_THAT(result, Ge(96));
+}
+
+TEST(PayloadTypePicker, AudioRedGetsLowerRange) {
+  PayloadTypePicker picker;
+  Codec an_audio_codec = CreateAudioCodec(-1, "red", 48000, 2);
+  auto result = picker.SuggestMapping(an_audio_codec).value();
+  EXPECT_THAT(result, Le(63));
 }
 
 TEST(PayloadTypePicker, VideoGetsTreatedSpecially) {
   PayloadTypePicker picker;
-  cricket::Codec h264_constrained = cricket::CreateVideoCodec(SdpVideoFormat(
-      cricket::kH264CodecName, {{cricket::kH264FmtpProfileLevelId, "42e01f"},
-                                {cricket::kH264FmtpLevelAsymmetryAllowed, "1"},
-                                {cricket::kH264FmtpPacketizationMode, "1"}}));
-  cricket::Codec h264_yuv444 = cricket::CreateVideoCodec(SdpVideoFormat(
-      cricket::kH264CodecName, {{cricket::kH264FmtpProfileLevelId, "f4001f"},
-                                {cricket::kH264FmtpLevelAsymmetryAllowed, "1"},
-                                {cricket::kH264FmtpPacketizationMode, "1"}}));
-  cricket::Codec vp9_profile_2 = cricket::CreateVideoCodec(SdpVideoFormat(
-      {cricket::kVp9CodecName, {{cricket::kVP9ProfileId, "2"}}}));
-  cricket::Codec vp9_profile_3 = cricket::CreateVideoCodec(SdpVideoFormat(
-      {cricket::kVp9CodecName, {{cricket::kVP9ProfileId, "3"}}}));
+  Codec h264_constrained = CreateVideoCodec(
+      SdpVideoFormat(kH264CodecName, {{kH264FmtpProfileLevelId, "42e01f"},
+                                      {kH264FmtpLevelAsymmetryAllowed, "1"},
+                                      {kH264FmtpPacketizationMode, "1"}}));
+  Codec h264_yuv444 = CreateVideoCodec(
+      SdpVideoFormat(kH264CodecName, {{kH264FmtpProfileLevelId, "f4001f"},
+                                      {kH264FmtpLevelAsymmetryAllowed, "1"},
+                                      {kH264FmtpPacketizationMode, "1"}}));
+  Codec vp9_profile_2 =
+      CreateVideoCodec({kVp9CodecName, {{kVP9ProfileId, "2"}}});
+  Codec vp9_profile_3 =
+      CreateVideoCodec({kVp9CodecName, {{kVP9ProfileId, "3"}}});
+  Codec h265 = CreateVideoCodec(
+      SdpVideoFormat(kH265CodecName, {{kH265FmtpProfileId, "1"},
+                                      {kH265FmtpTierFlag, "0"},
+                                      {kH265FmtpLevelId, "93"},
+                                      {kH265FmtpTxMode, "SRST"}}));
   // Valid for high range only.
-  EXPECT_THAT(picker.SuggestMapping(h264_constrained, nullptr).value(), Ge(96));
-  EXPECT_THAT(picker.SuggestMapping(vp9_profile_2, nullptr).value(), Ge(96));
+  EXPECT_THAT(picker.SuggestMapping(h264_constrained).value(), Ge(96));
+  EXPECT_THAT(picker.SuggestMapping(vp9_profile_2).value(), Ge(96));
   // Valid for lower range.
-  EXPECT_THAT(picker.SuggestMapping(h264_yuv444, nullptr).value(), Lt(63));
-  EXPECT_THAT(picker.SuggestMapping(vp9_profile_3, nullptr).value(), Lt(63));
+  EXPECT_THAT(picker.SuggestMapping(h264_yuv444).value(), Le(63));
+  EXPECT_THAT(picker.SuggestMapping(vp9_profile_3).value(), Le(63));
+  EXPECT_THAT(picker.SuggestMapping(h265).value(), Le(63));
 
   // RTX with a primary codec in the lower range is valid for lower range.
-  cricket::Codec lower_range_rtx =
-      cricket::CreateVideoRtxCodec(cricket::Codec::kIdNotSet, 63);
-  EXPECT_THAT(picker.SuggestMapping(lower_range_rtx, nullptr).value(), Lt(63));
+  Codec lower_range_rtx = CreateVideoRtxCodec(Codec::kIdNotSet, 63);
+  EXPECT_THAT(picker.SuggestMapping(lower_range_rtx).value(), Le(63));
 }
 
 TEST(PayloadTypePicker, ChoosingH264Profiles) {
   // No opinion on whether these are right or wrong, just that their
   // behavior is consistent.
   PayloadTypePicker picker;
-  cricket::Codec h264_constrained = cricket::CreateVideoCodec(SdpVideoFormat(
-      cricket::kH264CodecName, {{cricket::kH264FmtpProfileLevelId, "42e01f"},
-                                {cricket::kH264FmtpLevelAsymmetryAllowed, "1"},
-                                {cricket::kH264FmtpPacketizationMode, "1"}}));
-  cricket::Codec h264_high_1f = cricket::CreateVideoCodec(SdpVideoFormat(
-      cricket::kH264CodecName, {{cricket::kH264FmtpProfileLevelId, "640c1f"},
-                                {cricket::kH264FmtpLevelAsymmetryAllowed, "1"},
-                                {cricket::kH264FmtpPacketizationMode, "1"}}));
-  cricket::Codec h264_high_2a = cricket::CreateVideoCodec(SdpVideoFormat(
-      cricket::kH264CodecName, {{cricket::kH264FmtpProfileLevelId, "640c2a"},
-                                {cricket::kH264FmtpLevelAsymmetryAllowed, "1"},
-                                {cricket::kH264FmtpPacketizationMode, "1"}}));
-  PayloadType pt_constrained =
-      picker.SuggestMapping(h264_constrained, nullptr).value();
-  PayloadType pt_high_1f = picker.SuggestMapping(h264_high_1f, nullptr).value();
-  PayloadType pt_high_2a = picker.SuggestMapping(h264_high_2a, nullptr).value();
+  Codec h264_constrained = CreateVideoCodec(
+      SdpVideoFormat(kH264CodecName, {{kH264FmtpProfileLevelId, "42e01f"},
+                                      {kH264FmtpLevelAsymmetryAllowed, "1"},
+                                      {kH264FmtpPacketizationMode, "1"}}));
+  Codec h264_high_1f = CreateVideoCodec(
+      SdpVideoFormat(kH264CodecName, {{kH264FmtpProfileLevelId, "640c1f"},
+                                      {kH264FmtpLevelAsymmetryAllowed, "1"},
+                                      {kH264FmtpPacketizationMode, "1"}}));
+  Codec h264_high_2a = CreateVideoCodec(
+      SdpVideoFormat(kH264CodecName, {{kH264FmtpProfileLevelId, "640c2a"},
+                                      {kH264FmtpLevelAsymmetryAllowed, "1"},
+                                      {kH264FmtpPacketizationMode, "1"}}));
+  PayloadType pt_constrained = picker.SuggestMapping(h264_constrained).value();
+  PayloadType pt_high_1f = picker.SuggestMapping(h264_high_1f).value();
+  PayloadType pt_high_2a = picker.SuggestMapping(h264_high_2a).value();
   EXPECT_THAT(pt_constrained, Ne(pt_high_1f));
   EXPECT_THAT(pt_high_1f, Eq(pt_high_2a));
 }
+
+TEST(PayloadTypePicker, AbslStringify) {
+  PayloadTypePicker picker;
+  Codec a_codec = CreateAudioCodec(-1, "lyra", 8000, 1);
+  Codec b_codec = CreateVideoCodec(-1, "vp8");
+
+  picker.AddMapping(47, a_codec);
+  picker.AddMapping(100, b_codec);
+
+  std::string s = absl::StrCat(picker);
+
+  EXPECT_THAT(s, testing::HasSubstr("Reserved:"));
+  EXPECT_THAT(s, testing::HasSubstr(" 47"));
+  EXPECT_THAT(s, testing::HasSubstr(" 100"));
+  EXPECT_THAT(s, testing::HasSubstr("Entries:"));
+  EXPECT_THAT(s, testing::HasSubstr("\n 47:[-1:audio/lyra/8000/1]"));
+  EXPECT_THAT(s, testing::HasSubstr("\n 100:[-1:video/vp8/90000/0]"));
+}
+
+TEST(RtpHeaderExtensionRecorder, StoreAndRecall) {
+  RtpHeaderExtensionRecorder recorder(CreateTestEnvironment());
+  RTCError error = recorder.AddMapping(RtpHeaderExtensionId(1), "uri", false);
+  EXPECT_TRUE(error.ok());
+  RTCErrorOr<RtpHeaderExtensionId> result = recorder.LookupId("uri", false);
+  ASSERT_TRUE(result.ok());
+  EXPECT_EQ(result.value(), RtpHeaderExtensionId(1));
+}
+
+TEST(RtpHeaderExtensionRecorder, RedefinitionReturnsOkByDefault) {
+  RtpHeaderExtensionRecorder recorder(CreateTestEnvironment());
+  recorder.AddMapping(RtpHeaderExtensionId(1), "uri", false);
+  RTCError error = recorder.AddMapping(RtpHeaderExtensionId(2), "uri", false);
+  EXPECT_TRUE(error.ok());
+  EXPECT_EQ(recorder.LookupId("uri", false).value(), RtpHeaderExtensionId(2));
+}
+
+TEST(RtpHeaderExtensionRecorder, RedefinitionReturnsErrorWithFieldTrial) {
+  RtpHeaderExtensionRecorder recorder(CreateTestEnvironment(
+      {.field_trials = "WebRTC-ErrorOnRtpExtensionRedefinition/Enabled/"}));
+  recorder.AddMapping(RtpHeaderExtensionId(1), "uri", false);
+  RTCError error = recorder.AddMapping(RtpHeaderExtensionId(2), "uri", false);
+  EXPECT_FALSE(error.ok());
+  EXPECT_EQ(recorder.LookupId("uri", false).value(), RtpHeaderExtensionId(1));
+}
+
 }  // namespace webrtc

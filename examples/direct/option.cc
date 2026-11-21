@@ -1,7 +1,7 @@
 /*
- *  (c) 2025, wilddolphin2022
+ *  (c) 2025, wilddolphin2025
  *  For WebRTCsays.ai project
- *  https://github.com/wilddolphin2022
+ *  https://github.com/wilddolphin2025
  *
  *  Use of this source code is governed by a BSD-style license
  *  that can be found in the LICENSE file in the root of the source
@@ -12,6 +12,7 @@
 
 #include <fstream>     // For file operations
 #include <cerrno>      // For errno used with strtol
+#include <cctype>
 
 #include "api/jsep.h"
 #include "rtc_base/logging.h"
@@ -72,13 +73,6 @@ std::string expandHomePath(const std::string& path) {
 }
 } // namespace
 
-#if defined(WEBRTC_LINUX)
-extern "C" {
-void __libc_csu_init() {}
-void __libc_csu_fini() {}
-}
-#endif
-
 // Function to parse IP address and port from a string in the format "IP:PORT"
 bool DIRECT_API ParseIpAndPort(const std::string& ip_port, std::string& ip, int& port) {
   size_t colon_pos = ip_port.find(':');
@@ -111,6 +105,206 @@ bool DIRECT_API ParseIpAndPort(const std::string& ip_port, std::string& ip, int&
   port = static_cast<int>(port_val); // Assign the valid port
   return true;
 }
+
+bool IsNumericHost(const std::string& host) {
+  if (host.empty()) return false;
+  in_addr ipv4;
+  if (inet_pton(AF_INET, host.c_str(), &ipv4) == 1) return true;
+  in6_addr ipv6;
+  if (inet_pton(AF_INET6, host.c_str(), &ipv6) == 1) return true;
+  return false;
+}
+
+std::string UrlEncode(const std::string& in) {
+  static const char* hex = "0123456789ABCDEF";
+  std::string out;
+  out.reserve(in.size() * 3);
+  for (unsigned char c : in) {
+    if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+      out.push_back(static_cast<char>(c));
+    } else {
+      out.push_back('%');
+      out.push_back(hex[c >> 4]);
+      out.push_back(hex[c & 15]);
+    }
+  }
+  return out;
+}
+
+bool ParseSignalUrl(const std::string& url, SignalEndpoint& out, std::string& error) {
+  std::string rest;
+  bool ssl = false;
+  if (url.rfind("wss://", 0) == 0) {
+    ssl = true;
+    rest = url.substr(6);
+  } else if (url.rfind("ws://", 0) == 0) {
+    rest = url.substr(5);
+  } else {
+    error = "signal URL must start with wss:// or ws://";
+    return false;
+  }
+  const auto slash = rest.find('/');
+  const std::string hostport = slash == std::string::npos ? rest : rest.substr(0, slash);
+  std::string path = slash == std::string::npos ? "/" : rest.substr(slash);
+  if (path.empty()) path = "/";
+  if (hostport.empty() || hostport.front() == '[') {
+    error = "signal URL host must be a hostname, not an IP address";
+    return false;
+  }
+  std::string host = hostport;
+  int port = ssl ? 443 : 80;
+  const auto colon = hostport.rfind(':');
+  if (colon != std::string::npos) {
+    host = hostport.substr(0, colon);
+    const std::string port_str = hostport.substr(colon + 1);
+    char* end = nullptr;
+    errno = 0;
+    const long parsed = strtol(port_str.c_str(), &end, 10);
+    if (errno != 0 || end == port_str.c_str() || *end != '\0' || parsed <= 0 || parsed > 65535) {
+      error = "signal URL has an invalid port";
+      return false;
+    }
+    port = static_cast<int>(parsed);
+  }
+  if (host.empty() || IsNumericHost(host)) {
+    error = "signal URL host must be a hostname, not an IP address";
+    return false;
+  }
+  out.ssl = ssl;
+  out.host = host;
+  out.port = port;
+  out.path = path;
+  return true;
+}
+
+bool IceUrlUsesHostname(const std::string& url, std::string& error) {
+  const auto scheme = url.find(':');
+  if (scheme == std::string::npos || scheme == 0) {
+    error = "ICE URL must look like stun:host:port or turns:host:port";
+    return false;
+  }
+  const std::string scheme_name = url.substr(0, scheme);
+  if (scheme_name != "stun" && scheme_name != "stuns" && scheme_name != "turn" &&
+      scheme_name != "turns") {
+    error = "ICE URL scheme must be stun, stuns, turn, or turns";
+    return false;
+  }
+  std::string rest = url.substr(scheme + 1);
+  if (rest.rfind("//", 0) == 0) rest = rest.substr(2);
+  const auto cut = rest.find_first_of("/?");
+  if (cut != std::string::npos) rest = rest.substr(0, cut);
+  const auto at = rest.rfind('@');
+  if (at != std::string::npos) rest = rest.substr(at + 1);
+  std::string host;
+  if (!rest.empty() && rest.front() == '[') {
+    error = "ICE server must use a hostname, not an IP address";
+    return false;
+  }
+  const auto colons = std::count(rest.begin(), rest.end(), ':');
+  if (colons > 1) {
+    host = rest;
+  } else if (colons == 1) {
+    host = rest.substr(0, rest.find(':'));
+  } else {
+    host = rest;
+  }
+  if (host.empty() || IsNumericHost(host)) {
+    error = "ICE server must use a hostname, not an IP address (" + url + ")";
+    return false;
+  }
+  return true;
+}
+
+std::string LoadSignalToken(const Options& opts, std::string& error) {
+  error.clear();
+  std::string token;
+  if (!opts.token_file.empty()) {
+    std::ifstream in(opts.token_file);
+    if (!in) {
+      error = "cannot read token file";
+      return "";
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    token = ss.str();
+  } else if (!opts.token_env.empty()) {
+    if (const char* env = std::getenv(opts.token_env.c_str())) token = env;
+  }
+  while (!token.empty() && (token.back() == '\n' || token.back() == '\r' || token.back() == ' ' ||
+                            token.back() == '\t')) {
+    token.pop_back();
+  }
+  size_t start = 0;
+  while (start < token.size() && (token[start] == ' ' || token[start] == '\t')) ++start;
+  if (start > 0) token.erase(0, start);
+  if (!opts.token_file.empty() && token.empty()) {
+    error = "token file is empty";
+    return "";
+  }
+  return token;
+}
+
+std::string AppendTokenQuery(std::string path, const std::string& token) {
+  if (token.empty() || path.find("token=") != std::string::npos) return path;
+  path += (path.find('?') == std::string::npos) ? '?' : '&';
+  path += "token=";
+  path += UrlEncode(token);
+  return path;
+}
+
+namespace {
+bool LoadTurnsFile(const std::string& path, std::string& turns_out, std::string& error) {
+  std::ifstream in(path);
+  if (!in) {
+    error = "cannot read turns file";
+    return false;
+  }
+  std::stringstream buffer;
+  buffer << in.rdbuf();
+  Json::Value root;
+  Json::CharReaderBuilder builder;
+  std::string json_error;
+  const std::string text = buffer.str();
+  std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+  if (!reader->parse(text.data(), text.data() + text.size(), &root, &json_error)) {
+    error = "turns file is not valid JSON";
+    return false;
+  }
+  if (!root.isObject() || !root["urls"].isArray() || !root["username"].isString() ||
+      !root["credential"].isString()) {
+    error = "turns file must contain urls, username, and credential";
+    return false;
+  }
+  const std::string username = root["username"].asString();
+  const std::string credential = root["credential"].asString();
+  if (username.empty() || credential.empty() || username.find(';') != std::string::npos ||
+      credential.find(';') != std::string::npos) {
+    error = "turns file credentials are empty or contain a separator";
+    return false;
+  }
+  std::string joined;
+  for (const auto& item : root["urls"]) {
+    if (!item.isString()) {
+      error = "turns file urls must be strings";
+      return false;
+    }
+    const std::string url = item.asString();
+    std::string ice_error;
+    if (!IceUrlUsesHostname(url, ice_error)) {
+      error = ice_error;
+      return false;
+    }
+    if (!joined.empty()) joined += ";";
+    joined += url + ";" + username + ";" + credential;
+  }
+  if (joined.empty()) {
+    error = "turns file has no urls";
+    return false;
+  }
+  turns_out = joined;
+  return true;
+}
+}  // namespace
 
 // Basic split that honours quotes – only used for cmd-line string variant.
 std::vector<std::string> stringSplit(std::string input, std::string delimiter)
@@ -159,6 +353,8 @@ DIRECT_API Options parseOptions(const char* argString) {
 // Function to parse command line string to above options
 Options parseOptions(const std::vector<std::string>& args) {
   Options opts;
+  bool encryption_set = false;
+  bool encryption_off = false;
   // Initialize defaults (ensure all relevant defaults are set here)
   opts.encryption = false;
   opts.whisper = false;
@@ -189,11 +385,32 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --turns=<ip,username,password>     Secured turn server address, e.g. \n"
       "   'turns:global.relay.metered.ca:443?transport=tcp,<username>,<password>'\n"
       "  --vpn=<interface_name>             Specify VPN interface name\n" // Added VPN help
-      "  --camera=<device_name>             Specify camera device name\n" // Added camera help
+      "  --camera=<device_name>             Specify camera device name\n"
+      "  --talking_face=<image_path>        Avatar image for animated AI face\n"
       "  --bonjour_name=<name>              Specify bonjour name\n" // Added bonjour name resolution
       "  --user_name=<name>                 Your user name for registration\n"
       "  --target_name=<name>               Target user name to call (caller mode)\n"
       "  --room_name=<name>                 Room name to join (default: room1)\n"
+      "  --websocket_signaling, --no-websocket_signaling  Enable/disable raw WebSocket signaling endpoint (default: enabled)\n"
+      "  --websocket_port=<port>            Raw WebSocket signaling port (default: 3457)\n"
+      "  --call_setup_timeout_ms=<ms>       Abort a call not connected within this time (default: 45000)\n"
+      "  --media_grace_ms=<ms>              Hang up after media stays disconnected this long (default: 10000)\n"
+      "  --hangup_ack_timeout_ms=<ms>       Wait this long for 200 OK after BYE (default: 2000)\n"
+      "  --tts_voice=<clip>                 Personalized TTS voice: reference clip in POCKET_TTS_VOICES_DIR\n"
+      "  --signal-url=wss://host:443/path   Signaling WebSocket (hostname, explicit port and path)\n"
+      "  --token-file=<path>                Bearer token file (or env DIRECT_SIGNAL_TOKEN). Never logged.\n"
+      "  --token-query                      Also put the token in the WebSocket path. Default is the Authorization header only.\n"
+      "  --turns-file=<json>                TURN urls and credentials from a file. The file is not logged.\n"
+      "  --token-env=<name>                 Env var that holds the bearer token (default DIRECT_SIGNAL_TOKEN)\n"
+      "  --ca-file=<pem>                    CA bundle used to verify the signaling TLS certificate\n"
+      "  --stun=stun:host:port              STUN server (repeatable, hostnames only)\n"
+      "  --codec=h264|vp8|vp9               Force a video codec (default: H.264, then VP8, then VP9)\n"
+      "  --res=WIDTHxHEIGHT                 Send resolution (default 1920x1080 when video is on)\n"
+      "  --fps=30                           Send frame rate, 1..60 (default 30)\n"
+      "  --video-source=pattern|camera|screen  pattern if no camera; screen falls back to pattern\n"
+      "  --audio=dummy                      Use a fake audio device (no Pulse/PipeWire)\n"
+      "  --stats=<seconds>                  Log a GetStats JSON line on this interval\n"
+      "  --duration=<seconds>               Hang up and exit after this many seconds\n"
       "  --help                             Show this help message\n\n"
       "Examples (callee called first, encryption is recommended):\n"
       "  directcall --config settings.json\n"
@@ -210,7 +427,15 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--video", "--no-video", "--whisper_model", "--llama_model", "--llava_mmproj",
     "--webrtc_cert_path", "--webrtc_key_path", "--webrtc_speech_initial_playout_wav",
     "--llama_llava_yuv", "--turns", "--vpn", "--camera", "--bonjour_name",
-    "--user_name", "--target_name", "--room_name", "--help"
+    "--user_name", "--target_name", "--room_name",
+    "--websocket_signaling", "--no-websocket_signaling", "--websocket_port",
+    "--call_setup_timeout_ms", "--media_grace_ms", "--hangup_ack_timeout_ms", "--tts_voice",
+    "--signal-url", "--signal_url", "--token-file", "--token_file",
+    "--token-query", "--no-token-query", "--turns-file", "--turns_file",
+    "--token-env", "--token_env", "--ca-file", "--ca_file", "--stun",
+    "--codec", "--res", "--fps", "--video-source", "--video_source",
+    "--audio", "--stats", "--duration",
+    "--help"
   };
 
   // --- First pass: check for --config --- 
@@ -307,21 +532,32 @@ Options parseOptions(const std::vector<std::string>& args) {
                 RTC_LOG(LS_INFO) << "Config has turns params (string)";
                 opts.turns = t.asString();
             } else if (t.isArray()) {
-                // Expect [ uri, username, password ]
-                if (t.size() >= 3 && t[0].isString() && t[1].isString() && t[2].isString()) {
+                if (t.size() >= 3 && t[0].isString()) {
                     std::string joined;
                     for (Json::ArrayIndex i = 0; i < t.size(); ++i) {
-                        if (!t[i].isString()) {
-                            RTC_LOG(LS_WARNING) << "turns array element " << i << " is not string – skipping";
-                            continue;
-                        }
+                        if (!t[i].isString()) continue;
                         if (!joined.empty()) joined += ";";
                         joined += t[i].asString();
                     }
                     opts.turns = joined;
-                    RTC_LOG(LS_INFO) << "Config turns array joined to: " << opts.turns;
+                    RTC_LOG(LS_INFO) << "Config TURN list loaded, credentials not shown";
+                } else if (t.size() > 0 && t[0].isArray()) {
+                    std::string joined;
+                    for (Json::ArrayIndex j = 0; j < t.size(); ++j) {
+                        const Json::Value& entry = t[j];
+                        if (!entry.isArray() || entry.size() < 3) continue;
+                        for (Json::ArrayIndex k = 0; k < entry.size(); ++k) {
+                            if (!entry[k].isString()) continue;
+                            if (!joined.empty()) joined += ";";
+                            joined += entry[k].asString();
+                        }
+                    }
+                    if (!joined.empty()) {
+                        opts.turns = joined;
+                        RTC_LOG(LS_INFO) << "Config TURN entries loaded, credentials not shown";
+                    }
                 } else {
-                    RTC_LOG(LS_WARNING) << "`turns` array has unexpected structure; expecting at least 3 string elements (uri, user, pass). Ignored.";
+                    RTC_LOG(LS_WARNING) << "`turns` array has unexpected structure; ignored.";
                 }
             } else {
                 RTC_LOG(LS_WARNING) << "`turns` is neither string nor array – ignored";
@@ -332,8 +568,12 @@ Options parseOptions(const std::vector<std::string>& args) {
              opts.vpn = config_json["vpn"].asString();
         }
         if (config_json.isMember("camera") && config_json["camera"].isString()) {
-             RTC_LOG(LS_INFO) << "Config camera: " << config_json["camera"].asString(); // Log value
+             RTC_LOG(LS_INFO) << "Config camera: " << config_json["camera"].asString();
              opts.camera = config_json["camera"].asString();
+        }
+        if (config_json.isMember("talking_face") && config_json["talking_face"].isString()) {
+             opts.talking_face = expandHomePath(config_json["talking_face"].asString());
+             opts.video = true;
         }
         if (config_json.isMember("bonjour_name") && config_json["bonjour_name"].isString()) {
              RTC_LOG(LS_INFO) << "Config bonjour_name: " << config_json["bonjour_name"].asString();
@@ -374,6 +614,19 @@ Options parseOptions(const std::vector<std::string>& args) {
                 RTC_LOG(LS_WARNING) << "`whispers` is neither array nor object – ignored";
             }
         }
+        // Thread counts (0 = auto)
+        if (config_json.isMember("whisper_threads") && config_json["whisper_threads"].isInt()) {
+             opts.whisper_threads = config_json["whisper_threads"].asInt();
+             RTC_LOG(LS_INFO) << "Config whisper_threads: " << opts.whisper_threads;
+        }
+        if (config_json.isMember("llama_threads") && config_json["llama_threads"].isInt()) {
+             opts.llama_threads = config_json["llama_threads"].asInt();
+             RTC_LOG(LS_INFO) << "Config llama_threads: " << opts.llama_threads;
+        }
+        if (config_json.isMember("tts_threads") && config_json["tts_threads"].isInt()) {
+             opts.tts_threads = config_json["tts_threads"].asInt();
+             RTC_LOG(LS_INFO) << "Config tts_threads: " << opts.tts_threads;
+        }
         // Booleans
         if (config_json.isMember("encryption") && config_json["encryption"].isBool()) {
              RTC_LOG(LS_INFO) << "Config encryption: " << config_json["encryption"].asBool(); // Log value
@@ -390,6 +643,26 @@ Options parseOptions(const std::vector<std::string>& args) {
         if (config_json.isMember("video") && config_json["video"].isBool()) {
              RTC_LOG(LS_INFO) << "Config video: " << config_json["video"].asBool(); // Log value
              opts.video = config_json["video"].asBool();
+        }
+        if (config_json.isMember("websocket_signaling") && config_json["websocket_signaling"].isBool()) {
+             RTC_LOG(LS_INFO) << "Config websocket_signaling: " << config_json["websocket_signaling"].asBool();
+             opts.websocket_signaling = config_json["websocket_signaling"].asBool();
+        }
+        if (config_json.isMember("websocket_port") && config_json["websocket_port"].isInt()) {
+             RTC_LOG(LS_INFO) << "Config websocket_port: " << config_json["websocket_port"].asInt();
+             opts.websocket_port = config_json["websocket_port"].asInt();
+        }
+        for (auto [key, field] : {std::pair{"call_setup_timeout_ms", &opts.call_setup_timeout_ms},
+                                  std::pair{"media_grace_ms", &opts.media_grace_ms},
+                                  std::pair{"hangup_ack_timeout_ms", &opts.hangup_ack_timeout_ms}}) {
+          if (config_json.isMember(key) && config_json[key].isInt()) {
+            *field = config_json[key].asInt();
+            RTC_LOG(LS_INFO) << "Config " << key << ": " << *field;
+          }
+        }
+
+        if (config_json.isMember("tts_voice") && config_json["tts_voice"].isString()) {
+          opts.tts_voice = config_json["tts_voice"].asString();
         }
 
         RTC_LOG(LS_INFO) << "Loaded options from config file: " << opts.config_path;
@@ -460,7 +733,10 @@ Options parseOptions(const std::vector<std::string>& args) {
     } else if (arg.find("--vpn=") == 0) { 
         opts.vpn = arg.substr(6);
     } else if (arg.find("--camera=") == 0) {
-        opts.camera = stripQuotes(arg.substr(9)); // length of "--camera=" is 9
+        opts.camera = stripQuotes(arg.substr(9));
+    } else if (arg.find("--talking_face=") == 0) {
+        opts.talking_face = expandHomePath(stripQuotes(arg.substr(15)));
+        opts.video = true;
     } else if (arg.find("--bonjour_name=") == 0) {
         opts.bonjour_name = arg.substr(15);
     } else if (arg.find("--user_name=") == 0) {
@@ -469,14 +745,77 @@ Options parseOptions(const std::vector<std::string>& args) {
         opts.target_name = arg.substr(14);
     } else if (arg.find("--room_name=") == 0) {
         opts.room_name = arg.substr(12);
+    } else if (arg.find("--websocket_port=") == 0) {
+        opts.websocket_port = std::stoi(arg.substr(17));
+    } else if (arg.find("--call_setup_timeout_ms=") == 0) {
+        opts.call_setup_timeout_ms = std::stoi(arg.substr(24));
+    } else if (arg.find("--media_grace_ms=") == 0) {
+        opts.media_grace_ms = std::stoi(arg.substr(17));
+    } else if (arg.find("--hangup_ack_timeout_ms=") == 0) {
+        opts.hangup_ack_timeout_ms = std::stoi(arg.substr(24));
+    } else if (arg.find("--tts_voice=") == 0) {
+        opts.tts_voice = arg.substr(12);
+    } else if (arg.find("--signal-url=") == 0 || arg.find("--signal_url=") == 0) {
+        const auto eq = arg.find('=');
+        opts.signal_url = stripQuotes(arg.substr(eq + 1));
+    } else if (arg.find("--token-file=") == 0 || arg.find("--token_file=") == 0) {
+        const auto eq = arg.find('=');
+        opts.token_file = stripQuotes(arg.substr(eq + 1));
+    } else if (arg == "--token-query") {
+        opts.token_in_query = true;
+    } else if (arg == "--no-token-query") {
+        opts.token_in_query = false;
+    } else if (arg.find("--turns-file=") == 0 || arg.find("--turns_file=") == 0) {
+        const auto eq = arg.find('=');
+        opts.turns_file = stripQuotes(arg.substr(eq + 1));
+    } else if (arg.find("--token-env=") == 0 || arg.find("--token_env=") == 0) {
+        const auto eq = arg.find('=');
+        opts.token_env = stripQuotes(arg.substr(eq + 1));
+    } else if (arg.find("--ca-file=") == 0 || arg.find("--ca_file=") == 0) {
+        const auto eq = arg.find('=');
+        opts.ca_file = stripQuotes(arg.substr(eq + 1));
+    } else if (arg.find("--stun=") == 0) {
+        std::string spec = stripQuotes(arg.substr(7));
+        std::stringstream stun_ss(spec);
+        std::string one;
+        while (std::getline(stun_ss, one, ',')) {
+            if (!one.empty()) opts.stun_urls.push_back(one);
+        }
+    } else if (arg.find("--codec=") == 0) {
+        opts.video_codec = arg.substr(8);
+        opts.video = true;
+    } else if (arg.find("--res=") == 0) {
+        std::string spec = arg.substr(6);
+        auto x = spec.find('x');
+        if (x == std::string::npos) x = spec.find('X');
+        if (x != std::string::npos) {
+            opts.video_width = std::atoi(spec.substr(0, x).c_str());
+            opts.video_height = std::atoi(spec.substr(x + 1).c_str());
+            opts.video = true;
+        }
+    } else if (arg.find("--fps=") == 0) {
+        opts.video_fps = std::atoi(arg.substr(6).c_str());
+        opts.video = true;
+    } else if (arg.find("--video-source=") == 0 || arg.find("--video_source=") == 0) {
+        const auto eq = arg.find('=');
+        opts.video_source = arg.substr(eq + 1);
+        opts.video = true;
+    } else if (arg.find("--audio=") == 0) {
+        opts.audio = arg.substr(8);
+    } else if (arg.find("--stats=") == 0) {
+        opts.stats_interval_sec = std::atoi(arg.substr(8).c_str());
+    } else if (arg.find("--duration=") == 0) {
+        opts.call_duration_sec = std::atoi(arg.substr(11).c_str());
     }
     // Handle flags
     if (arg == "--encryption") {
       RTC_LOG(LS_INFO) << "Args set encryption on";
       opts.encryption = true;
+      encryption_set = true;
     } else if (arg == "--no-encryption") {
       RTC_LOG(LS_INFO) << "Args set encryption off";
       opts.encryption = false;
+      encryption_off = true;
     } else if (arg == "--whisper") {
       RTC_LOG(LS_INFO) << "Args set whisper on";
       opts.whisper = true;
@@ -495,6 +834,12 @@ Options parseOptions(const std::vector<std::string>& args) {
     } else if (arg == "--no-video") { 
       RTC_LOG(LS_INFO) << "Args set video off";
       opts.video = false; 
+    } else if (arg == "--websocket_signaling") {
+      RTC_LOG(LS_INFO) << "Args set websocket_signaling on";
+      opts.websocket_signaling = true;
+    } else if (arg == "--no-websocket_signaling") {
+      RTC_LOG(LS_INFO) << "Args set websocket_signaling off";
+      opts.websocket_signaling = false;
     } else if (arg == "--bonjour") { 
       RTC_LOG(LS_INFO) << "Args set bonjour on";
       opts.video = true;
@@ -587,6 +932,72 @@ Options parseOptions(const std::vector<std::string>& args) {
     }
   }
 
+  if (opts.signal_url.empty() &&
+      (opts.address.rfind("wss://", 0) == 0 || opts.address.rfind("ws://", 0) == 0)) {
+    opts.signal_url = opts.address;
+  }
+  if (!opts.signal_url.empty()) {
+    SignalEndpoint endpoint;
+    std::string url_error;
+    if (!ParseSignalUrl(opts.signal_url, endpoint, url_error)) {
+      opts.parse_error = url_error;
+    } else if (!encryption_set && !encryption_off && endpoint.ssl) {
+      opts.encryption = true;
+    }
+  }
+  for (const auto& stun : opts.stun_urls) {
+    std::string ice_error;
+    if (!IceUrlUsesHostname(stun, ice_error)) {
+      opts.parse_error = ice_error;
+      break;
+    }
+  }
+  if (!opts.turns_file.empty()) {
+    if (!opts.turns.empty()) {
+      opts.parse_error = "use --turns-file without --turns so credentials stay off the command line";
+    } else {
+      std::string loaded;
+      std::string file_error;
+      if (!LoadTurnsFile(opts.turns_file, loaded, file_error)) {
+        opts.parse_error = file_error;
+      } else {
+        opts.turns = loaded;
+      }
+    }
+  }
+  if (opts.parse_error.empty() && !opts.turns.empty()) {
+    std::vector<std::string> parts = stringSplit(opts.turns, ";");
+    for (size_t i = 0; i + 2 < parts.size(); i += 3) {
+      std::string ice_error;
+      if (!IceUrlUsesHostname(parts[i], ice_error)) {
+        opts.parse_error = ice_error;
+        break;
+      }
+    }
+  }
+  if (opts.video) {
+    if (opts.video_fps <= 0) opts.video_fps = 30;
+    if (opts.video_fps > 60) {
+      RTC_LOG(LS_WARNING) << "fps " << opts.video_fps << " clamped to 60";
+      opts.video_fps = 60;
+    }
+    if (opts.video_width <= 0 || opts.video_height <= 0) {
+      opts.video_width = 1920;
+      opts.video_height = 1080;
+    }
+    if (opts.video_source.empty()) {
+      opts.video_source = opts.camera.empty() ? "pattern" : "camera";
+    }
+    std::string codec = opts.video_codec;
+    for (char& c : codec) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (codec == "h.264") codec = "h264";
+    if (!codec.empty() && codec != "h264" && codec != "vp8" && codec != "vp9") {
+      RTC_LOG(LS_WARNING) << "Unknown --codec value; keeping H.264 preferred with VP8/VP9 fallback";
+      codec.clear();
+    }
+    opts.video_codec = codec;
+  }
+
   RTC_LOG(LS_INFO) << "Mode used " << opts.mode; // Log final mode value
   return opts;
 }
@@ -609,7 +1020,7 @@ std::string getUsage(const Options opts) {
   usage << "WebRTC Key Path: " << opts.webrtc_key_path << "\\n";
   usage << "WebRTC Speech Initial Playout WAV: "
         << opts.webrtc_speech_initial_playout_wav << "\\n";
-  usage << "TURN Server: " << (!opts.turns.empty() ? opts.turns : "(not set)") << "\\n";
+  usage << "TURN Server: " << (opts.turns.empty() ? "(not set)" : "(configured, credentials not shown)") << "\\n";
   usage << "VPN Interface: " << (!opts.vpn.empty() ? opts.vpn : "(not set)") << "\\n";
   usage << "Camera: " << (!opts.camera.empty() ? opts.camera : "(not set)") << "\\n";
   if (!opts.config_path.empty()) {
@@ -623,20 +1034,20 @@ std::string getUsage(const Options opts) {
 // LOGGING
 
 void DirectSetLoggingLevel(LoggingSeverity level) {
-  rtc::LogMessage::LogToDebug(static_cast<rtc::LoggingSeverity>(level));
+  webrtc::LogMessage::LogToDebug(static_cast<webrtc::LoggingSeverity>(level));
 }
 
 // CERTIFICATES
 
 // Function to create a self-signed certificate
-rtc::scoped_refptr<rtc::RTCCertificate> DirectCreateCertificate() {
-  auto key_params = rtc::KeyParams::RSA(2048);  // Use RSA with 2048-bit key
-  auto identity = rtc::SSLIdentity::Create("webrtc", key_params);
+webrtc::scoped_refptr<webrtc::RTCCertificate> DirectCreateCertificate() {
+  auto key_params = webrtc::KeyParams::RSA(2048);  // Use RSA with 2048-bit key
+  auto identity = webrtc::SSLIdentity::Create("webrtc", key_params);
   if (!identity) {
     RTC_LOG(LS_ERROR) << "Failed to create SSL identity";
     return nullptr;
   }
-  return rtc::RTCCertificate::Create(std::move(identity));
+  return webrtc::RTCCertificate::Create(std::move(identity));
 }
 
 // Function to read a file into a string
@@ -652,7 +1063,7 @@ std::string DirectReadFile(const std::string& path) {
 }
 
 // Function to load a certificate from PEM files
-rtc::scoped_refptr<rtc::RTCCertificate> DirectLoadCertificate(
+webrtc::scoped_refptr<webrtc::RTCCertificate> DirectLoadCertificate(
     const std::string& cert_path,
     const std::string& key_path) {
   // Read the certificate and key files
@@ -669,18 +1080,18 @@ rtc::scoped_refptr<rtc::RTCCertificate> DirectLoadCertificate(
   RTC_LOG(LS_VERBOSE) << "Private Key PEM:\n" << key_pem;
 
   // Create an SSL identity from the PEM strings
-  auto identity = rtc::SSLIdentity::CreateFromPEMStrings(key_pem, cert_pem);
+  auto identity = webrtc::SSLIdentity::CreateFromPEMStrings(key_pem, cert_pem);
   if (!identity) {
     RTC_LOG(LS_ERROR) << "Failed to create SSL identity from PEM strings";
     return nullptr;
   }
 
-  return rtc::RTCCertificate::Create(std::move(identity));
+  return webrtc::RTCCertificate::Create(std::move(identity));
 }
 
 // Function to load certificate from environment variables or fall back to
 // CreateCertificate
-DIRECT_API rtc::scoped_refptr<rtc::RTCCertificate> DirectLoadCertificateFromEnv(Options opts) {
+DIRECT_API webrtc::scoped_refptr<webrtc::RTCCertificate> DirectLoadCertificateFromEnv(Options opts) {
   RTC_LOG(LS_INFO) << "DirectLoadCertificateFromEnv called with cert_path: '" << opts.webrtc_cert_path << "', key_path: '" << opts.webrtc_key_path << "'";
   
   // Get paths from environment variables
@@ -713,14 +1124,14 @@ DIRECT_API rtc::scoped_refptr<rtc::RTCCertificate> DirectLoadCertificateFromEnv(
 }
 
 DIRECT_API uint32_t DirectCreateRandomId() {
-  return rtc::CreateRandomId();
+  return webrtc::CreateRandomId();
 }
 
 DIRECT_API std::string DirectCreateRandomUuid() {
-  return rtc::CreateRandomUuid();
+  return webrtc::CreateRandomUuid();
 }
 
-DIRECT_API void DirectThreadSetName(rtc::Thread* thread, const char* name) {
+DIRECT_API void DirectThreadSetName(webrtc::Thread* thread, const char* name) {
   if(thread && name && *name) {
     thread->SetName(name, nullptr);
   }

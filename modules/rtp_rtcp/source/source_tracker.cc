@@ -10,10 +10,19 @@
 
 #include "modules/rtp_rtcp/source/source_tracker.h"
 
-#include <algorithm>
+#include <cstdint>
+#include <optional>
 #include <utility>
+#include <vector>
 
+#include "absl/algorithm/container.h"
+#include "api/rtp_packet_info.h"
+#include "api/rtp_packet_infos.h"
+#include "api/transport/rtp/rtp_source.h"
+#include "api/units/timestamp.h"
+#include "rtc_base/checks.h"
 #include "rtc_base/trace_event.h"
+#include "system_wrappers/include/clock.h"
 
 namespace webrtc {
 
@@ -21,20 +30,29 @@ SourceTracker::SourceTracker(Clock* clock) : clock_(clock) {
   RTC_DCHECK(clock_);
 }
 
-void SourceTracker::OnFrameDelivered(const RtpPacketInfos& packet_infos,
-                                     Timestamp delivery_time) {
+SourceTracker::SourceChanged SourceTracker::OnFrameDelivered(
+    const RtpPacketInfos& packet_infos,
+    Timestamp delivery_time) {
   TRACE_EVENT0("webrtc", "SourceTracker::OnFrameDelivered");
   if (packet_infos.empty()) {
-    return;
+    return {};
   }
   if (delivery_time.IsInfinite()) {
     delivery_time = clock_->CurrentTime();
   }
 
+  std::optional<uint32_t> prev_ssrc = last_received_ssrc_;
+  // Copy rather than move to preserve allocated capacity in
+  // `last_received_csrcs_` and avoid reallocations in the loop below.
+  std::vector<uint32_t> prev_csrcs = last_received_csrcs_;
+  last_received_csrcs_.clear();
   for (const RtpPacketInfo& packet_info : packet_infos) {
     for (uint32_t csrc : packet_info.csrcs()) {
       SourceKey key(RtpSourceType::CSRC, csrc);
       SourceEntry& entry = UpdateEntry(key);
+      if (!absl::c_linear_search(last_received_csrcs_, csrc)) {
+        last_received_csrcs_.push_back(csrc);
+      }
 
       entry.timestamp = delivery_time;
       entry.audio_level = packet_info.audio_level();
@@ -46,6 +64,7 @@ void SourceTracker::OnFrameDelivered(const RtpPacketInfos& packet_infos,
 
     SourceKey key(RtpSourceType::SSRC, packet_info.ssrc());
     SourceEntry& entry = UpdateEntry(key);
+    last_received_ssrc_ = packet_info.ssrc();
 
     entry.timestamp = delivery_time;
     entry.audio_level = packet_info.audio_level();
@@ -54,7 +73,12 @@ void SourceTracker::OnFrameDelivered(const RtpPacketInfos& packet_infos,
     entry.rtp_timestamp = packet_info.rtp_timestamp();
   }
 
+  absl::c_sort(last_received_csrcs_);
+
   PruneEntries(delivery_time);
+
+  return {.ssrc_changed = last_received_ssrc_ != prev_ssrc,
+          .csrc_changed = last_received_csrcs_ != prev_csrcs};
 }
 
 std::vector<RtpSource> SourceTracker::GetSources() const {

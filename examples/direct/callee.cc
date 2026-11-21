@@ -1,7 +1,7 @@
 /*
- *  (c) 2025, wilddolphin2022
+ *  (c) 2025, wilddolphin2025
  *  For WebRTCsays.ai project
- *  https://github.com/wilddolphin2022
+ *  https://github.com/wilddolphin2025
  *
  *  Use of this source code is governed by a BSD-style license
  *  that can be found in the LICENSE file in the root of the source
@@ -26,6 +26,7 @@
 
 #include "direct.h"
 #include "status.h"
+#include "sdp_diag.h"
 #include "parser.h"
 
 #if TARGET_OS_IOS || TARGET_OS_OSX
@@ -46,13 +47,7 @@ DirectCallee::DirectCallee(Options opts) : DirectPeer(opts) {
 }
 
 DirectCallee::~DirectCallee() {
-  if (tcp_socket_) {
-    tcp_socket_->Close();
-  }
-  if (listen_socket_) {
-    listen_socket_.reset();
-  }
-  video_sink_.reset();
+  Cleanup();
 }
 
 bool DirectCallee::StartListening() {
@@ -160,10 +155,13 @@ bool DirectCallee::StartListening() {
         return false;
       }
 
-      listen_socket_ = std::make_unique<rtc::AsyncTcpListenSocket>(
-          std::unique_ptr<rtc::Socket>(wrapped_socket));
-      listen_socket_->SignalNewConnection.connect(this,
-                                                  &DirectCallee::OnNewConnection);
+      listen_socket_ = std::make_unique<webrtc::AsyncTcpListenSocket>(
+          *env_,
+          std::unique_ptr<webrtc::Socket>(wrapped_socket));
+      listen_socket_->SubscribeNewConnection(
+          this, [this](webrtc::AsyncListenSocket* ls, webrtc::AsyncPacketSocket* s) {
+            OnNewConnection(ls, s);
+          });
 
       RTC_LOG(LS_INFO) << "Server listening on port " << local_port_;
 
@@ -189,217 +187,141 @@ bool DirectCallee::StartListening() {
   if (network_thread()->IsCurrent()) {
     return listen_fn();
   }
-  network_thread()->Restart();
   return network_thread()->BlockingCall(std::move(listen_fn));
 }
 
-void DirectCallee::OnNewConnection(rtc::AsyncListenSocket* listen_socket,
-                                   rtc::AsyncPacketSocket* new_socket) {
-  RTC_LOG(LS_INFO) << "New connection received";
-
+void DirectCallee::OnNewConnection(webrtc::AsyncListenSocket* listen_socket,
+                                   webrtc::AsyncPacketSocket* new_socket) {
   if (!new_socket) {
-    RTC_LOG(LS_ERROR) << "New socket is null";
+    RTC_LOG(LS_ERROR) << "Callee: new socket is null";
+    return;
+  }
+  // We own the accepted socket from here on.
+  std::unique_ptr<webrtc::AsyncTCPSocket> client(
+      static_cast<webrtc::AsyncTCPSocket*>(new_socket));
+  RTC_LOG(LS_INFO) << "Connection accepted from "
+                   << client->GetRemoteAddress().ToString();
+
+  // One call at a time. tcp_socket_ is only cleared after the previous call's
+  // media is fully released, so this also covers the teardown window.
+  if (InCall() || tcp_socket_) {
+    RTC_LOG(LS_INFO) << "Callee busy, rejecting connection";
+    std::string busy_msg = StatusCodes::kBusyHere;
+    client->Send(busy_msg.c_str(), busy_msg.size(),
+                 webrtc::AsyncSocketPacketOptions());
+    client->Close();
     return;
   }
 
-  // Use a pointer to the specific socket for this connection
-  rtc::AsyncTCPSocket* current_client_socket =
-      static_cast<rtc::AsyncTCPSocket*>(new_socket);
-  RTC_LOG(LS_INFO) << "Connection accepted from "
-                   << current_client_socket->GetRemoteAddress().ToString()
-                   << " on socket (" << new_socket << ")";
+  // Detect half-open signaling connections (peer vanished without FIN):
+  // probe after 15 s idle, give up after 3 x 5 s.
+  client->SetOption(webrtc::Socket::OPT_KEEPALIVE, 1);
+  client->SetOption(webrtc::Socket::OPT_TCP_KEEPIDLE, 15);
+  client->SetOption(webrtc::Socket::OPT_TCP_KEEPINTVL, 5);
+  client->SetOption(webrtc::Socket::OPT_TCP_KEEPCNT, 3);
 
-  // If we are already in an active call (peer_connection_ or an existing
-  // tcp_socket_), politely reject the new connection with "486 Busy Here"
-  if (this->peer_connection_ || (tcp_socket_ && tcp_socket_.get() != nullptr)) {
-    std::string busy_msg = StatusCodes::kBusyHere;
-    current_client_socket->Send(busy_msg.c_str(), busy_msg.size(), rtc::PacketOptions());
-    current_client_socket->Close();
-    return; // keep existing call intact
-  }
+  webrtc::AsyncTCPSocket* raw = client.get();
+  tcp_socket_ = std::move(client);
 
-  // No active call – proceed to accept this socket.
-  tcp_socket_.reset(current_client_socket);
-
-  // Register callback on the specific socket for this connection
-  current_client_socket->RegisterReceivedPacketCallback(
-      // Capture the specific socket pointer for this callback instance
-      [this, current_client_socket](rtc::AsyncPacketSocket* socket_param,
-                                    const rtc::ReceivedPacket& packet) {
-        // Verify the callback is running for the socket it was registered on
-        if (socket_param != current_client_socket) {
-          RTC_LOG(LS_WARNING)
-              << "Received packet on unexpected socket instance. Ignoring.";
+  raw->RegisterReceivedPacketCallback(
+      [this, raw](webrtc::AsyncPacketSocket* socket,
+                  const webrtc::ReceivedIpPacket& packet) {
+        if (socket != raw) {
           return;
         }
-        RTC_LOG(LS_INFO) << "Received packet of size: "
-                         << packet.payload().size() << " on socket "
-                         << current_client_socket;
-        // Pass the correct socket instance (current_client_socket) to OnMessage
-        OnMessage(
-            current_client_socket,
-            reinterpret_cast<const unsigned char*>(packet.payload().data()),
-            packet.payload().size(), packet.source_address());
+        OnMessage(raw,
+                  reinterpret_cast<const unsigned char*>(packet.payload().data()),
+                  packet.payload().size(), packet.source_address());
       });
-  current_client_socket->SubscribeCloseEvent(
-      this,  // use `this` or any stable tag
-      [this](rtc::AsyncPacketSocket* socket, int err) {
-        RTC_LOG(LS_INFO) << "Wire‐level socket closed, err=" << err << ". Initiating Disconnect().";
-
-        // Ensure we tear down media etc. to stop heavy workers like Llama.
-        // Do this on the main thread (same choice as Disconnect()) to avoid threading issues.
-        this->main_thread()->PostTask([self = this]() {
-          self->Disconnect();
-        });
-
-        // Signal any waiters so higher-level loops can restart.
-        connection_closed_event_.Set();
+  raw->SubscribeCloseEvent(
+      this, [this](webrtc::AsyncPacketSocket* socket, int err) {
+        RTC_LOG(LS_INFO) << "Signaling socket closed, err=" << err;
+        OnClose(socket);
       });
-
-  RTC_LOG(LS_INFO) << "Callback registered for incoming messages on socket "
-                   << current_client_socket;
 }
 
-void DirectCallee::OnMessage(rtc::AsyncPacketSocket* socket,
+void DirectCallee::OnMessage(webrtc::AsyncPacketSocket* socket,
                              const unsigned char* data,
                              size_t len,
-                             const rtc::SocketAddress& remote_addr) {
-  // Quick log of incoming message (up to 127 chars)
-  char bufLog[128];
-  size_t cnt = len < sizeof(bufLog) - 1 ? len : sizeof(bufLog) - 1;
-  memcpy(bufLog, data, cnt);
-  bufLog[cnt] = '\0';
-  RTC_LOG(LS_INFO) << "Callee received: " << bufLog << " from "
-                   << remote_addr.ToString();
-
+                             const webrtc::SocketAddress& remote_addr) {
   std::string message(reinterpret_cast<const char*>(data), len);
-  // Use prefix match to be tolerant of combined packets
-  if (message.rfind(Msg::kHello, 0) == 0) {
-    // Determine callee state to pick correct status code
-    //  - 486 Busy Here: already in an active PeerConnection
-    //  - 200 OK: ready to accept call
-    //  - 480 Temporarily Unavailable: not currently listening (should not occur on this path)
+  RTC_LOG(LS_INFO) << "Callee received: " << RedactedSignalingLine(message);
 
-    if (peer_connection_) {
-      // We are already in a call – reject with Busy status.
-      SendMessage(StatusCodes::kBusyHere);
-    } else if (!listen_socket_) {
-      // Should not happen because we're handling a TCP connection, but keep for completeness.
-      SendMessage(StatusCodes::kTemporarilyUnavailable);
-    } else {
-      // Ready – acknowledge.
-      SendMessage(StatusCodes::kOk);
-    }
+  if (message.rfind(Msg::kHello, 0) == 0) {
+    SendMessage(InCall() ? StatusCodes::kBusyHere : StatusCodes::kOk);
   } else if (message.rfind(Msg::kBye, 0) == 0) {
     SendMessage(StatusCodes::kOk);
-    // Schedule a graceful teardown of the current PeerConnection so that the
-    // callee immediately becomes available for a new incoming call.  We post
-    // this task to the main thread to avoid blocking the network thread that
-    // delivered the BYE packet.
-    main_thread()->PostTask([self = this]() {
-      self->ShutdownInternal();
-    });
-    // Skipping synchronous shutdown for BYE to avoid blocking
+    if (InCall()) {
+      EndCall("remote BYE", /*notify_remote=*/false);
+    } else {
+      OnCallEnded(false);
+    }
   } else if (message.rfind(Msg::kCancel, 0) == 0) {
-    RTC_LOG(LS_INFO) << "Received CANCEL from " << remote_addr.ToString()
-                     << ". Restarting listener.";
+    RTC_LOG(LS_INFO) << "Received CANCEL from " << remote_addr.ToString();
     OnCancel(socket);
+  } else if (message.rfind(StatusCodes::kOk, 0) == 0) {
+    // Acknowledgement of our own BYE; the socket is already being closed.
+    RTC_LOG(LS_INFO) << "Peer acknowledged hangup";
   } else {
-    // Forward other messages to default handler
-    // Malformed JSON? – respond with 400 once.
     std::string cmd;
     Json::Value params;
-    if (!ParseMessageLine(std::string((const char*)data, len), cmd, params)) {
-        SendMessage(StatusCodes::kBadRequest);
+    if (!ParseMessageLine(message, cmd, params)) {
+      SendMessage(StatusCodes::kBadRequest);
     }
     HandleMessage(socket, message, remote_addr);
   }
 }
 
-void DirectCallee::OnCancel(rtc::AsyncPacketSocket* socket) {
+void DirectCallee::OnCancel(webrtc::AsyncPacketSocket* socket) {
   if (socket != tcp_socket_.get()) {
     RTC_LOG(LS_WARNING) << "Received CANCEL on an unexpected socket.";
     return;
   }
-
-  // Clear any per-call busy flags so the callee becomes immediately
-  // available for follow-up calls (e.g., when a queued address is waiting
-  // to be dialed by a DirectCalleeClient subclass).
-  ResetCallStartedFlag();      // let derived class clear busy flag / dial queued address
-
-  // Send explicit BYE in response to CANCEL so the caller can distinguish it
-  // from the initial 200 OK used in the HELLO handshake.
+  ResetCallStartedFlag();
+  // Existing callers expect BYE (not 200 OK) as the CANCEL acknowledgement.
   SendMessage(Msg::kBye);
-
-  // Gracefully shut down the active PeerConnection (if any) so we release all
-  // WebRTC resources tied to the just-finished call, but keep the listening
-  // socket open so that we can accept the next incoming connection on the
-  // same TCP port without having to restart the whole DirectCalleeClient.
-  ShutdownInternal();
-
-  // Close and dispose of the per-connection TCP socket on the main thread in
-  // order to avoid blocking the network thread that delivered the packet.  We
-  // intentionally leave the listening socket (listen_socket_) intact so that
-  // the operating system continues to accept new connections on the already
-  // published port.  This eliminates the short time window during which a
-  // follow-up caller could observe "connection refused" before the callee has
-  // had a chance to restart and re-advertise a (potentially different) port.
-  auto old_socket = std::move(tcp_socket_);
-  main_thread()->PostTask([s = std::move(old_socket)]() mutable {
-    // unique_ptr s will be destroyed here when the task runs.
-  });
-
-  // NOTE: We intentionally do NOT signal connection_closed_event_ here.  The
-  // event is used by the outer application loop to decide when to tear down
-  // and recreate the entire DirectCalleeClient instance.  For a simple CANCEL
-  // (normal end-of-call) we can handle the clean-up in-place and stay ready
-  // for the next call immediately, avoiding any avoidable downtime.
-
-  // Mark that we handled a graceful CANCEL so that the forthcoming ICE state
-  // transitions (which will go to "closed") don't propagate to the outer
-  // control-loop via connection_closed_event_.
-  ignore_next_close_event_ = true;
-
-  worker_thread()->PostTask([this]() {
-    if (audio_device_module_) {
-      audio_device_module_->StopPlayout();
-      audio_device_module_->StopRecording();
-      audio_device_module_->Terminate();
-      audio_device_module_ = nullptr;
-      dependencies_.adm   = nullptr;
-    }
-  });
-
-  // Notify outer control loop that the connection has ended so it can
-  // recreate a fresh DirectCalleeClient (and therefore a brand-new listening
-  // socket/port).  This avoids connectivity issues some NATs exhibit when we
-  // keep re-using the same port across calls.
-  // connection_closed_event_.Set();
+  if (InCall()) {
+    EndCall("remote CANCEL", /*notify_remote=*/false);
+  } else {
+    OnCallEnded(false);
+  }
 }
 
-void DirectCallee::OnClose(rtc::AsyncPacketSocket* socket) {
-  RTC_LOG(LS_INFO) << "Callee socket closed";
+void DirectCallee::OnCallEnded(bool notified_remote) {
+  // Runs on main after media is released. Closing on the network thread
+  // after the BYE / 200 OK that is already queued there flushes it first.
+  network_thread()->PostTask([this] {
+    if (tcp_socket_) {
+      tcp_socket_->UnsubscribeCloseEvent(this);
+      tcp_socket_->Close();
+      tcp_socket_.reset();
+    }
+    connection_closed_event_.Set();
+  });
+}
+
+void DirectCallee::OnClose(webrtc::AsyncPacketSocket* socket) {
+  // Network thread. Destroying the socket inside its own close callback is
+  // unsafe, so defer the reset.
+  network_thread()->PostTask([this, socket] {
+    if (tcp_socket_.get() == socket) {
+      tcp_socket_.reset();
+    }
+    if (!InCall()) {
+      connection_closed_event_.Set();
+    }
+  });
+  if (InCall()) {
+    EndCall("signaling connection lost", /*notify_remote=*/false);
+  }
 }
 
 bool DirectCallee::SendMessage(const std::string& message) {
-  RTC_LOG(LS_INFO) << "Callee SEND: " << message;
-
   return DirectPeer::SendMessage(message);
 }
 
-// Override to optionally suppress the global connection-closed signal when we
-// have handled a graceful CANCEL (ignore_next_close_event_ == true).
-void DirectCallee::OnIceConnectionChange(PeerConnectionInterface::IceConnectionState new_state) {
-  if (ignore_next_close_event_ &&
-      (new_state == PeerConnectionInterface::kIceConnectionClosed ||
-       new_state == PeerConnectionInterface::kIceConnectionDisconnected ||
-       new_state == PeerConnectionInterface::kIceConnectionFailed)) {
-    RTC_LOG(LS_INFO) << "Ignoring IceConnectionChange('closed') triggered by graceful CANCEL.";
-    ignore_next_close_event_ = false; // consume flag
-    return; // Do NOT propagate to base, which would set connection_closed_event_
-  }
-
-  // Fallback to default behaviour
+void DirectCallee::OnIceConnectionChange(
+    PeerConnectionInterface::IceConnectionState new_state) {
   DirectPeer::OnIceConnectionChange(new_state);
 }
 

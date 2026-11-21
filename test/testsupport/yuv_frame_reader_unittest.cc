@@ -8,14 +8,18 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include <stdint.h>
 #include <stdio.h>
 
+#include <cstdint>
+#include <cstdio>
 #include <memory>
+#include <optional>
 #include <string>
+#include <tuple>
+#include <vector>
 
 #include "api/scoped_refptr.h"
-#include "api/video/i420_buffer.h"
+#include "api/video/resolution.h"
 #include "api/video/video_frame_buffer.h"
 #include "test/gtest.h"
 #include "test/testsupport/file_utils.h"
@@ -38,8 +42,8 @@ class YuvFrameReaderTest : public ::testing::Test {
   ~YuvFrameReaderTest() override = default;
 
   void SetUp() override {
-    filepath_ = webrtc::test::TempFilename(webrtc::test::OutputPath(),
-                                           "yuv_frame_reader_unittest");
+    filepath_ =
+        test::TempFilename(test::OutputPath(), "yuv_frame_reader_unittest");
     CreateYuvFileAndReader(/*num_frames=*/3, RepeatMode::kSingle);
   }
 
@@ -69,14 +73,14 @@ TEST_F(YuvFrameReaderTest, num_frames) {
 }
 
 TEST_F(YuvFrameReaderTest, PullFrame_frameContent) {
-  rtc::scoped_refptr<I420BufferInterface> buffer = reader_->PullFrame();
+  scoped_refptr<I420BufferInterface> buffer = reader_->PullFrame();
   EXPECT_EQ(0u, *buffer->DataY());
   EXPECT_EQ(1u, *buffer->DataU());
   EXPECT_EQ(2u, *buffer->DataV());
 }
 
 TEST_F(YuvFrameReaderTest, ReadFrame_randomOrder) {
-  rtc::scoped_refptr<I420BufferInterface> buffer = reader_->ReadFrame(2);
+  scoped_refptr<I420BufferInterface> buffer = reader_->ReadFrame(2);
   EXPECT_EQ(2u, *buffer->DataY());
   buffer = reader_->ReadFrame(0);
   EXPECT_EQ(0u, *buffer->DataY());
@@ -85,7 +89,7 @@ TEST_F(YuvFrameReaderTest, ReadFrame_randomOrder) {
 }
 
 TEST_F(YuvFrameReaderTest, PullFrame_scale) {
-  rtc::scoped_refptr<I420BufferInterface> buffer = reader_->PullFrame(
+  scoped_refptr<I420BufferInterface> buffer = reader_->PullFrame(
       /*pulled_frame_num=*/nullptr, Resolution({.width = 2, .height = 2}),
       FrameReader::kNoScale);
   EXPECT_EQ(2, buffer->width());
@@ -101,7 +105,7 @@ TEST_P(YuvFrameReaderRepeatModeTest, PullFrame) {
   auto [num_frames, repeat_mode, expected_frames] = GetParam();
   CreateYuvFileAndReader(num_frames, repeat_mode);
   for (auto expected_frame : expected_frames) {
-    rtc::scoped_refptr<I420BufferInterface> buffer = reader_->PullFrame();
+    scoped_refptr<I420BufferInterface> buffer = reader_->PullFrame();
     EXPECT_EQ(expected_frame, *buffer->DataY());
   }
 }
@@ -130,7 +134,7 @@ TEST_P(YuvFrameReaderFramerateScaleTest, PullFrame) {
   auto [framerate_scale, expected_frames] = GetParam();
   for (auto expected_frame : expected_frames) {
     int pulled_frame;
-    rtc::scoped_refptr<I420BufferInterface> buffer =
+    scoped_refptr<I420BufferInterface> buffer =
         reader_->PullFrame(&pulled_frame, kResolution, framerate_scale);
     EXPECT_EQ(pulled_frame, expected_frame);
   }
@@ -146,6 +150,32 @@ INSTANTIATE_TEST_SUITE_P(YuvFrameReaderTest,
                              std::make_tuple(Ratio({.num = 2, .den = 1}),
                                              std::vector<int>{0, 0, 1, 1}),
                          }));
+
+TEST(ParseResolutionFromFileNameTest, ParseResolutionFromFileName) {
+  EXPECT_EQ(ParseResolutionFromFileName("vidyo1_1280x720_30.yuv"),
+            (Resolution{.width = 1280, .height = 720}));
+  EXPECT_EQ(ParseResolutionFromFileName("vidyo4_1280x720_30"),
+            (Resolution{.width = 1280, .height = 720}));
+  EXPECT_EQ(ParseResolutionFromFileName("vidyo1_320x180_15.yuv"),
+            (Resolution{.width = 320, .height = 180}));
+  EXPECT_EQ(ParseResolutionFromFileName("vidyo3_720p_60fps.y4m"),
+            (Resolution{.width = 1280, .height = 720}));
+  EXPECT_EQ(ParseResolutionFromFileName("ConferenceMotion_1280_720_50.yuv"),
+            (Resolution{.width = 1280, .height = 720}));
+  EXPECT_EQ(ParseResolutionFromFileName("difficult_photo_1850_1110.yuv"),
+            (Resolution{.width = 1850, .height = 1110}));
+  EXPECT_EQ(ParseResolutionFromFileName("foreman_128x96.yuv"),
+            (Resolution{.width = 128, .height = 96}));
+  EXPECT_EQ(ParseResolutionFromFileName("foreman_cif_short.yuv"),
+            (Resolution{.width = 352, .height = 288}));
+  EXPECT_EQ(ParseResolutionFromFileName("paris_qcif.yuv"),
+            (Resolution{.width = 176, .height = 144}));
+  EXPECT_EQ(ParseResolutionFromFileName("clip1_qvga.yuv"),
+            (Resolution{.width = 320, .height = 240}));
+  EXPECT_EQ(ParseResolutionFromFileName("clip1_vga.yuv"),
+            (Resolution{.width = 640, .height = 480}));
+  EXPECT_EQ(ParseResolutionFromFileName("unknown_clip.yuv"), std::nullopt);
+}
 
 }  // namespace test
 }  // namespace webrtc

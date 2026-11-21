@@ -15,11 +15,10 @@
 #include <cstdint>
 #include <map>
 #include <memory>
-#include <optional>
+#include <span>
 #include <vector>
 
 #include "absl/base/nullability.h"
-#include "api/array_view.h"
 #include "api/call/bitrate_allocation.h"
 #include "api/call/transport.h"
 #include "api/crypto/crypto_options.h"
@@ -34,7 +33,6 @@
 #include "api/units/data_size.h"
 #include "api/units/frequency.h"
 #include "api/video/encoded_image.h"
-#include "api/video/video_codec_type.h"
 #include "api/video/video_layers_allocation.h"
 #include "api/video_codecs/video_encoder.h"
 #include "call/rtp_config.h"
@@ -48,7 +46,6 @@
 #include "modules/rtp_rtcp/source/rtp_sender_video.h"
 #include "modules/rtp_rtcp/source/rtp_sequence_number_map.h"
 #include "modules/rtp_rtcp/source/video_fec_generator.h"
-#include "rtc_base/rate_limiter.h"
 #include "rtc_base/synchronization/mutex.h"
 #include "rtc_base/system/no_unique_address.h"
 #include "rtc_base/thread_annotations.h"
@@ -87,7 +84,7 @@ class RtpVideoSender : public RtpVideoSenderInterface,
   // Rtp modules are assumed to be sorted in simulcast index order.
   RtpVideoSender(
       const Environment& env,
-      absl::Nonnull<TaskQueueBase*> transport_queue,
+      TaskQueueBase* absl_nonnull transport_queue,
       const std::map<uint32_t, RtpState>& suspended_ssrcs,
       const std::map<uint32_t, RtpPayloadState>& states,
       const RtpConfig& rtp_config,
@@ -95,11 +92,10 @@ class RtpVideoSender : public RtpVideoSenderInterface,
       Transport* send_transport,
       const RtpSenderObservers& observers,
       RtpTransportControllerSendInterface* transport,
-      RateLimiter* retransmission_limiter,  // move inside RtpTransport
       std::unique_ptr<FecController> fec_controller,
       FrameEncryptorInterface* frame_encryptor,
       const CryptoOptions& crypto_options,  // move inside RtpTransport
-      rtc::scoped_refptr<FrameTransformerInterface> frame_transformer);
+      scoped_refptr<FrameTransformerInterface> frame_transformer);
   ~RtpVideoSender() override;
 
   RtpVideoSender(const RtpVideoSender&) = delete;
@@ -115,9 +111,8 @@ class RtpVideoSender : public RtpVideoSenderInterface,
   std::map<uint32_t, RtpPayloadState> GetRtpPayloadStates() const
       RTC_LOCKS_EXCLUDED(mutex_) override;
 
-  void DeliverRtcp(const uint8_t* packet, size_t length)
+  void DeliverRtcp(std::span<const uint8_t> packet)
       RTC_LOCKS_EXCLUDED(mutex_) override;
-
   // Implements webrtc::VCMProtectionCallback.
   int ProtectionRequest(const FecProtectionParams* delta_params,
                         const FecProtectionParams* key_params,
@@ -141,12 +136,12 @@ class RtpVideoSender : public RtpVideoSenderInterface,
       const CodecSpecificInfo* codec_specific_info)
       RTC_LOCKS_EXCLUDED(mutex_) override;
 
-  void OnBitrateAllocationUpdated(const VideoBitrateAllocation& bitrate)
-      RTC_LOCKS_EXCLUDED(mutex_) override;
+  void OnFrameDropped(uint32_t rtp_timestamp,
+                      int spatial_id,
+                      bool is_end_of_temporal_unit) override;
+
   void OnVideoLayersAllocationUpdated(
       const VideoLayersAllocation& layers) override;
-  void OnTransportOverheadChanged(size_t transport_overhead_bytes_per_packet)
-      RTC_LOCKS_EXCLUDED(mutex_) override;
   void OnBitrateUpdated(BitrateAllocationUpdate update, int framerate)
       RTC_LOCKS_EXCLUDED(mutex_) override;
   uint32_t GetPayloadBitrateBps() const RTC_LOCKS_EXCLUDED(mutex_) override;
@@ -154,9 +149,15 @@ class RtpVideoSender : public RtpVideoSenderInterface,
   void SetEncodingData(size_t width, size_t height, size_t num_temporal_layers)
       RTC_LOCKS_EXCLUDED(mutex_) override;
 
+  // Sets the list of CSRCs to be included in every packet. If more than
+  // kRtpCsrcSize CSRCs are provided, only the first kRtpCsrcSize elements are
+  // kept.
+  void SetCsrcs(std::span<const uint32_t> csrcs)
+      RTC_LOCKS_EXCLUDED(mutex_) override;
+
   std::vector<RtpSequenceNumberMap::Info> GetSentRtpPacketInfos(
       uint32_t ssrc,
-      rtc::ArrayView<const uint16_t> sequence_numbers) const
+      std::span<const uint16_t> sequence_numbers) const
       RTC_LOCKS_EXCLUDED(mutex_) override;
 
   // From StreamFeedbackObserver.
@@ -201,8 +202,10 @@ class RtpVideoSender : public RtpVideoSenderInterface,
   const std::vector<webrtc_internal_rtp_video_sender::RtpStreamSender>
       rtp_streams_;
   const RtpConfig rtp_config_;
-  const std::optional<VideoCodecType> codec_type_;
   RtpTransportControllerSendInterface* const transport_;
+
+  // The list of CSRCs to be included when sending an encoded image.
+  std::vector<uint32_t> csrcs_ RTC_GUARDED_BY(mutex_);
 
   // When using the generic descriptor we want all simulcast streams to share
   // one frame id space (so that the SFU can switch stream without having to

@@ -10,15 +10,27 @@
 
 #include "sdk/android/src/jni/pc/rtc_stats_collector_callback_wrapper.h"
 
+#include <jni.h>
+
+#include <cstdint>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
-#include "rtc_base/string_encode.h"
+#include "absl/strings/str_cat.h"
+#include "api/scoped_refptr.h"
+#include "api/stats/attribute.h"
+#include "api/stats/rtc_stats.h"
+#include "api/stats/rtc_stats_report.h"
+#include "rtc_base/checks.h"
 #include "sdk/android/generated_external_classes_jni/BigInteger_jni.h"
 #include "sdk/android/generated_peerconnection_jni/RTCStatsCollectorCallback_jni.h"
 #include "sdk/android/generated_peerconnection_jni/RTCStatsReport_jni.h"
 #include "sdk/android/generated_peerconnection_jni/RTCStats_jni.h"
 #include "sdk/android/native_api/jni/java_types.h"
+#include "sdk/android/native_api/jni/jvm.h"
+#include "sdk/android/native_api/jni/scoped_java_ref.h"
 
 namespace webrtc {
 namespace jni {
@@ -27,7 +39,7 @@ namespace {
 
 ScopedJavaLocalRef<jobject> NativeToJavaBigInteger(JNIEnv* env, uint64_t u) {
   return JNI_BigInteger::Java_BigInteger_Constructor__String(
-      env, NativeToJavaString(env, rtc::ToString(u)));
+      env, NativeToJavaString(env, absl::StrCat(u)));
 }
 
 ScopedJavaLocalRef<jobjectArray> NativeToJavaBigIntegerArray(
@@ -105,7 +117,7 @@ ScopedJavaLocalRef<jobject> NativeToJavaRtcStats(JNIEnv* env,
 
 ScopedJavaLocalRef<jobject> NativeToJavaRtcStatsReport(
     JNIEnv* env,
-    const rtc::scoped_refptr<const RTCStatsReport>& report) {
+    const scoped_refptr<const RTCStatsReport>& report) {
   ScopedJavaLocalRef<jobject> j_stats_map =
       NativeToJavaMap(env, *report, [](JNIEnv* env, const RTCStats& stats) {
         return std::make_pair(NativeToJavaString(env, stats.id()),
@@ -124,7 +136,7 @@ RTCStatsCollectorCallbackWrapper::RTCStatsCollectorCallbackWrapper(
 RTCStatsCollectorCallbackWrapper::~RTCStatsCollectorCallbackWrapper() = default;
 
 void RTCStatsCollectorCallbackWrapper::OnStatsDelivered(
-    const rtc::scoped_refptr<const RTCStatsReport>& report) {
+    const scoped_refptr<const RTCStatsReport>& report) {
   JNIEnv* jni = AttachCurrentThreadIfNeeded();
   Java_RTCStatsCollectorCallback_onStatsDelivered(
       jni, j_callback_global_, NativeToJavaRtcStatsReport(jni, report));
@@ -132,3 +144,7 @@ void RTCStatsCollectorCallbackWrapper::OnStatsDelivered(
 
 }  // namespace jni
 }  // namespace webrtc
+
+DEFINE_JNI(RTCStatsCollectorCallback)
+DEFINE_JNI(RTCStatsReport)
+DEFINE_JNI(RTCStats)

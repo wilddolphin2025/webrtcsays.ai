@@ -3,9 +3,100 @@
 # Exit on any error
 set -e
 
-# Always set repo root ONCE at the top
+# Always set repo root ONCE at the top; all relative paths assume repo root.
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$REPO_ROOT"
+
+# Pull out -b / --branch (and optional --branch=ref) so remaining args match the
+# build-type parser below. Outer repo still follows its current branch; src/ uses SRC_GIT_REF.
+# Optional --whillats-accel overrides env WHILLATS_ACCEL for whillats (GGML) backend.
+SRC_BRANCH_OVERRIDE=""
+WHILLATS_ACCEL_CLI=""
+EARLY_ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -b|--branch)
+      if [ -z "${2:-}" ]; then
+        echo "ERROR: $1 requires a branch name, tag, or commit"
+        exit 1
+      fi
+      SRC_BRANCH_OVERRIDE="$2"
+      shift 2
+      ;;
+    --branch=*)
+      SRC_BRANCH_OVERRIDE="${1#*=}"
+      if [ -z "$SRC_BRANCH_OVERRIDE" ]; then
+        echo "ERROR: --branch= requires a non-empty ref"
+        exit 1
+      fi
+      shift
+      ;;
+    --whillats-accel)
+      if [ -z "${2:-}" ]; then
+        echo "ERROR: --whillats-accel requires a value: cpu, cuda, metal, or auto"
+        exit 1
+      fi
+      WHILLATS_ACCEL_CLI="$2"
+      shift 2
+      ;;
+    --whillats-accel=*)
+      WHILLATS_ACCEL_CLI="${1#*=}"
+      if [ -z "$WHILLATS_ACCEL_CLI" ]; then
+        echo "ERROR: --whillats-accel= requires a non-empty value"
+        exit 1
+      fi
+      shift
+      ;;
+    *)
+      EARLY_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+if [ ${#EARLY_ARGS[@]} -gt 0 ]; then
+  set -- "${EARLY_ARGS[@]}"
+else
+  set --
+fi
+
+# WebRTC top-level directories that may appear at the gclient parent alongside
+# `src/` as stray checkouts. Remove only when nothing under them is tracked in
+# git (avoids deleting the real working tree or folders like models/).
+WEBRTC_SPILL_DIRNAMES=(
+  api audio base build build_overrides buildtools call common_audio common_video
+  data docs examples experiments g3doc infra ios logging media modules mojo net
+  p2p pc resources rtc_base rtc_tools sdk stats system_wrappers test testing
+  third_party tools tools_webrtc video out
+)
+
+remove_webrtc_spill_at_root() {
+  local d
+  for d in "${WEBRTC_SPILL_DIRNAMES[@]}"; do
+    [ -d "$REPO_ROOT/$d" ] || continue
+    echo "Removing WebRTC spill directory at repo root (duplicate of src/): $d"
+    rm -rf "$REPO_ROOT/$d"
+  done
+}
+
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+CURRENT_SHA=$(git rev-parse HEAD)
+if [ "$CURRENT_BRANCH" = "HEAD" ]; then
+  echo "Detached HEAD detected (tag build). Using commit SHA: $CURRENT_SHA"
+  CURRENT_BRANCH="$CURRENT_SHA"
+fi
+
+# Ref for src/ and whillats: explicit -b/--branch, else SRC_BRANCH env, else outer branch.
+if [ -n "$SRC_BRANCH_OVERRIDE" ]; then
+  SRC_GIT_REF="$SRC_BRANCH_OVERRIDE"
+elif [ -n "${SRC_BRANCH:-}" ]; then
+  SRC_GIT_REF="$SRC_BRANCH"
+else
+  SRC_GIT_REF="$CURRENT_BRANCH"
+fi
+if [ -n "$SRC_BRANCH_OVERRIDE" ] || [ -n "${SRC_BRANCH:-}" ]; then
+  echo "src (and whillats) will checkout: $SRC_GIT_REF"
+fi
+
 WHILLATS_DIR="$REPO_ROOT/src/modules/third_party/whillats"
 
 # Clean up old directories if they exist, but keep src
@@ -15,10 +106,10 @@ if [ -f ".gclient" ]; then
     rm -f .gclient
 fi
 
-# Ensure we're on the avatar branch
-echo "Switching to $CURRENT_BRANCH branch..."
-git fetch origin $CURRENT_BRANCH 
-git checkout $CURRENT_BRANCH 
+# Ensure we're on the correct branch/commit
+echo "Switching to $CURRENT_BRANCH..."
+git fetch origin
+git checkout "$CURRENT_BRANCH"
 
 # Verify we're on the correct branch
 echo "Current commit: $(git rev-parse HEAD)"
@@ -37,6 +128,11 @@ solutions = [
     "name": "src",
     "url": "$ORIGIN_URL",
     "custom_deps": {},
+    "custom_vars": {
+      "checkout_instrumented_libraries": False,
+      "checkout_android": False,
+      "checkout_ios": $( [ "${1:-}" = "ios" ] && echo True || echo False ),
+    },
     "deps_file": "DEPS",
   },
 ]
@@ -55,16 +151,23 @@ else
     echo "Warning: depot_tools may have compatibility issues with Python 3.13+"
 fi
 
-# Check if depot_tools is already available in PATH
-if command -v gclient >/dev/null 2>&1; then
-    echo "depot_tools already available in PATH"
-elif [ -d "$HOME/depot_tools" ]; then
-    PATH="$HOME/depot_tools:$PATH"
-    echo "Added $HOME/depot_tools to PATH (prepended)"
+# Prepend depot_tools when present. Ninja/gn invoke vpython3 from here; if gclient
+# exists elsewhere on PATH we must still prepend or builds fail with "vpython3: not found".
+DEPOT_TOOLS_DIR=""
+if [ -d "$HOME/depot_tools" ]; then
+    DEPOT_TOOLS_DIR="$HOME/depot_tools"
 elif [ -d "$HOME/Public/depot_tools" ]; then
-    PATH="$HOME/Public/depot_tools:$PATH"
-    echo "Added $HOME/Public/depot_tools to PATH (prepended)"
-else
+    DEPOT_TOOLS_DIR="$HOME/Public/depot_tools"
+fi
+if [ -n "$DEPOT_TOOLS_DIR" ]; then
+    case ":$PATH:" in
+        *":$DEPOT_TOOLS_DIR:"*) echo "depot_tools already at front of PATH";;
+        *)
+            PATH="$DEPOT_TOOLS_DIR:$PATH"
+            echo "Prepended $DEPOT_TOOLS_DIR to PATH (gclient, vpython3, gn, ...)"
+            ;;
+    esac
+elif ! command -v gclient >/dev/null 2>&1; then
     echo "depot_tools not found in PATH or expected directories."
     echo "Attempting to install depot_tools..."
     git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git "$HOME/depot_tools"
@@ -77,27 +180,64 @@ else
     fi
 fi
 
+if ! command -v vpython3 >/dev/null 2>&1; then
+    echo "ERROR: vpython3 not found. Chromium ninja needs depot_tools on PATH."
+    echo "  export PATH=\"\$HOME/depot_tools:\$PATH\"   # then: cd src && ninja -C out/debug directcall"
+    exit 1
+fi
 
-# Check if src directory exists and is initialized properly
-if [ -d "src" ] && [ -d "src/build" ] && [ -f "src/.git/HEAD" ] && [ -f "src/build/dotfile_settings.gni" ]; then
-    echo "Skipping gclient sync as src directory already exists and appears properly initialized."
-else
-    echo "Running gclient sync to initialize or fix src directory..."
-    # Force a clean sync if dotfile_settings.gni is missing
-    if [ -d "src" ] && [ ! -f "src/build/dotfile_settings.gni" ]; then
-        echo "Missing critical build files, forcing clean gclient sync..."
-        rm -rf src
-    fi
+
+# First run: let gclient clone src/. Then check out the requested ref *before*
+# the real sync so that ref's DEPS decides the toolchain, sysroot and
+# third_party revisions (syncing first left M134 build files under an M156 tree).
+if [ ! -e "src/.git" ]; then
+    echo "Cloning src/ ..."
     gclient sync --nohooks --no-history --shallow
-    if [ ! -d "src/build" ] || [ ! -f "src/build/dotfile_settings.gni" ]; then
-        echo "ERROR: src/build directory missing or dotfile_settings.gni missing after gclient sync. Check your DEPS file or sync process."
-        exit 1
-    fi
+fi
+echo "Checking out $SRC_GIT_REF in src/ ..."
+git -C src fetch --depth=1 origin "$SRC_GIT_REF" ||
+    { echo "ERROR: cannot fetch $SRC_GIT_REF"; exit 1; }
+git -C src checkout -B "$SRC_GIT_REF" FETCH_HEAD 2>/dev/null ||
+    git -C src checkout --detach FETCH_HEAD
+# whillats follows the commit pinned by src/, including its engines.
+git -C src submodule update --init --recursive --depth=1 modules/third_party/whillats
 
-    rm -rf ./api ./audio ./build_overrides ./call ./common_audio ./common_video ./data ./docs 
-    rm -rf ./examples ./experiments ./g3doc ./infra ./logging ./media ./modules ./net ./p2p 
-    rm -rf ./pc ./resource ./rtc-base ./rtc-tools ./sdk ./stats ./system-wrappers ./test 
-    rm -rf ./tools ./tools_webrtc ./video 
+echo "Syncing dependencies for $(git -C src rev-parse --short HEAD) ..."
+gclient sync -D --force --nohooks --no-history --shallow -j "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+# Hooks, gn and ninja must use the depot_tools this DEPS pins: an older
+# ~/depot_tools cannot parse newer vpython.toml files ("requires-python").
+if [ -x "src/third_party/depot_tools/gclient" ]; then
+    PATH="$REPO_ROOT/src/third_party/depot_tools:$PATH"
+    echo "Using pinned depot_tools from src/third_party/depot_tools"
+    # DEPOT_TOOLS_UPDATE=0 skips this, and gn then fails with
+    # "python3_bin_reldir.txt not found".
+    if [ ! -f "src/third_party/depot_tools/python3_bin_reldir.txt" ]; then
+        echo "Bootstrapping pinned depot_tools ..."
+        ( cd src/third_party/depot_tools && DEPOT_TOOLS_UPDATE=1 ./ensure_bootstrap )
+    fi
+    export DEPOT_TOOLS_UPDATE=0
+fi
+gclient runhooks
+if [ ! -f "src/build/dotfile_settings.gni" ] ||
+   ! grep -q expand_directory_allowlist src/build/dotfile_settings.gni; then
+    echo "ERROR: src/build does not match src/DEPS after gclient sync."
+    exit 1
+fi
+
+# After sync, drop previous Chromium ninja output under src/ (often tens of GB). gn/ninja
+# recreates out/. Set BUILD_KEEP_SRC_OUT=1 to preserve an existing src/out tree.
+if [ "${BUILD_KEEP_SRC_OUT:-}" != "1" ] && [ -d "$REPO_ROOT/src/out" ]; then
+    echo "Removing $REPO_ROOT/src/out (previous build output) to free disk space before configuring..."
+    rm -rf "$REPO_ROOT/src/out"
+fi
+
+# Drop stray duplicate tree at gclient root whether or not we synced this run.
+remove_webrtc_spill_at_root
+
+# Optional: remove root .cipd cache (large; recreated on next sync). Off by default.
+if [ "${BUILD_RM_ROOT_CIPD:-}" = "1" ] && [ -d "$REPO_ROOT/.cipd" ]; then
+    echo "BUILD_RM_ROOT_CIPD=1: removing $REPO_ROOT/.cipd"
+    rm -rf "$REPO_ROOT/.cipd"
 fi
 
 # Copy .vpython3 to src directory
@@ -105,9 +245,6 @@ cp .vpython3 src/ || { echo "WARNING: .vpython3 not found in root, build may fai
 
 # Navigate to src directory
 cd src
-
-git fetch origin $CURRENT_BRANCH 
-git checkout $CURRENT_BRANCH 
 
 # Detect platform architecture for sysroot
 ARCH=$(uname -m)
@@ -124,12 +261,6 @@ case "$ARCH" in
         ;;
 esac
 
-if [ -n "$SYSROOT_ARCH" ] && [ -f build/linux/sysroot_scripts/install-sysroot.py ]; then
-    echo "Installing sysroot for architecture: $SYSROOT_ARCH"
-    python3 build/linux/sysroot_scripts/install-sysroot.py --arch=$SYSROOT_ARCH
-else
-    echo "Sysroot install script not found or not required for this architecture. Skipping sysroot installation."
-fi
 
 # For ARM64 Linux, use system Clang and ensure required packages are installed
 if [[ "$OSTYPE" != "darwin"* ]] && ([ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]); then
@@ -182,9 +313,6 @@ if [[ "$OSTYPE" != "darwin"* ]] && ([ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm6
         fi
         cd -
     fi
-    # Skip update.py
-else
-    python3 tools/clang/scripts/update.py
 fi
 
 # For macOS, set deployment target and handle ARM64 if applicable
@@ -213,14 +341,17 @@ build_whillats() {
     fi
     echo "[build-whillats] Current root .gitmodules contents:"
     cat "$REPO_ROOT/.gitmodules"
-    # Only update/init submodule if whillats dir does not exist or is empty
-    if [ ! -d "$WHILLATS_DIR" ] || [ -z "$(ls -A "$WHILLATS_DIR" 2>/dev/null)" ]; then
-        echo "Initializing parent submodule: modules/third_party/whillats"
-        git submodule update --init modules/third_party/whillats
+    # Use the whillats commit pinned by src/ (and its pinned engines);
+    # WHILLATS_REF=<branch|tag> overrides it for experiments.
+    if [ -n "${WHILLATS_REF:-}" ]; then
+        echo "[build-whillats] WHILLATS_REF=$WHILLATS_REF overrides the pinned commit"
+        git -C "$WHILLATS_DIR" fetch --depth=1 origin "$WHILLATS_REF" &&
+            git -C "$WHILLATS_DIR" checkout --detach FETCH_HEAD &&
+            git -C "$WHILLATS_DIR" submodule update --init --recursive --depth=1
+    else
+        git submodule update --init --recursive --depth=1 modules/third_party/whillats
     fi
-    
-    # Do not modify submodule branch if there are local edits; builds should use current working tree
-    echo "[build-whillats] Skipping submodule branch checkout to preserve local edits"
+    echo "[build-whillats] whillats at $(git -C "$WHILLATS_DIR" describe --tags --always)"
 
     if [ ! -d "$WHILLATS_DIR" ]; then
         echo "ERROR: $WHILLATS_DIR directory not found."
@@ -243,46 +374,73 @@ build_whillats() {
 
     pushd "$WHILLATS_DIR"
 
-    # Patch: Check for GCC 11 and set build configuration (Linux only)
-    CMAKE_CUDA_DISABLED=""
-    CMAKE_CUDA_COMPILER_ARG=""
-    CMAKE_CUDA_HOST_COMPILER_ARG=""
-    CMAKE_CUDA_STANDARD=""
-    CMAKE_CXX_STANDARD=""
-    CMAKE_CUDA_ARCH=""
-    CMAKE_CUDA_FLAGS=""
-    GGML_CUDA_ON=""
-    
-    # Skip CUDA configuration on macOS and enable Metal instead
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        echo "[build-whillats] macOS detected, enabling Metal GPU acceleration and disabling CUDA"
-        CMAKE_CUDA_DISABLED="-DGGML_CUDA=OFF -DWHISPER_CUDA=OFF -DGGML_CUBLAS=OFF -DLLAMA_CUDA=OFF"
-    elif grep -q 'GGML_CUDA' CMakeLists.txt || grep -r 'CUDA' .; then
-        GGML_CUDA_ON="1"
-        if ! command -v gcc-11 >/dev/null 2>&1 || ! command -v g++-11 >/dev/null 2>&1; then
-            echo "[build-whillats] gcc-11/g++-11 not found. Attempting to install..."
-            if [ "$EUID" -ne 0 ]; then
-                if command -v sudo >/dev/null 2>&1; then
-                    sudo apt-get update && sudo apt-get install -y gcc-11 g++-11
-                else
-                    echo "[build-whillats] ERROR: sudo not found. Please install gcc-11 and g++-11 manually."
-                    exit 1
-                fi
+    # --- Whillats GGML backend: default CPU; opt into CUDA or Metal ---
+    # WHILLATS_ACCEL: cpu (default), cuda, metal (macOS), auto (legacy: Metal on mac, else CUDA if nvcc)
+    # Optional: WHILLATS_CUDA_ARCH for cuda (e.g. 80-real); else use nvidia-smi compute_cap when available.
+    local_accel="${WHILLATS_ACCEL_CLI:-${WHILLATS_ACCEL:-cpu}}"
+    local_accel="$(printf '%s' "$local_accel" | tr '[:upper:]' '[:lower:]')"
+    GPU_FLAGS=""
+    case "$local_accel" in
+      cpu)
+        echo "[build-whillats] WHILLATS_ACCEL=cpu (default): CPU-only (no Metal, no CUDA)"
+        GPU_FLAGS="-DGGML_METAL=OFF -DGGML_CUDA=OFF"
+        ;;
+      cuda)
+        if ! command -v nvcc >/dev/null 2>&1; then
+            echo "ERROR: WHILLATS_ACCEL=cuda but nvcc not found in PATH"
+            exit 1
+        fi
+        echo "[build-whillats] WHILLATS_ACCEL=cuda: enabling CUDA"
+        GPU_FLAGS="-DGGML_METAL=OFF -DGGML_CUDA=ON"
+        if [ -n "${WHILLATS_CUDA_ARCH:-}" ]; then
+            echo "[build-whillats] Using WHILLATS_CUDA_ARCH=${WHILLATS_CUDA_ARCH}"
+            GPU_FLAGS="$GPU_FLAGS -DCMAKE_CUDA_ARCHITECTURES=${WHILLATS_CUDA_ARCH}"
+        else
+            NATIVE_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+            if [ -n "$NATIVE_ARCH" ]; then
+                echo "[build-whillats] Detected native CUDA architecture: sm_${NATIVE_ARCH}"
+                GPU_FLAGS="$GPU_FLAGS -DCMAKE_CUDA_ARCHITECTURES=${NATIVE_ARCH}-real"
             else
-                apt-get update && apt-get install -y gcc-11 g++-11
+                echo "[build-whillats] WARNING: nvidia-smi not available; omitting CMAKE_CUDA_ARCHITECTURES (toolkit default)"
             fi
         fi
-        if command -v nvcc >/dev/null 2>&1; then
-            echo "[build-whillats] NVCC found, but using CPU-only mode due to CUDA 12.8 + glibc 2.41 compatibility"
-            echo "[build-whillats] Your RTX 3050 is ready for CUDA when compatibility is resolved"
-            echo "[build-whillats] Building with optimized CPU-only mode for now"
-            CMAKE_CUDA_DISABLED="-DGGML_CUDA=OFF -DWHISPER_CUDA=OFF -DGGML_CUBLAS=OFF -DLLAMA_CUDA=OFF"
-
+        ;;
+      metal)
+        if [[ "$OSTYPE" != "darwin"* ]]; then
+            echo "[build-whillats] WARNING: WHILLATS_ACCEL=metal on non-macOS; using CPU-only"
+            GPU_FLAGS="-DGGML_METAL=OFF -DGGML_CUDA=OFF"
         else
-            echo "[build-whillats] NVCC not found. Building in CPU-only mode."
-            CMAKE_CUDA_DISABLED="-DGGML_CUDA=OFF -DWHISPER_CUDA=OFF -DGGML_CUBLAS=OFF -DLLAMA_CUDA=OFF"
+            echo "[build-whillats] WHILLATS_ACCEL=metal: enabling Metal"
+            GPU_FLAGS="-DGGML_METAL=ON -DGGML_CUDA=OFF"
         fi
-    fi
+        ;;
+      auto)
+        echo "[build-whillats] WHILLATS_ACCEL=auto: legacy detection (Metal on macOS, else CUDA if nvcc, else CPU)"
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            echo "[build-whillats] macOS: Metal on"
+            GPU_FLAGS="-DGGML_METAL=ON -DGGML_CUDA=OFF"
+        elif command -v nvcc >/dev/null 2>&1; then
+            echo "[build-whillats] NVCC found: CUDA on"
+            GPU_FLAGS="-DGGML_METAL=OFF -DGGML_CUDA=ON"
+            if [ -n "${WHILLATS_CUDA_ARCH:-}" ]; then
+                GPU_FLAGS="$GPU_FLAGS -DCMAKE_CUDA_ARCHITECTURES=${WHILLATS_CUDA_ARCH}"
+            else
+                NATIVE_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
+                if [ -n "$NATIVE_ARCH" ]; then
+                    echo "[build-whillats] Detected native CUDA architecture: sm_${NATIVE_ARCH}"
+                    GPU_FLAGS="$GPU_FLAGS -DCMAKE_CUDA_ARCHITECTURES=${NATIVE_ARCH}-real"
+                fi
+            fi
+        else
+            echo "[build-whillats] No GPU toolchain: CPU-only"
+            GPU_FLAGS="-DGGML_METAL=OFF -DGGML_CUDA=OFF"
+        fi
+        ;;
+      *)
+        echo "ERROR: Unknown WHILLATS_ACCEL='$local_accel' (use cpu, cuda, metal, or auto)"
+        exit 1
+        ;;
+    esac
     # Check available disk space and memory before building
     AVAILABLE_SPACE=$(df . | tail -1 | awk '{print $4}')
     echo "[build-whillats] Available disk space: ${AVAILABLE_SPACE}KB"
@@ -303,57 +461,46 @@ build_whillats() {
         echo "[build-whillats] Native environment, Available memory: ${AVAILABLE_MEM}MB"
     fi
     
-    # Set conservative compilation flags for memory-constrained environments
-    MEMORY_CONSERVATIVE_FLAGS=""
     PARALLEL_JOBS=1
     if [ "$AVAILABLE_MEM" -lt 2000 ]; then
-        echo "[build-whillats] Very low memory detected (<2GB), skipping whillats build to prevent OOM"
-        echo "[build-whillats] To build whillats, ensure at least 2GB of available memory"
+        echo "[build-whillats] Very low memory (<2GB), skipping whillats build"
         popd
         return 0
     elif [ "$AVAILABLE_MEM" -lt 4000 ]; then
-        echo "[build-whillats] Low memory detected, using very conservative build settings"
-        MEMORY_CONSERVATIVE_FLAGS="-DCMAKE_CXX_FLAGS_RELEASE=-O1 -DCMAKE_C_FLAGS_RELEASE=-O1 -DCMAKE_CXX_FLAGS_DEBUG=-O0 -DCMAKE_C_FLAGS_DEBUG=-O0 -DWHISPER_NO_AVX=ON -DWHISPER_NO_AVX2=ON -DWHISPER_NO_FMA=ON -DWHISPER_NO_F16C=ON"
         PARALLEL_JOBS=1
     elif [ "$AVAILABLE_MEM" -lt 8000 ]; then
-        echo "[build-whillats] Medium memory detected, using moderate build settings"
-        MEMORY_CONSERVATIVE_FLAGS="-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DCMAKE_C_FLAGS_RELEASE=-O2"
         PARALLEL_JOBS=2
     else
-        echo "[build-whillats] Sufficient memory detected, using standard build settings"
         PARALLEL_JOBS=4
     fi
+    echo "[build-whillats] Using $PARALLEL_JOBS parallel jobs"
     
-    # Clean any previous build to free space
     if [ -d "build" ]; then
-        echo "[build-whillats] Removing previous build directory to free space..."
+        echo "[build-whillats] Removing previous build directory..."
         rm -rf build
     fi
     
-    # Use Metal on macOS, disable on other platforms
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        METAL_ARG="-DGGML_METAL=ON"
-    else
-        METAL_ARG="-DGGML_METAL=OFF"
-    fi
-    
-    # Add timeout and verbose output for cmake
-    echo "[build-whillats] Starting CMake configuration with timeout and memory-conscious settings..."
     if [ "$BUILD_TYPE" = "debug" ]; then
-        timeout 600 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug $METAL_ARG $CMAKE_CUDA_DISABLED $MEMORY_CONSERVATIVE_FLAGS --fresh || {
-            echo "[build-whillats] CMake configuration timed out or failed. Retrying with verbose output..."
-            cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug $METAL_ARG $CMAKE_CUDA_DISABLED $MEMORY_CONSERVATIVE_FLAGS --fresh -DCMAKE_VERBOSE_MAKEFILE=ON
-        }
-        echo "[build-whillats] Starting build with $PARALLEL_JOBS parallel jobs..."
-        cmake --build build --parallel $PARALLEL_JOBS
+        CMAKE_BUILD_TYPE="Debug"
     else
-        timeout 600 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release $METAL_ARG $CMAKE_CUDA_DISABLED $MEMORY_CONSERVATIVE_FLAGS --fresh || {
-            echo "[build-whillats] CMake configuration timed out or failed. Retrying with verbose output..."
-            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release $METAL_ARG $CMAKE_CUDA_DISABLED $MEMORY_CONSERVATIVE_FLAGS --fresh -DCMAKE_VERBOSE_MAKEFILE=ON
-        }
-        echo "[build-whillats] Starting build with $PARALLEL_JOBS parallel jobs..."
-        cmake --build build --parallel $PARALLEL_JOBS
+        CMAKE_BUILD_TYPE="Release"
     fi
+
+    echo "[build-whillats] Configuring CMake ($CMAKE_BUILD_TYPE) with GPU flags: $GPU_FLAGS"
+    # No --fresh: requires CMake 3.24+; build/ is removed above so configure is always clean.
+    # Production TTS: Piper, plus Pocket TTS for personalized voices.
+    # WHILLATS_TTS_FLAGS="-DWHILLATS_STYLETTS2=ON" etc. picks other engines.
+    TTS_FLAGS="${WHILLATS_TTS_FLAGS:--DWHILLATS_PIPER=ON -DWHILLATS_POCKET_TTS=ON}"
+    echo "[build-whillats] TTS flags: $TTS_FLAGS"
+    # pocket-tts-raven fetches dr_libs with GIT_SHALLOW and a commit pin.
+    # A shallow clone only has the default-branch tip, so the pin is missing.
+    perl -0pi -e 's/(GIT_TAG cd99e2cca5ccb48f8d000f1cd844424dcdbbaf59 # dr_libs pinned\n)\s*GIT_SHALLOW TRUE\n/$1/'         "$WHILLATS_DIR/third_party/pocket-tts-raven/CMakeLists.txt" 2>/dev/null || true
+    timeout 1200 cmake -S . -B build -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE $GPU_FLAGS $TTS_FLAGS || {
+        echo "[build-whillats] CMake configuration failed. Retrying with verbose output..."
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE $GPU_FLAGS $TTS_FLAGS -DCMAKE_VERBOSE_MAKEFILE=ON
+    }
+    echo "[build-whillats] Building with $PARALLEL_JOBS parallel jobs..."
+    cmake --build build --parallel $PARALLEL_JOBS
     popd
     echo "[build-whillats] Whisper/Llama/TTS build completed."
 }
@@ -376,7 +523,17 @@ if [ $# -ge 1 ]; then
         IOS_BUILD="true"
         BUILD_TYPE="debug"  # Default to debug for iOS, can be overridden
     else
-        echo "Usage: $0 [build_type] [options]"
+        echo "Usage: $0 [-b REF | --branch REF | --branch=REF] [build_type] [options]"
+        echo ""
+        echo "src/ checkout (whillats follows the commit pinned by src/; WHILLATS_REF overrides):"
+        echo "  -b REF, --branch REF   Branch, tag, or commit for src (outer repo unchanged)"
+        echo "  --branch=REF           Same as --branch"
+        echo "  Env SRC_BRANCH=REF     Same if no -b/--branch on the command line"
+        echo ""
+        echo "Whillats GGML backend (host builds only; default is CPU):"
+        echo "  --whillats-accel MODE   cpu | cuda | metal | auto (legacy detect)"
+        echo "  Env WHILLATS_ACCEL=MODE Same if no --whillats-accel (default: cpu)"
+        echo "  Env WHILLATS_CUDA_ARCH  Optional for cuda/auto, e.g. 80-real"
         echo ""
         echo "Build types:"
         echo "  debug       Build debug version for host platform"
@@ -387,14 +544,31 @@ if [ $# -ge 1 ]; then
         echo "  whillats    Enable whillats speech/AI features"
         echo ""
         echo "iOS-specific usage:"
-        echo "  $0 ios [debug|release] [whillats]"
+        echo "  $0 [-b REF] ios [debug|release] [whillats]"
         echo ""
         echo "Examples:"
+        echo "  $0 -b talkingface release whillats"
+        echo "  WHILLATS_ACCEL=cuda $0 release whillats"
+        echo "  $0 --whillats-accel=metal release whillats   # macOS Metal"
         echo "  $0 debug whillats           # Host debug with whillats"
         echo "  $0 release whillats         # Host release with whillats"
         echo "  $0 ios whillats             # iOS debug with whillats"
         echo "  $0 ios debug whillats       # iOS debug with whillats"
         echo "  $0 ios release whillats     # iOS release with whillats"
+        echo ""
+        echo "Notes:"
+        echo "  • Always runs from the script’s repo root (dirname of build.sh), not your current directory."
+        echo "  • Writes .gclient, runs gclient sync when src/ is missing or incomplete; checkout + build use src/."
+        echo "  • Removes untracked gclient “spill” dirs at repo root (api/, third_party/, out/, …) if git does not"
+        echo "    track files under them — avoids duplicate trees next to src/. Tracked dirs are never deleted."
+        echo "  • BUILD_RM_ROOT_CIPD=1 deletes root .cipd (large; re-fetched on next sync)."
+        echo "  • BUILD_KEEP_SRC_OUT=1 keeps src/out across runs (default: remove src/out after sync for disk space)."
+        echo "  • Prefers Python 3.12 or 3.11 for depot_tools; warns on newer Python."
+        echo "  • Manual ninja: export PATH=\"\$HOME/depot_tools:\$PATH\" so vpython3 is found."
+        echo "  • Whillats CMake uses a clean build/ each time (no cmake --fresh; works on CMake < 3.24)."
+        echo "  • Host binary: src/out/<debug|release>/directcall — on success, runs directcall --help (not on iOS)."
+        echo "  • If cert.pem/key.pem are missing under src/ after build, self-signed certs are generated there."
+        echo "  • last_build_commit.txt at repo root records the outer-repo commit used for the last completed build."
         exit 1
     fi
 fi
@@ -427,8 +601,8 @@ if [[ "$ENABLE_WHILLATS" == "true" ]]; then
             pushd .
             echo "pwd: $PWD"
             cd $SRC_DIR/modules/third_party/whillats
-            git fetch origin ${CURRENT_BRANCH}
-            git checkout ${CURRENT_BRANCH}
+            git fetch origin "$SRC_GIT_REF"
+            git checkout "$SRC_GIT_REF"
             popd
             git submodule update --init --recursive modules/third_party/whillats
         else
@@ -466,9 +640,6 @@ if [[ "$ENABLE_WHILLATS" == "true" ]]; then
         if [ ! -d "$WHILLATS_DIR" ] || [ -z "$(ls -A "$WHILLATS_DIR" 2>/dev/null)" ]; then
             echo "Initializing parent submodule: modules/third_party/whillats"
             git submodule update --init --recursive modules/third_party/whillats
-        else
-            echo "Updating submodule: modules/third_party/whillats"
-            git submodule update --recursive --remote modules/third_party/whillats || true
         fi
         build_whillats "$BUILD_TYPE"
     fi
@@ -502,14 +673,9 @@ fi
 if [ -f "$BINARY_PATH" ] && [ -x "$BINARY_PATH" ]; then
     # Test if binary can run (e.g., by checking version or help output)
     if "$BINARY_PATH" --help >/dev/null 2>&1; then
-        echo "Binary at $BINARY_PATH is runnable. Cleaning up directories except src..."
-        cd ..
-        for dir in */ ; do
-            if [ "$dir" != "src/" ]; then
-                echo "Removing $dir..."
-                rm -rf "$dir"
-            fi
-        done
+        echo "Binary at $BINARY_PATH is runnable. Removing any WebRTC spill at repo root..."
+        cd "$REPO_ROOT"
+        remove_webrtc_spill_at_root
         cd src
     else
         echo "Binary at $BINARY_PATH exists but is not runnable. Skipping cleanup of other directories."
@@ -579,7 +745,7 @@ elif [ "$BUILD_TYPE" = "debug" ]; then
     echo "Debug build completed."
 else
     echo "Building WebRTC project (release, whillats: $ENABLE_WHILLATS)..."
-    (cd $SRC_DIR && gn gen out/release --args="is_debug=false rtc_include_opus=true rtc_enable_symbol_export=true rtc_build_examples=true rtc_use_speech_audio_devices=$ENABLE_WHILLATS $EXTRA_ARGS")
+    (cd $SRC_DIR && gn gen out/release --args="is_debug=false symbol_level=0 rtc_include_opus=true rtc_enable_symbol_export=true rtc_build_examples=true rtc_use_speech_audio_devices=$ENABLE_WHILLATS $EXTRA_ARGS")
     (cd $SRC_DIR && ninja -C out/$BUILD_TYPE directcall)
     echo "Release build completed."
 fi

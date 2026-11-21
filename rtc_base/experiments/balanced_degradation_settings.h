@@ -11,10 +11,12 @@
 #ifndef RTC_BASE_EXPERIMENTS_BALANCED_DEGRADATION_SETTINGS_H_
 #define RTC_BASE_EXPERIMENTS_BALANCED_DEGRADATION_SETTINGS_H_
 
+#include <cstdint>
 #include <optional>
 #include <vector>
 
 #include "api/field_trials_view.h"
+#include "api/video/video_codec_type.h"
 #include "api/video_codecs/video_encoder.h"
 
 namespace webrtc {
@@ -110,7 +112,7 @@ class BalancedDegradationSettings {
   };
 
   // Returns configurations from field trial on success (default on failure).
-  std::vector<Config> GetConfigs() const;
+  const std::vector<Config>& GetConfigs() const;
 
   // Gets the min/max framerate from `configs_` based on `pixels`.
   int MinFps(VideoCodecType type, int pixels) const;

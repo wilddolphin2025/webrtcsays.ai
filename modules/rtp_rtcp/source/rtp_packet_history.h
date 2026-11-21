@@ -11,13 +11,12 @@
 #ifndef MODULES_RTP_RTCP_SOURCE_RTP_PACKET_HISTORY_H_
 #define MODULES_RTP_RTCP_SOURCE_RTP_PACKET_HISTORY_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <deque>
-#include <map>
 #include <memory>
 #include <optional>
-#include <set>
-#include <utility>
-#include <vector>
+#include <span>
 
 #include "api/environment/environment.h"
 #include "api/function_view.h"
@@ -91,8 +90,8 @@ class RtpPacketHistory {
   // packet will not be marked as pending.
   std::unique_ptr<RtpPacketToSend> GetPacketAndMarkAsPending(
       uint16_t sequence_number,
-      rtc::FunctionView<std::unique_ptr<RtpPacketToSend>(
-          const RtpPacketToSend&)> encapsulate);
+      FunctionView<std::unique_ptr<RtpPacketToSend>(const RtpPacketToSend&)>
+          encapsulate);
 
   // Updates the send time for the given packet and increments the transmission
   // counter. Marks the packet as no longer being in the pacer queue.
@@ -113,11 +112,11 @@ class RtpPacketHistory {
   // container, or to abort getting the packet if the function returns
   // nullptr.
   std::unique_ptr<RtpPacketToSend> GetPayloadPaddingPacket(
-      rtc::FunctionView<std::unique_ptr<RtpPacketToSend>(
-          const RtpPacketToSend&)> encapsulate);
+      FunctionView<std::unique_ptr<RtpPacketToSend>(const RtpPacketToSend&)>
+          encapsulate);
 
   // Cull packets that have been acknowledged as received by the remote end.
-  void CullAcknowledgedPackets(rtc::ArrayView<const uint16_t> sequence_numbers);
+  void CullAcknowledgedPackets(std::span<const uint16_t> sequence_numbers);
 
   // Remove all pending packets from the history, but keep storage mode and
   // capacity.

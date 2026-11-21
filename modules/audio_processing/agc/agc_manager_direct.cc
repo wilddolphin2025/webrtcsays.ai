@@ -11,16 +11,28 @@
 #include "modules/audio_processing/agc/agc_manager_direct.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <memory>
+#include <optional>
+#include <span>
 
-#include "api/array_view.h"
+#include "api/audio/audio_processing.h"
 #include "api/environment/environment.h"
 #include "api/field_trials_view.h"
 #include "common_audio/include/audio_util.h"
+#include "modules/audio_processing/agc/agc.h"
 #include "modules/audio_processing/agc/gain_control.h"
+#include "modules/audio_processing/agc2/clipping_predictor.h"
 #include "modules/audio_processing/agc2/gain_map_internal.h"
 #include "modules/audio_processing/agc2/input_volume_stats_reporter.h"
+#include "modules/audio_processing/audio_buffer.h"
 #include "modules/audio_processing/include/audio_frame_view.h"
+#include "modules/audio_processing/logging/apm_data_dumper.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/numerics/safe_minmax.h"
@@ -152,7 +164,7 @@ int GetSpeechLevelErrorDb(float speech_level_dbfs, float speech_probability) {
     return 0;
   }
 
-  const float speech_level = rtc::SafeClamp<float>(
+  const float speech_level = SafeClamp<float>(
       speech_level_dbfs, kMinSpeechLevelDbfs, kMaxSpeechLevelDbfs);
 
   return std::round(kOverrideTargetSpeechLevelDbfs - speech_level);
@@ -188,7 +200,7 @@ void MonoAgc::Initialize() {
   is_first_frame_ = true;
 }
 
-void MonoAgc::Process(rtc::ArrayView<const int16_t> audio,
+void MonoAgc::Process(std::span<const int16_t> audio,
                       std::optional<int> rms_error_override) {
   new_compression_to_set_ = std::nullopt;
 
@@ -376,7 +388,7 @@ void MonoAgc::UpdateGain(int rms_error_db) {
 
   // Handle as much error as possible with the compressor first.
   int raw_compression =
-      rtc::SafeClamp(rms_error, kMinCompressionGain, max_compression_gain_);
+      SafeClamp(rms_error, kMinCompressionGain, max_compression_gain_);
 
   // Deemphasize the compression gain error. Move halfway between the current
   // target and the newly received target. This serves to soften perceptible
@@ -397,8 +409,8 @@ void MonoAgc::UpdateGain(int rms_error_db) {
   // raw rather than deemphasized compression here as we would otherwise
   // shrink the amount of slack the compressor provides.
   const int residual_gain =
-      rtc::SafeClamp(rms_error - raw_compression, -kMaxResidualGainChange,
-                     kMaxResidualGainChange);
+      SafeClamp(rms_error - raw_compression, -kMaxResidualGainChange,
+                kMaxResidualGainChange);
   RTC_DLOG(LS_INFO) << "[agc] rms_error=" << rms_error
                     << ", target_compression=" << target_compression_
                     << ", residual_gain=" << residual_gain;
@@ -507,7 +519,6 @@ AgcManagerDirect::~AgcManagerDirect() {}
 
 void AgcManagerDirect::Initialize() {
   RTC_DLOG(LS_INFO) << "AgcManagerDirect::Initialize";
-  data_dumper_->InitiateNewSetOfRecordings();
   for (size_t ch = 0; ch < channel_agcs_.size(); ++ch) {
     channel_agcs_[ch]->Initialize();
   }
@@ -658,7 +669,7 @@ void AgcManagerDirect::Process(const AudioBuffer& audio_buffer,
   }
 }
 
-std::optional<int> AgcManagerDirect::GetDigitalComressionGain() {
+std::optional<int> AgcManagerDirect::GetDigitalCompressionGain() {
   return new_compressions_to_set_[channel_controlling_gain_];
 }
 

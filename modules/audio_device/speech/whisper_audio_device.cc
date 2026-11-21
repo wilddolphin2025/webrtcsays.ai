@@ -1,7 +1,7 @@
 /*
- *  (c) 2025, wilddolphin2022 
+ *  (c) 2025, wilddolphin2025 
  *  For WebRTCsays.ai project
- *  https://github.com/wilddolphin2022
+ *  https://github.com/wilddolphin2025
  *
  *  Use of this source code is governed by a BSD-style license
  *  that can be found in the LICENSE file in the root of the source
@@ -14,18 +14,17 @@
 #include <cstdio>
 #include <thread>
 #include <iomanip>
-#include <filesystem>
 #include <memory>
 #include <cstring>
-#include <algorithm>  // for std::find_if
-#include <cctype>     // for std::isspace
-#include <mutex>      // for std::mutex, lock_guard
-#include <queue>      // for std::queue
+#include <algorithm>
+#include <cctype>
+#include <mutex>
+#include <queue>
 
 #include "rtc_base/checks.h"
 #include "rtc_base/logging.h"
 #include "rtc_base/thread.h"
-#include "system_wrappers/include/sleep.h"
+#include "rtc_base/thread.h"
 #include "rtc_base/string_utils.h"
 #include "api/task_queue/default_task_queue_factory.h"
 
@@ -51,8 +50,7 @@ const size_t kRecordingBufferSize =
 
 void ttsAudioCallback(bool success, const uint16_t* buffer, size_t buffer_size, void* user_data) {
   WhisperAudioDevice* audio_device = static_cast<WhisperAudioDevice*>(user_data);
-  if (!audio_device) return;  // Prevent crash if called after destruction
-  // Handle audio buffer here
+  if (!audio_device) return;
   if(success) {
     RTC_LOG(LS_VERBOSE) << "Generated " << buffer_size << " audio samples (" 
       << buffer_size / 16000 << " s)";
@@ -76,18 +74,36 @@ void whisperResponseCallback(bool success, const char* response, void* user_data
 void languageResponseCallback(bool success, const char* language, void* user_data) {
   WhisperAudioDevice* audio_device = static_cast<WhisperAudioDevice*>(user_data);
   if (!audio_device) return;
-  // Handle response here
-  RTC_LOG(LS_INFO) << "Language response via callback: " << language;
+  // Only note the detection: overwriting the transcriber's "auto" setting
+  // would freeze auto-detect on the first utterance's language.
+  if (success && language && *language)
+    SpeechAudioDeviceFactory::NoteDetectedLanguage(language);
 }
 
 void llamaResponseCallback(bool success, const char* response, void* user_data) {
   WhisperAudioDevice* audio_device = static_cast<WhisperAudioDevice*>(user_data);
-  if (!audio_device) return;
-  // Handle response here
-  RTC_LOG(LS_INFO) << "Llama response via callback: " << response;
-  if(success) {
-    audio_device->speakText(std::string(response));
-  }
+  if (!audio_device || !success || !response) return;
+
+  size_t len = strnlen(response, WhisperAudioDevice::kLlamaPendingBytes - 1);
+  if (len == 0) return;
+
+  // Pure C operations only - no C++ objects, no RTC_LOG, no std::string.
+  // This callback runs on the libstdc++ Llama thread; any libc++ usage crashes.
+  uint32_t head = audio_device->_llamaPendingHead.load(std::memory_order_relaxed);
+  uint32_t tail = audio_device->_llamaPendingTail.load(std::memory_order_acquire);
+  if (head - tail >= WhisperAudioDevice::kLlamaPendingSlots) return;  // full: drop
+  char* slot = audio_device->_llamaPending[head % WhisperAudioDevice::kLlamaPendingSlots];
+  memcpy(slot, response, len);
+  slot[len] = '\0';
+  audio_device->_llamaPendingHead.store(head + 1, std::memory_order_release);
+}
+
+void transcriptCallback(const char* text, bool is_final, const char* language, void* user_data) {
+  // C-only for the same reason as llamaResponseCallback. Finals still reach the
+  // LLM through whisperResponseCallback; here we only note that words were heard.
+  WhisperAudioDevice* audio_device = static_cast<WhisperAudioDevice*>(user_data);
+  if (audio_device && text && text[0])
+    audio_device->_heardSpeech.fetch_add(1, std::memory_order_relaxed);
 }
 
 WhisperAudioDevice::WhisperAudioDevice(
@@ -96,7 +112,8 @@ WhisperAudioDevice::WhisperAudioDevice(
       _ttsCallback(ttsAudioCallback, this),
       _whisperCallback(whisperResponseCallback, this),
       _languageCallback(languageResponseCallback, this),
-      _llamaResponseCallback(llamaResponseCallback, this)
+      _llamaResponseCallback(llamaResponseCallback, this),
+      _transcriptCallback(transcriptCallback, this)
 {
 }
 
@@ -173,8 +190,10 @@ void WhisperAudioDevice::speakText(const std::string& text) {
 // Method to ask llama 
 void WhisperAudioDevice::askLlama(const std::string& text) {
   if(_llama_enabled) {
-    RTC_LOG(LS_INFO) << "Asking llama: " << text;
-    SpeechAudioDeviceFactory::llama()->askLlama(text.c_str()); // send to llama text queue
+    // The language callback fires before each final, so this is the utterance's language.
+    std::string lang = SpeechAudioDeviceFactory::GetLanguage();
+    RTC_LOG(LS_INFO) << "Asking llama [" << lang << "]: " << text;
+    SpeechAudioDeviceFactory::llama()->askLlama(text.c_str(), lang.c_str());
   }  
 }
 
@@ -192,8 +211,8 @@ int32_t WhisperAudioDevice::RecordingDeviceName(uint16_t index,
   const char* kName = "whisper_recording_device";
   const char* kGuid = "358f8c4d-9605-4d23-bf0a-17d346fafc6f";
   if (index < 1) {
-    rtc::strcpyn(name, kAdmMaxDeviceNameSize, kName);
-    rtc::strcpyn(guid, kAdmMaxGuidSize, kGuid);
+    webrtc::strcpyn(name, kAdmMaxDeviceNameSize, kName);
+    webrtc::strcpyn(guid, kAdmMaxGuidSize, kGuid);
     return 0;
   }
   return -1;
@@ -246,6 +265,13 @@ bool WhisperAudioDevice::MicrophoneIsInitialized() const {
 }
 
 int32_t WhisperAudioDevice::StartRecording() {
+  {
+    MutexLock lock(&mutex_);
+    // The send path is what the browser hears. Start TTS here so the greeting
+    // and later answers are spoken even if remote audio has not arrived yet.
+    StartSpeechEngines();
+  }
+
   _recording = true;
 
   // Allocate recording buffer
@@ -267,21 +293,15 @@ int32_t WhisperAudioDevice::StartRecording() {
   }
   #endif // defined(PLAY_WAV_ON_RECORD)
 
-  // Speak the llama model name
-  std::filesystem::path llama_model_path = std::filesystem::path(SpeechAudioDeviceFactory::GetLlamaModelFilename());
-  std::string llama_model_name = llama_model_path.stem().string();
-  if(!llama_model_name.empty())
-    speakText(llama_model_name + " ready to chat");
-  else
-    speakText("Whisper speech synthesis ready to chat");
+  speakText("Hello, I am ready.");
 
-  _ptrThreadRec = rtc::PlatformThread::SpawnJoinable(
+  _ptrThreadRec = webrtc::PlatformThread::SpawnJoinable(
       [this] {
         while (RecThreadProcess()) {
         }
       },
       "whisper_audio_module_capture_thread",
-      rtc::ThreadAttributes().SetPriority(rtc::ThreadPriority::kRealtime));
+      webrtc::ThreadAttributes().SetPriority(webrtc::ThreadPriority::kRealtime));
 
   RTC_LOG(LS_INFO) << "Started Whisper recording";
 
@@ -317,8 +337,7 @@ int32_t WhisperAudioDevice::StopRecording() {
 void WhisperAudioDevice::SetTTSBuffer(const uint16_t* buffer, size_t buffer_size) {
     RTC_LOG(LS_INFO) << "[PLAY] SetTTSBuffer called with " << buffer_size << " samples";
 
-    // Define a maximum buffer size to prevent overflow (e.g., 1M samples ~ 1 minute at 16kHz stereo)
-    constexpr size_t kMaxBufferSamples = 1 << 20;  // 1,048,576 samples
+    constexpr size_t kMaxBufferSamples = 1 << 20;
 
     absl::MutexLock lock(&_queueMutex);
 
@@ -327,7 +346,6 @@ void WhisperAudioDevice::SetTTSBuffer(const uint16_t* buffer, size_t buffer_size
 
     if (new_size > kMaxBufferSamples) {
         RTC_LOG(LS_WARNING) << "[PLAY] TTS buffer would exceed max size (" << new_size << " > " << kMaxBufferSamples << "), truncating";
-        // Truncate to fit
         buffer_size = kMaxBufferSamples - current_size;
         if (buffer_size == 0) {
             RTC_LOG(LS_ERROR) << "[PLAY] TTS buffer full, discarding new data";
@@ -336,23 +354,70 @@ void WhisperAudioDevice::SetTTSBuffer(const uint16_t* buffer, size_t buffer_size
         new_size = kMaxBufferSamples;
     }
 
-    // Reserve space first to avoid multiple reallocations
     _ttsBuffer.reserve(new_size);
-
-    // Insert the new samples
     _ttsBuffer.insert(_ttsBuffer.end(), buffer, buffer + buffer_size);
+    if (!_isSpeaking.exchange(true, std::memory_order_relaxed)) {
+      _ttsStartedMillis.store(webrtc::TimeMillis(), std::memory_order_relaxed);
+    }
 
     RTC_LOG(LS_INFO) << "[PLAY] TTS buffer updated, new size: " << _ttsBuffer.size();
+}
 
-    // Removed buffer_cv.notify_one() as it's not used and tied to a different mutex
+void WhisperAudioDevice::interruptLlama() {
+  // 1. Stop LLaMa generation
+  if (_llama_device) {
+    _llama_device->stop();
+  }
+
+  // 2. Drop pending LLaMa sentences (the recording thread owns the ring tail)
+  _llamaDropPending.store(true, std::memory_order_release);
+
+  // 3. Stop the synthesizer first so audio already in flight does not refill
+  //    the buffer cleared below.
+  if (_tts) {
+    _tts->interrupt();
+  }
+
+  // 4. Clear TTS text queue
+  {
+    absl::MutexLock lock(&_queueMutex);
+    std::queue<std::string> empty;
+    std::swap(_textQueue, empty);
+
+    // 5. Clear TTS audio buffer
+    _ttsBuffer.clear();
+    _ttsIndex = 0;
+    _isSpeaking.store(false, std::memory_order_relaxed);
+  }
+
+  RTC_LOG(LS_INFO) << "Interrupted: LLaMa stopped, TTS queue and buffer cleared";
+
+  // 6. Restart LLaMa so it can accept new requests
+  if (_llama_device) {
+    _llama_device->start();
+  }
+}
+
+void WhisperAudioDevice::drainLlamaPending() {
+  uint32_t head = _llamaPendingHead.load(std::memory_order_acquire);
+  uint32_t tail = _llamaPendingTail.load(std::memory_order_relaxed);
+  if (_llamaDropPending.exchange(false, std::memory_order_acq_rel)) {
+    _llamaPendingTail.store(head, std::memory_order_release);
+    return;
+  }
+  for (; tail != head; ++tail) {
+    std::string resp(_llamaPending[tail % kLlamaPendingSlots]);
+    _llamaPendingTail.store(tail + 1, std::memory_order_release);
+    RTC_LOG(LS_INFO) << "Llama response: " << resp;
+    speakText(resp);
+  }
 }
 
 bool WhisperAudioDevice::RecThreadProcess() {
   if (!_recording) {
     return false;
   }
-
-  int64_t currentTime = rtc::TimeMillis();
+  int64_t currentTime = webrtc::TimeMillis();
   mutex_.Lock();
 
   // Check if it's time to process another 10ms chunk
@@ -367,18 +432,28 @@ bool WhisperAudioDevice::RecThreadProcess() {
           RTC_LOG(LS_INFO) << "Finished playing TTS buffer, resetting";
           _ttsIndex = 0;
           _ttsBuffer.clear();
+          _isSpeaking.store(false, std::memory_order_relaxed);
+          // Close mouth when done speaking
+          auto* face = SpeechAudioDeviceFactory::talkingFace();
+          if (face) face->feedAudio(nullptr, 0);
         } else {
           size_t remainingSamples = _ttsBuffer.size() - _ttsIndex;
           size_t samplesToCopy = std::min(_recordingFramesIn10MS, remainingSamples);
 
           if (samplesToCopy > 0 && _recordingBuffer != nullptr) {
-            // Copy TTS samples into recording buffer (as bytes)
-            const int8_t* src = reinterpret_cast<const int8_t*>(& _ttsBuffer[_ttsIndex]);
+            const int8_t* src = reinterpret_cast<const int8_t*>(&_ttsBuffer[_ttsIndex]);
             const int8_t* end = src + samplesToCopy * sizeof(short);
             std::copy(src, end, _recordingBuffer);
+
+            // Feed this 10ms chunk to talking face for lip-sync
+            auto* face = SpeechAudioDeviceFactory::talkingFace();
+            if (face) {
+              face->feedAudio(reinterpret_cast<const int16_t*>(&_ttsBuffer[_ttsIndex]),
+                              samplesToCopy);
+            }
+
             _ttsIndex += samplesToCopy;
 
-            // Fill any leftover with silence
             std::fill_n(
               _recordingBuffer + samplesToCopy * sizeof(short),
               (_recordingFramesIn10MS - samplesToCopy) * sizeof(short),
@@ -389,7 +464,9 @@ bool WhisperAudioDevice::RecThreadProcess() {
       }
     }
 
+    drainLlamaPending();
     if (_ttsBuffer.empty()) {
+
       // Only process new text when current audio is finished
       bool shouldSynthesize = false;
       std::string textToSpeak;
@@ -431,17 +508,17 @@ bool WhisperAudioDevice::RecThreadProcess() {
     }
 
     _lastCallRecordMillis = currentTime;
-  } else {
-    // Pacing for the next 10ms chunk
-    int64_t sleepTime = 10 - (rtc::TimeMillis() - currentTime);
-    if (sleepTime > 0) {
-      mutex_.Unlock();
-      SleepMs(sleepTime);
-      mutex_.Lock();
-    }
   }
 
   mutex_.Unlock();
+
+  // Sleep out the rest of this 10ms period. Sleeping in the next iteration
+  // added a full extra 10ms, so the sender ran at about half rate and the
+  // receiver heard gaps where the missing samples should have been.
+  int64_t deltaTimeMillis = webrtc::TimeMillis() - currentTime;
+  if (deltaTimeMillis < 10) {
+    webrtc::Thread::SleepMs(10 - deltaTimeMillis);
+  }
   return true;
 }
 
@@ -469,8 +546,8 @@ int32_t WhisperAudioDevice::PlayoutDeviceName(uint16_t index,
   const char* kName = "whisper_playout_device";
   const char* kGuid = "951ba178-fbd1-47d1-96be-965b17d56d5b";
   if (index < 1) {
-    rtc::strcpyn(name, kAdmMaxDeviceNameSize, kName);
-    rtc::strcpyn(guid, kAdmMaxGuidSize, kGuid);
+    webrtc::strcpyn(name, kAdmMaxDeviceNameSize, kName);
+    webrtc::strcpyn(guid, kAdmMaxGuidSize, kGuid);
     return 0;
   }
   return -1;
@@ -488,15 +565,15 @@ int32_t WhisperAudioDevice::SetPlayoutDevice(
   return -1;
 }
 
-int32_t WhisperAudioDevice::InitPlayout() {
-  MutexLock lock(&mutex_);
-
-  if (_playing) {
-    return -1;
+void WhisperAudioDevice::StartSpeechEngines() {
+  if (_engines_started) {
+    return;
   }
+  _engines_started = true;
 
   _tts = SpeechAudioDeviceFactory::CreateWhillatsTTS(_ttsCallback);
   if(_tts && _tts->start()) {
+    SpeechAudioDeviceFactory::ApplyTTSVoice();
     _tts_enabled = true;
     RTC_LOG(LS_INFO) << "TTS enabled...";
   }
@@ -504,6 +581,7 @@ int32_t WhisperAudioDevice::InitPlayout() {
   {
     std::lock_guard<std::mutex> tlock(_transcriber_mutex);
     _whisper_transcriber = SpeechAudioDeviceFactory::CreateWhillatsTranscriber(_whisperCallback, _languageCallback);
+    if (_whisper_transcriber) _whisper_transcriber->setTranscriptCallback(_transcriptCallback);
     if (_whisper_transcriber && _whisper_transcriber->start()) {
       _whisper_enabled = true;
       RTC_LOG(LS_INFO) << "Whisper enabled, model: " << SpeechAudioDeviceFactory::GetWhisperModelFilename() << "...";
@@ -515,6 +593,16 @@ int32_t WhisperAudioDevice::InitPlayout() {
     _llama_enabled = true;
     RTC_LOG(LS_INFO) << "Llama enabled, model: " << SpeechAudioDeviceFactory::GetLlamaModelFilename() << "...";
   }
+}
+
+int32_t WhisperAudioDevice::InitPlayout() {
+  MutexLock lock(&mutex_);
+
+  if (_playing) {
+    return -1;
+  }
+
+  StartSpeechEngines();
 
   _playoutFramesIn10MS = static_cast<size_t>(kPlayoutFixedSampleRate / 100);
 
@@ -539,6 +627,10 @@ bool WhisperAudioDevice::PlayoutIsInitialized() const {
 int32_t WhisperAudioDevice::StartPlayout() {
   if (_playing) {
     return 0;
+  }
+
+  if (!PlayoutIsInitialized()) {
+    InitPlayout();
   }
 
   _playing = true;
@@ -566,13 +658,13 @@ int32_t WhisperAudioDevice::StartPlayout() {
   #endif // defined(PLAY_WAV_ON_PLAY)
 
   // "PLAYOUT"
-  _ptrThreadPlay = rtc::PlatformThread::SpawnJoinable(
+  _ptrThreadPlay = webrtc::PlatformThread::SpawnJoinable(
       [this] {
         while (PlayThreadProcess()) {
         }
       },
       "webrtc_audio_module_play_thread",
-      rtc::ThreadAttributes().SetPriority(rtc::ThreadPriority::kRealtime));
+      webrtc::ThreadAttributes().SetPriority(webrtc::ThreadPriority::kRealtime));
 
   RTC_LOG(LS_INFO) << "Started playout...";
   return 0;
@@ -591,11 +683,13 @@ int32_t WhisperAudioDevice::StopPlayout() {
   if (_tts) {
     std::queue<std::string> empty;
     std::swap(_textQueue, empty);
+    _tts->setCallback({nullptr, nullptr});
     _tts->stop();
-    _tts = nullptr; // local pointer; factory retains ownership for reuse
+    _tts = nullptr;
   }
 
   if (_llama_device) {
+    _llama_device->setCallback({nullptr, nullptr});
     _llama_device->stop();
     _llama_device = nullptr;
   }
@@ -603,6 +697,9 @@ int32_t WhisperAudioDevice::StopPlayout() {
   {
     std::lock_guard<std::mutex> tlock(_transcriber_mutex);
     if (_whisper_transcriber) {
+        _whisper_transcriber->setCallback({nullptr, nullptr});
+        _whisper_transcriber->setLanguageCallback({nullptr, nullptr});
+        _whisper_transcriber->setTranscriptCallback({nullptr, nullptr});
         _whisper_transcriber->stop();
         _whisper_transcriber = nullptr;
     }
@@ -625,6 +722,7 @@ int32_t WhisperAudioDevice::StopPlayout() {
 
   // Release cached helper devices so that the next AudioDevice instance will
   // recreate them with fresh callbacks.
+  _engines_started = false;
   SpeechAudioDeviceFactory::ResetDevices();
 
   return 0;
@@ -635,7 +733,7 @@ bool WhisperAudioDevice::PlayThreadProcess() {
     return false;
   }
 
-  int64_t currentTime = rtc::TimeMillis();
+  int64_t currentTime = webrtc::TimeMillis();
   mutex_.Lock();
 
   if (_lastCallPlayoutMillis == 0 ||
@@ -661,9 +759,30 @@ bool WhisperAudioDevice::PlayThreadProcess() {
     }
     #endif // defined(PLAY_WAV_ON_PLAY)
 
+    // Barge-in: Whisper recognised remote speech while TTS is playing.
+    {
+      const uint32_t heard = _heardSpeech.load(std::memory_order_relaxed);
+      if (heard != _heardSpeechSeen) {
+        _heardSpeechSeen = heard;
+        int64_t sinceLastInterrupt = currentTime - _lastInterruptMillis.load(std::memory_order_relaxed);
+        int64_t ttsPlayDuration = currentTime - _ttsStartedMillis.load(std::memory_order_relaxed);
+        if (_isSpeaking.load(std::memory_order_relaxed) &&
+            sinceLastInterrupt > kInterruptCooldownMs && ttsPlayDuration > kMinTTSPlayMs) {
+          RTC_LOG(LS_INFO) << "Barge-in: remote speech recognised after " << ttsPlayDuration
+                           << " ms of TTS, interrupting LLaMa/TTS";
+          _lastInterruptMillis.store(currentTime, std::memory_order_relaxed);
+          mutex_.Unlock();
+          interruptLlama();
+          mutex_.Lock();
+        }
+      }
+    }
+
     {
       std::lock_guard<std::mutex> tlock(_transcriber_mutex);
-      if (_whisper_transcriber) {
+      // While TTS is playing, the browser mic hears that audio. Feeding it to
+      // Whisper transcribes the robot's own voice and cuts the sentence off.
+      if (_whisper_transcriber && !_isSpeaking.load(std::memory_order_relaxed)) {
         _whisper_transcriber->processAudioBuffer(reinterpret_cast<uint8_t*>(_playoutBuffer),
                                                 kPlayoutBufferSize);
       }
@@ -675,9 +794,9 @@ bool WhisperAudioDevice::PlayThreadProcess() {
   _playoutFramesLeft = 0;
   mutex_.Unlock();
 
-  int64_t deltaTimeMillis = rtc::TimeMillis() - currentTime;
+  int64_t deltaTimeMillis = webrtc::TimeMillis() - currentTime;
   if (deltaTimeMillis < 10) {
-    SleepMs(10 - deltaTimeMillis);
+    webrtc::Thread::SleepMs(10 - deltaTimeMillis);
   }
 
   return true;

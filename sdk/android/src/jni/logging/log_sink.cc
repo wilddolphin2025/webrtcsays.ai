@@ -9,8 +9,17 @@
  */
 #include "sdk/android/src/jni/logging/log_sink.h"
 
+#include <jni.h>
+
+#include <string>
+
 #include "absl/strings/string_view.h"
+#include "rtc_base/checks.h"
+#include "rtc_base/logging.h"
 #include "sdk/android/generated_logging_jni/JNILogging_jni.h"
+#include "sdk/android/native_api/jni/java_types.h"
+#include "sdk/android/native_api/jni/scoped_java_ref.h"
+#include "sdk/android/src/jni/jvm.h"
 
 namespace webrtc {
 namespace jni {
@@ -24,13 +33,13 @@ void JNILogSink::OnLogMessage(const std::string& msg) {
 }
 
 void JNILogSink::OnLogMessage(const std::string& msg,
-                              rtc::LoggingSeverity severity,
+                              LoggingSeverity severity,
                               const char* tag) {
   OnLogMessage(absl::string_view{msg}, severity, tag);
 }
 
 void JNILogSink::OnLogMessage(absl::string_view msg,
-                              rtc::LoggingSeverity severity,
+                              LoggingSeverity severity,
                               const char* tag) {
   JNIEnv* env = AttachCurrentThreadIfNeeded();
   Java_JNILogging_logToInjectable(
@@ -40,3 +49,5 @@ void JNILogSink::OnLogMessage(absl::string_view msg,
 
 }  // namespace jni
 }  // namespace webrtc
+
+DEFINE_JNI(JNILogging)

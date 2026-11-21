@@ -1,0 +1,31 @@
+# Stage-1 demo callee.
+# Uses the installed binary and a copy of the existing JSON config.
+# Does not install packages, edit nginx, or change coturn.
+# Loopback signaling requires the PR 18 binary and signaling_bind=127.0.0.1.
+# address alone does not choose the listen interface. ufw is not a substitute.
+# Public entry is authenticated nginx on 443. Media ICE is unchanged.
+# The EnvironmentFile may be empty when the previous process is already
+# gone. Do not edit whisper sources to fill it in.
+# See deploy/webrtcsays-demo/README.md.
+
+[Unit]
+Description=WebRTCSays demo callee (existing directcall, local signaling)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/directcall3-dev
+EnvironmentFile=-/etc/webrtcsays-demo/directcall.env
+ExecStart=/opt/wsai-m156/src/out/release/directcall --config /opt/directcall3-dev/config.demo.json
+Restart=always
+RestartSec=3
+TimeoutStartSec=120
+TimeoutStopSec=20
+MemoryMax=12G
+CPUQuota=600%
+LimitNOFILE=65536
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,7 @@
 /*
- *  (c) 2025, wilddolphin2022 
+ *  (c) 2025, wilddolphin2025 
  *  For WebRTCsays.ai project
- *  https://github.com/wilddolphin2022
+ *  https://github.com/wilddolphin2025
  *
  *  Use of this source code is governed by a BSD-style license
  *  that can be found in the LICENSE file in the root of the source
@@ -63,6 +63,12 @@ inline constexpr const char kAddressPrefix[] = "ADDRESS:";   // targeted ADDRESS
 
 inline constexpr const char kUsers[]       = "USERS";    // broadcast USERS
 inline constexpr const char kUsersPrefix[] = "USERS:";   // targeted USERS:<user1>,<user2>
+
+// Talking face image upload
+inline constexpr const char kFacePrefix[]  = "FACE:";
+
+// Personalized TTS voice: VOICE:<clip name known to the TTS server>
+inline constexpr const char kVoicePrefix[] = "VOICE:";
 
 } // namespace Msg
 

@@ -55,6 +55,9 @@ public:
     ~DirectClient();
 
     bool connectToSignalingServer(const std::string& server_host, const std::string& server_port);
+    // Explicit wss://host:port/path. `token` is sent as a bearer header and a
+    // token query parameter and is not logged.
+    bool connectToWebSocketUrl(const SignalEndpoint& endpoint, const std::string& token);
     bool startTcpServer(int listen_port);  // For callee to act as TCP server
     void disconnect();
     void registerWithRoom(const std::string& room_name);
@@ -99,7 +102,7 @@ public:
     std::shared_ptr<WebSocketClient> &ws_client() { return ws_client_; }
 protected:
     std::shared_ptr<WebSocketClient> ws_client_;
-    std::unique_ptr<rtc::Thread> network_thread_;
+    std::unique_ptr<webrtc::Thread> network_thread_;
     std::string jwt_token_;
     Options opts_;
     bool connected_;
@@ -150,7 +153,7 @@ private:
     bool initialized_ = false;
     std::string resolved_target_ip_;
     int resolved_target_port_ = 0;
-    rtc::Thread* owner_thread_ = nullptr; // Thread where the object was created
+    webrtc::Thread* owner_thread_ = nullptr; // Thread where the object was created
     UserListReceivedCallback user_list_callback_;
 
     // True once we've launched the initial WebRTC dial. Prevents retry on
@@ -165,9 +168,10 @@ public:
     explicit DirectCallerClient(const Options& opts);
     ~DirectCallerClient();
 
-    bool Initialize();
+    bool Initialize() override;
     bool Connect();
-    void Disconnect();
+    bool SendMessage(const std::string& message) override;
+    void Disconnect() override;
     bool IsConnected() const;
     void RunOnBackgroundThread();
     bool WaitUntilConnectionClosed(int timeout_ms = 5000);
@@ -198,6 +202,8 @@ public:
     void OnIceConnectionChange(webrtc::PeerConnectionInterface::IceConnectionState new_state) override;
     
 private:
+    bool ConnectSignalUrl(const std::string& url);
+    bool browser_signaling_ = false;
     void onPeerJoined(const std::string& peer_id);
     void onPeerAddressResolved(const std::string& peer_id, const std::string& ip, int port);
     // initiateWebRTCCall now implemented in DirectPeer base
@@ -206,7 +212,7 @@ private:
 };
 
 // DirectCalleeClient - Accepts incoming calls by name using signaling server  
-class EXPORT_API DirectCalleeClient : public DirectCallee, public std::enable_shared_from_this<DirectCalleeClient> {
+class EXPORT_API DirectCalleeClient : public DirectCallee {
 protected:
     std::unique_ptr<DirectClient> signaling_client_;  // For signaling server communication
     std::atomic<bool> shutting_down_{false};
@@ -223,7 +229,7 @@ public:
     // Forward signalling-line (LLAMA:, WHISPER:, etc.) to caller via WebSocket.
     bool SendMessage(const std::string& message) override;
 
-    bool Initialize();
+    bool Initialize() override;
     bool StartListening();
     void StopListening();
     bool IsListening() const;
@@ -231,7 +237,7 @@ public:
     void RunOnBackgroundThread();
     bool WaitUntilConnectionClosed(int timeout_ms = 5000);
     void ResetConnectionClosedEvent();
-    void SignalQuit();
+    void SignalQuit() override;
     
 private:
     void onIncomingCall(const std::string& peer_id, const std::string& sdp);

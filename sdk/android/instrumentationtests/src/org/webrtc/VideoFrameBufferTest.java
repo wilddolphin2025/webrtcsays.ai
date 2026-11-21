@@ -10,10 +10,9 @@
 
 package org.webrtc;
 
-import static org.hamcrest.Matchers.greaterThanOrEqualTo;
-import static org.hamcrest.Matchers.lessThanOrEqualTo;
+import static com.google.common.truth.Truth.assertThat;
+import static com.google.common.truth.Truth.assertWithMessage;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
 
 import android.graphics.Matrix;
 import android.opengl.GLES20;
@@ -26,6 +25,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import org.jni_zero.NativeMethods;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -75,32 +75,32 @@ public class VideoFrameBufferTest {
         buffer = i420Buffer;
         buffer.retain();
         assertEquals(VideoFrameBufferType.I420, buffer.getBufferType());
-        assertEquals(VideoFrameBufferType.I420, nativeGetBufferType(buffer));
+        assertEquals(VideoFrameBufferType.I420, VideoFrameBufferTestJni.get().getBufferType(buffer));
         return buffer;
       case I420_NATIVE:
-        buffer = nativeGetNativeI420Buffer(i420Buffer);
+        buffer = VideoFrameBufferTestJni.get().getNativeI420Buffer(i420Buffer);
         assertEquals(VideoFrameBufferType.I420, buffer.getBufferType());
-        assertEquals(VideoFrameBufferType.I420, nativeGetBufferType(buffer));
+        assertEquals(VideoFrameBufferType.I420, VideoFrameBufferTestJni.get().getBufferType(buffer));
         return buffer;
       case RGB_TEXTURE:
         buffer = createRgbTextureBuffer(/* eglContext= */ null, i420Buffer);
         assertEquals(VideoFrameBufferType.NATIVE, buffer.getBufferType());
-        assertEquals(VideoFrameBufferType.NATIVE, nativeGetBufferType(buffer));
+        assertEquals(VideoFrameBufferType.NATIVE, VideoFrameBufferTestJni.get().getBufferType(buffer));
         return buffer;
       case OES_TEXTURE:
         buffer = createOesTextureBuffer(/* eglContext= */ null, i420Buffer);
         assertEquals(VideoFrameBufferType.NATIVE, buffer.getBufferType());
-        assertEquals(VideoFrameBufferType.NATIVE, nativeGetBufferType(buffer));
+        assertEquals(VideoFrameBufferType.NATIVE, VideoFrameBufferTestJni.get().getBufferType(buffer));
         return buffer;
       case NV21:
         buffer = createNV21Buffer(i420Buffer);
         assertEquals(VideoFrameBufferType.NATIVE, buffer.getBufferType());
-        assertEquals(VideoFrameBufferType.NATIVE, nativeGetBufferType(buffer));
+        assertEquals(VideoFrameBufferType.NATIVE, VideoFrameBufferTestJni.get().getBufferType(buffer));
         return buffer;
       case NV12:
         buffer = createNV12Buffer(i420Buffer);
         assertEquals(VideoFrameBufferType.NATIVE, buffer.getBufferType());
-        assertEquals(VideoFrameBufferType.NATIVE, nativeGetBufferType(buffer));
+        assertEquals(VideoFrameBufferType.NATIVE, VideoFrameBufferTestJni.get().getBufferType(buffer));
         return buffer;
       default:
         throw new IllegalArgumentException("Unknown buffer type: " + bufferType);
@@ -324,16 +324,18 @@ public class VideoFrameBufferTest {
    */
   public static void assertAlmostEqualI420Buffers(
       VideoFrame.I420Buffer bufferA, VideoFrame.I420Buffer bufferB) {
+
     final int diff = maxDiff(bufferA, bufferB);
-    assertThat("Pixel difference too high: " + diff + "."
-            + "\nBuffer A: " + i420BufferToString(bufferA)
-            + "Buffer B: " + i420BufferToString(bufferB),
-        diff, lessThanOrEqualTo(4));
+    assertWithMessage(String.format(
+        "Pixel difference too high: %d.\nBuffer A: %sBuffer B: %s",
+        diff, i420BufferToString(bufferA), i420BufferToString(bufferB)))
+        .that(diff).isAtMost(4);
+
     final double psnr = calculatePsnr(bufferA, bufferB);
-    assertThat("PSNR too low: " + psnr + "."
-            + "\nBuffer A: " + i420BufferToString(bufferA)
-            + "Buffer B: " + i420BufferToString(bufferB),
-        psnr, greaterThanOrEqualTo(50.0));
+    assertWithMessage(String.format(
+        "PSNR too low: %.2f.\nBuffer A: %sBuffer B: %s",
+        psnr, i420BufferToString(bufferA), i420BufferToString(bufferB)))
+        .that(psnr).isAtLeast(50.0);
   }
 
   /** Returns a flattened list of pixel differences for two ByteBuffer planes. */
@@ -403,8 +405,8 @@ public class VideoFrameBufferTest {
     final byte[] res = new byte[array.length];
     for (int i = 0; i < array.length; ++i) {
       final int value = array[i];
-      assertThat(value, greaterThanOrEqualTo(0));
-      assertThat(value, lessThanOrEqualTo(255));
+      assertThat(value).isAtLeast(0);
+      assertThat(value).isAtMost(255);
       res[i] = (byte) value;
     }
     return res;
@@ -468,7 +470,7 @@ public class VideoFrameBufferTest {
     final VideoFrame.I420Buffer outputI420Buffer = bufferToTest.toI420();
     bufferToTest.release();
 
-    assertEquals(VideoFrameBufferType.I420, nativeGetBufferType(outputI420Buffer));
+    assertEquals(VideoFrameBufferType.I420, VideoFrameBufferTestJni.get().getBufferType(outputI420Buffer));
     assertAlmostEqualI420Buffers(referenceI420Buffer, outputI420Buffer);
     referenceI420Buffer.release();
     outputI420Buffer.release();
@@ -522,9 +524,12 @@ public class VideoFrameBufferTest {
         /* scaleWidth= */ 8, /* scaleHeight= */ 8);
   }
 
-  @VideoFrameBufferType private static native int nativeGetBufferType(VideoFrame.Buffer buffer);
+  @NativeMethods
+  interface Natives {
+    @VideoFrameBufferType
+    int getBufferType(VideoFrame.Buffer buffer);
 
-  /** Returns the copy of I420Buffer using WrappedNativeI420Buffer. */
-  private static native VideoFrame.Buffer nativeGetNativeI420Buffer(
-      VideoFrame.I420Buffer i420Buffer);
+    /** Returns the copy of I420Buffer using WrappedNativeI420Buffer. */
+    VideoFrame.Buffer getNativeI420Buffer(VideoFrame.I420Buffer i420Buffer);
+  }
 }

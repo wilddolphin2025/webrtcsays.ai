@@ -10,10 +10,10 @@
 
 #include "modules/rtp_rtcp/source/rtp_packetizer_av1_test_helper.h"
 
-#include <stddef.h>
-#include <stdint.h>
-
+#include <cstddef>
+#include <cstdint>
 #include <initializer_list>
+#include <utility>
 #include <vector>
 
 namespace webrtc {

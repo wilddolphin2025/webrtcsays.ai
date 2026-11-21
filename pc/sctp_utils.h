@@ -11,22 +11,18 @@
 #ifndef PC_SCTP_UTILS_H_
 #define PC_SCTP_UTILS_H_
 
+#include <cstdint>
+#include <optional>
 #include <string>
 
+#include "absl/strings/string_view.h"
 #include "api/data_channel_interface.h"
 #include "api/priority.h"
-#include "api/transport/data_channel_transport_interface.h"
-#include "media/base/media_channel.h"
-#include "media/sctp/sctp_transport_internal.h"
 #include "net/dcsctp/public/types.h"
 #include "rtc_base/copy_on_write_buffer.h"
-#include "rtc_base/ssl_stream_adapter.h"  // For SSLRole
-
-namespace rtc {
-class CopyOnWriteBuffer;
-}  // namespace rtc
 
 namespace webrtc {
+class CopyOnWriteBuffer;
 struct DataChannelInit;
 
 // Wraps the `uint16_t` sctp data channel stream id value and does range
@@ -54,25 +50,25 @@ class StreamId {
 };
 
 // Read the message type and return true if it's an OPEN message.
-bool IsOpenMessage(const rtc::CopyOnWriteBuffer& payload);
+bool IsOpenMessage(const CopyOnWriteBuffer& payload);
 
-bool ParseDataChannelOpenMessage(const rtc::CopyOnWriteBuffer& payload,
+bool ParseDataChannelOpenMessage(const CopyOnWriteBuffer& payload,
                                  std::string* label,
                                  DataChannelInit* config);
 
-bool ParseDataChannelOpenAckMessage(const rtc::CopyOnWriteBuffer& payload);
+bool ParseDataChannelOpenAckMessage(const CopyOnWriteBuffer& payload);
 
-bool WriteDataChannelOpenMessage(const std::string& label,
-                                 const std::string& protocol,
+bool WriteDataChannelOpenMessage(absl::string_view label,
+                                 absl::string_view protocol,
                                  std::optional<PriorityValue> priority,
                                  bool ordered,
                                  std::optional<int> max_retransmits,
                                  std::optional<int> max_retransmit_time,
-                                 rtc::CopyOnWriteBuffer* payload);
-bool WriteDataChannelOpenMessage(const std::string& label,
+                                 CopyOnWriteBuffer* payload);
+bool WriteDataChannelOpenMessage(absl::string_view label,
                                  const DataChannelInit& config,
-                                 rtc::CopyOnWriteBuffer* payload);
-void WriteDataChannelOpenAckMessage(rtc::CopyOnWriteBuffer* payload);
+                                 CopyOnWriteBuffer* payload);
+void WriteDataChannelOpenAckMessage(CopyOnWriteBuffer* payload);
 
 }  // namespace webrtc
 

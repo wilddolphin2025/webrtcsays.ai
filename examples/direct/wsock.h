@@ -1,7 +1,7 @@
 /*
- *  (c) 2025, wilddolphin2022
+ *  (c) 2025, wilddolphin2025
  *  For WebRTCsays.ai project
- *  https://github.com/wilddolphin2022
+ *  https://github.com/wilddolphin2025
  *
  *  Use of this source code is governed by a BSD-style license
  *  that can be found in the LICENSE file in the root of the source
@@ -46,6 +46,8 @@ public:
         std::string host;
         std::string port;
         bool use_ssl = false;
+        bool verify_tls = true;
+        std::string ca_file;
         std::string cert_file_path;
         std::string key_file_path;
         std::map<std::string, std::string> headers;
@@ -75,7 +77,7 @@ public:
     std::string base64_encode(const std::string& in);
 
     // SSL context management
-    void set_network_thread(rtc::Thread* thread);
+    void set_network_thread(webrtc::Thread* thread);
 
     // Ping/Pong handling
     void send_ping();
@@ -104,7 +106,7 @@ private:
 
     // Configuration
     Config config_;
-    rtc::Thread* network_thread_;
+    webrtc::Thread* network_thread_;
 
     // Message handling
     std::string buffer_;

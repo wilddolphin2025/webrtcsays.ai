@@ -648,7 +648,7 @@ def login_page(csrf: str, nxt: str, message: str) -> bytes:
   <meta name="color-scheme" content="dark">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
-  <title>WebRTCSays demo login</title>
+  <title>WebRTCsays.AI demo login</title>
   <style>
     body.wsdemo {{ margin: 0; background: #1B2838; color: #C7D5E0; font: 14px/1.4 Inter, system-ui, sans-serif; }}
     body.wsdemo * {{ box-sizing: border-box; }}
@@ -678,7 +678,7 @@ def login_page(csrf: str, nxt: str, message: str) -> bytes:
   <header class="top">
     <div class="wrap topin">
       <div class="brand">
-        <h1 class="wm">WebRTCSays</h1>
+        <h1 class="wm">WebRTCsays.AI</h1>
         <p class="by">by Wilddolphin LLC</p>
       </div>
     </div>

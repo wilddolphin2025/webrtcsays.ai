@@ -38,6 +38,8 @@
 #include "test/test_video_capturer.h"
 #include "call_stats.h"
 #include "pattern_video.h"
+#include "remote_window.h"
+#include "still_image.h"
 #if defined(WEBRTC_SPEECH_DEVICES)
 #include "modules/audio_device/speech/speech_audio_device_factory.h"
 #endif
@@ -394,6 +396,31 @@ void DirectPeer::EnsureLocalVideoSource() {
         }
         fprintf(stderr, "camera unavailable, using test pattern\n");
     }
+    if (mode == "image") {
+        RgbImage image;
+        std::string image_error;
+        if (!LoadPngRgb(opts_.image_file, image, image_error)) {
+            fprintf(stderr, "image source failed: %s\n", image_error.c_str());
+            fprintf(stderr, "image source failed; not sending a test pattern\n");
+            return;
+        }
+        LetterboxedI420 still;
+        if (!LetterboxToI420(image, width, height, still, image_error)) {
+            fprintf(stderr, "image source failed: %s\n", image_error.c_str());
+            fprintf(stderr, "image source failed; not sending a test pattern\n");
+            return;
+        }
+        auto src = webrtc::FakeVideoTrackSource::Create(false);
+        src->SetState(webrtc::MediaSourceInterface::kLive);
+        src->SetSize(width, height);
+        video_pump_ = StartStillVideoPump(src, std::move(still.i420), width, height, fps);
+        video_source_ = src;
+        fprintf(stderr,
+                "video source: image %dx%d letterboxed to %dx%d @ %d fps content %dx%d at %d,%d\n",
+                still.src_width, still.src_height, width, height, fps, still.content_width,
+                still.content_height, still.origin_x, still.origin_y);
+        return;
+    }
     const bool screen = mode == "screen";
     auto src = webrtc::FakeVideoTrackSource::Create(screen);
     src->SetState(webrtc::MediaSourceInterface::kLive);
@@ -502,6 +529,11 @@ void DirectPeer::Start() {
             RTC_LOG(LS_ERROR) << "Failed to create peer connection";
             return;
         }
+    }
+
+    if (is_caller() && opts_.remote_window != "none") {
+        auto sink = StartRemoteVideoWindow(opts_.remote_window);
+        if (sink) SetVideoSink(std::move(sink));
     }
 
     if (is_caller()) {

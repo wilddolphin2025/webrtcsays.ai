@@ -3,6 +3,7 @@
   const codecEl = document.getElementById("view-codec");
   const logEl = document.getElementById("view-log");
   const remoteVideo = document.getElementById("view-remote");
+  const remoteAudio = document.getElementById("view-remote-audio");
   const connectBtn = document.getElementById("view-connect");
   const disconnectBtn = document.getElementById("view-disconnect");
   const room = (location.pathname.match(/^\/demo\/view\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/?$/) || [])[1];
@@ -10,6 +11,9 @@
   let ws = null;
   let pc = null;
   let statsTimer = null;
+  let localVideoTrack = null;
+  let localAudioTrack = null;
+  let answerSent = false;
   const pendingIce = [];
 
   function log(line) {
@@ -31,6 +35,7 @@
   async function unlockPlayback() {
     try {
       await remoteVideo.play();
+      if (remoteAudio) await remoteAudio.play();
       return true;
     } catch (_error) {
       setStatus("tap-to-play");
@@ -60,25 +65,49 @@
     return "h264-preferred";
   }
 
+  function sizeOf(stat) {
+    if (!stat || !stat.frameWidth || !stat.frameHeight) return "";
+    return stat.frameWidth + "x" + stat.frameHeight;
+  }
+
   async function showCodec() {
     if (!pc || !pc.getStats) return;
     const report = await pc.getStats();
-    let mime = "";
+    let inbound = "";
+    let outbound = "";
+    let inboundSize = "";
+    let outboundSize = "";
     let profile = "";
+    let inboundFrames = 0;
     report.forEach((stat) => {
-      if (stat.type === "inbound-rtp" && stat.kind === "video" && stat.codecId) {
-        const codec = report.get(stat.codecId);
-        if (codec) {
-          mime = codec.mimeType || "";
-          const fmtp = codec.sdpFmtpLine || "";
-          const match = /profile-level-id=([0-9a-fA-F]+)/.exec(fmtp);
-          profile = match ? match[1] : "";
+      if (stat.type === "inbound-rtp" && stat.kind === "video") {
+        inboundFrames = stat.framesDecoded || 0;
+        inboundSize = sizeOf(stat);
+        if (stat.codecId) {
+          const codec = report.get(stat.codecId);
+          if (codec) {
+            inbound = codec.mimeType || "";
+            const match = /profile-level-id=([0-9a-fA-F]+)/.exec(codec.sdpFmtpLine || "");
+            profile = match ? match[1] : "";
+          }
+        }
+      }
+      if (stat.type === "outbound-rtp" && stat.kind === "video") {
+        outboundSize = sizeOf(stat);
+        if (stat.codecId) {
+          const codec = report.get(stat.codecId);
+          if (codec) outbound = codec.mimeType || "";
         }
       }
     });
-    codecEl.textContent = mime
-      ? (mime + (profile ? " profile-level-id=" + profile : ""))
-      : "codec pending";
+    const parts = [];
+    if (inbound) {
+      parts.push("in " + inbound + (inboundSize ? " " + inboundSize : "") +
+        (profile ? " profile-level-id=" + profile : "") +
+        " frames=" + inboundFrames);
+    }
+    if (outbound) parts.push("out " + outbound + (outboundSize ? " " + outboundSize : ""));
+    codecEl.textContent = parts.length ? parts.join(" ") : "codec pending";
   }
 
   function iceServersFromTurn(payload) {
@@ -107,16 +136,73 @@
     return scheme + "://" + location.host + "/demo/view/ws/" + room;
   }
 
+  function screenSettings(track) {
+    const settings = track && track.getSettings ? track.getSettings() : {};
+    return (settings.width || "?") + "x" + (settings.height || "?") +
+      "@" + (settings.frameRate || "?");
+  }
+
+  async function shareScreen() {
+    const devices = navigator.mediaDevices;
+    if (!devices || !devices.getDisplayMedia) {
+      log("screen=unavailable");
+      if (!ws) await connect();
+      return;
+    }
+    try {
+      const display = await devices.getDisplayMedia({
+        video: {
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 30 }
+        },
+        audio: false
+      });
+      localVideoTrack = display.getVideoTracks()[0];
+      log("screen=" + screenSettings(localVideoTrack));
+      if (answerSent) log("screen=granted-after-answer");
+    } catch (error) {
+      if (localVideoTrack) localVideoTrack.stop();
+      localVideoTrack = null;
+      const name = error && error.name;
+      const unavailable = name === "NotSupportedError" || name === "NotFoundError" || name === "NotReadableError";
+      log(unavailable ? "screen=unavailable" : "screen=cancelled");
+    }
+    if (!ws) await connect();
+  }
+
+  async function shareMic() {
+    const devices = navigator.mediaDevices;
+    if (!devices || !devices.getUserMedia) {
+      log("mic=unavailable");
+      return;
+    }
+    try {
+      const mic = await devices.getUserMedia({ audio: true, video: false });
+      if (localAudioTrack) localAudioTrack.stop();
+      localAudioTrack = mic.getAudioTracks()[0] || null;
+      log(localAudioTrack ? "mic=browser" : "mic=unavailable");
+      if (answerSent && localAudioTrack) log("mic=granted-after-answer");
+    } catch (_error) {
+      log("mic=cancelled");
+    }
+  }
+
+  function stopLocalMedia() {
+    if (localVideoTrack) localVideoTrack.stop();
+    if (localAudioTrack) localAudioTrack.stop();
+    localVideoTrack = null;
+    localAudioTrack = null;
+  }
+
   async function ensurePeer() {
     if (pc) return pc;
     const iceServers = await loadIceServers();
     pc = new RTCPeerConnection({ iceServers });
-    const video = pc.addTransceiver("video", { direction: "recvonly" });
-    pc.addTransceiver("audio", { direction: "recvonly" });
-    log("video " + preferH264(video));
     pc.ontrack = (event) => {
       const stream = (event.streams && event.streams[0]) || new MediaStream([event.track]);
       if (event.track.kind === "video") remoteVideo.srcObject = stream;
+      if (event.track.kind === "audio" && remoteAudio) remoteAudio.srcObject = stream;
       unlockPlayback();
       setStatus("receiving");
     };
@@ -128,15 +214,46 @@
     return pc;
   }
 
+  function attachLocalTracks() {
+    let videoTransceiver = null;
+    let audioTransceiver = null;
+    pc.getTransceivers().forEach((transceiver) => {
+      const kind = transceiver.receiver && transceiver.receiver.track
+        ? transceiver.receiver.track.kind : "";
+      if (kind === "video" && !videoTransceiver) videoTransceiver = transceiver;
+      if (kind === "audio" && !audioTransceiver) audioTransceiver = transceiver;
+    });
+    if (videoTransceiver) {
+      if (localVideoTrack) {
+        videoTransceiver.direction = "sendrecv";
+        videoTransceiver.sender.replaceTrack(localVideoTrack);
+        log("screen=sending");
+      } else {
+        videoTransceiver.direction = "recvonly";
+      }
+      log("video " + preferH264(videoTransceiver));
+    }
+    if (audioTransceiver && localAudioTrack) {
+      audioTransceiver.direction = "sendrecv";
+      audioTransceiver.sender.replaceTrack(localAudioTrack);
+      log("audio=mic-sendrecv");
+    } else if (audioTransceiver) {
+      audioTransceiver.direction = "recvonly";
+      log("audio=recvonly");
+    }
+  }
+
   async function applyOffer(sdp) {
     const peer = await ensurePeer();
     await peer.setRemoteDescription({ type: "offer", sdp });
+    attachLocalTracks();
     while (pendingIce.length) {
       await peer.addIceCandidate(pendingIce.shift());
     }
     const answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
     ws.send("ANSWER:" + answer.sdp);
+    answerSent = true;
     log("ANSWER sent");
   }
 
@@ -190,14 +307,19 @@
       ws.close();
       ws = null;
     }
+    stopLocalMedia();
+    answerSent = false;
     if (statusEl.textContent.indexOf("remote-bye") !== 0 && statusEl.textContent !== "rejected") {
       setStatus("disconnected");
     }
   }
 
-  function connect() {
+  async function connect() {
     if (!room || !hostnameOk()) {
       setStatus("bad-address");
+      return;
+    }
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
     unlockPlayback();
@@ -217,7 +339,15 @@
     statsTimer = setInterval(() => { showCodec().catch(() => {}); }, 2000);
   }
 
-  connectBtn.addEventListener("click", connect);
+  connectBtn.addEventListener("click", () => {
+    connect().catch(() => setStatus("connect-failed"));
+  });
+  document.getElementById("view-share").addEventListener("click", () => {
+    shareScreen().catch(() => setStatus("connect-failed"));
+  });
+  document.getElementById("view-mic").addEventListener("click", () => {
+    shareMic().catch(() => log("mic=cancelled"));
+  });
   disconnectBtn.addEventListener("click", () => disconnect(true));
   remoteVideo.addEventListener("click", () => { unlockPlayback(); });
   if (!room) setStatus("missing-room");

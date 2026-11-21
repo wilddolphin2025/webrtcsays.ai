@@ -7,6 +7,7 @@
 #define EXAMPLES_DIRECT_PATTERN_VIDEO_H_
 
 #include <memory>
+#include <vector>
 
 #include "api/scoped_refptr.h"
 #include "pc/test/fake_video_track_source.h"
@@ -26,5 +27,13 @@ std::unique_ptr<DirectVideoPump> StartDirectVideoPump(
     int height,
     int fps,
     bool screen);
+
+// Repeats one I420 still at `fps`. `i420` is Y then U then V, even dimensions.
+std::unique_ptr<DirectVideoPump> StartStillVideoPump(
+    webrtc::scoped_refptr<webrtc::FakeVideoTrackSource> source,
+    std::vector<uint8_t> i420,
+    int width,
+    int height,
+    int fps);
 
 #endif  // EXAMPLES_DIRECT_PATTERN_VIDEO_H_

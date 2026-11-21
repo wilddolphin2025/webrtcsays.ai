@@ -1029,6 +1029,11 @@ if (!build_with_chromium) {
         "direct/client.h",
         "direct/pattern_video.cc",
         "direct/pattern_video.h",
+        "direct/still_image.cc",
+        "direct/still_image.h",
+        "direct/remote_choice.h",
+        "direct/remote_window.cc",
+        "direct/remote_window.h",
         "direct/call_stats.cc",
         "direct/call_stats.h",
       ]

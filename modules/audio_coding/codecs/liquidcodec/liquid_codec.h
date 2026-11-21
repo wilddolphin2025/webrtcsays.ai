@@ -1,0 +1,208 @@
+/*
+ * LiquidCodec glue for the macOS direct-call quality test.
+ *
+ * The Core ML encoder and the streaming decoder chunk live in
+ * wilddolphin2025/liquidcodec-ane. This library does not convert either
+ * model. It packetizes 12 GFSQ codes per 80 ms codec frame and drives
+ * whatever chunk size the fetched manifest declares.
+ *
+ * Wire payload (one codec frame, 80 ms):
+ *   u8  version = 1
+ *   u8  frame_count = 1
+ *   u16 sequence, little-endian
+ *   12 * u16 codes, little-endian, each in [0, codebook_size)
+ * Payload rate with the stock codebook (2016) is 28 bytes * 12.5 Hz = 2800 bps.
+ * Information rate is 12 * log2(2016) * 12.5 ≈ 1646 bps.
+ *
+ * SDP clock rate is 48 kHz because NetEq only accepts 8/16/32/48 kHz.
+ * The codec itself is 24 kHz mono. One RTP packet carries one codec frame
+ * (80 ms, 3840 samples at 48 kHz), which fits NetEq's 120 ms limit.
+ */
+
+#ifndef MODULES_AUDIO_CODING_CODECS_LIQUIDCODEC_LIQUID_CODEC_H_
+#define MODULES_AUDIO_CODING_CODECS_LIQUIDCODEC_LIQUID_CODEC_H_
+
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace webrtc {
+namespace liquid {
+
+inline constexpr int kSampleRateHz = 24000;
+inline constexpr int kWebRtcClockHz = 48000;
+inline constexpr int kFrameSamples = 1920;  // 80 ms at 24 kHz
+inline constexpr int kFrameMs = 80;
+inline constexpr int kCodebooks = 12;
+inline constexpr int kCodebookSize = 2016;  // 8*7*6*6
+inline constexpr double kFramesPerSecond = 12.5;
+inline constexpr int kPayloadVersion = 1;
+inline constexpr int kPayloadBytes = 4 + kCodebooks * 2;  // 28
+inline constexpr int kHidden = 512;
+inline constexpr int kLatent = 48;
+inline constexpr int kFft = 1280;
+inline constexpr int kHop = 320;
+inline constexpr int kBins = kFft / 2 + 1;  // 641
+inline constexpr int kLinear = kBins * 2;   // 1282
+inline constexpr int kUpsample = 6;         // 12.5 Hz -> 75 Hz
+inline constexpr int kTrim = (kFft - kHop) / 2;  // 480 samples, 20 ms
+inline constexpr char kPayloadName[] = "LIQUIDCODEC";
+inline constexpr int kPreferredPayloadType = 96;
+
+// Left context does not add delay. `new_frames` does: the sender must collect
+// that many codec frames before the Core ML encoder can run, then the receiver
+// collects the same number of RTP packets (paced one per 80 ms) before the
+// decoder can run.
+struct ChunkConfig {
+  int sample_rate_hz = kSampleRateHz;
+  int frame_samples = kFrameSamples;
+  int codebooks = kCodebooks;
+  int codebook_size = kCodebookSize;
+  int ctx_frames = 20;
+  int new_frames = 20;
+  double frames_per_second = kFramesPerSecond;
+
+  bool Ok() const;
+  int WindowFrames() const { return ctx_frames + new_frames; }
+};
+
+struct LatencyReport {
+  int sender_collect_ms = 0;
+  int receiver_collect_ms = 0;
+  int ola_holdback_ms = 0;
+  int algorithmic_ms = 0;
+  std::string summary;
+};
+
+LatencyReport DescribeLatency(const ChunkConfig& chunk, bool hidden_tail);
+
+double InformationBitrateBps(const ChunkConfig& chunk);
+double PayloadBitrateBps();
+
+struct ModelPaths {
+  std::string model_dir;
+  std::string encoder_model = "lc_enc_ane_int8.mlmodelc";
+  std::string decoder_model = "lc_dec_ane_int8.mlmodelc";
+  std::string tail = "lc_tail_f32.bin";
+  std::string decoder_kind = "hidden";  // "hidden" (plus CPU tail) or "pcm"
+  std::string encoder_input = "audio";
+  std::string encoder_output = "codes";
+  std::string decoder_lat_input = "lat";
+  std::string decoder_valid_input = "valid";
+  std::string decoder_output = "hidden";
+  // "ctx+new": each encoder call sees left context plus new audio.
+  // "new": each call sees only the new audio (stateful model).
+  std::string encoder_window = "ctx+new";
+  // "codebook_time" (default) or "time_codebook", used only when both axes
+  // have the same length.
+  std::string encoder_codes_layout = "codebook_time";
+  std::string compute = "ane";  // ane, cpu, all
+};
+
+// Flat JSON object. Unknown keys are ignored. Missing keys keep `defaults`.
+bool ParseManifest(const std::string& json,
+                   ModelPaths* paths,
+                   ChunkConfig* chunk,
+                   std::string* error);
+
+bool LoadManifestFile(const std::string& path,
+                      ModelPaths* paths,
+                      ChunkConfig* chunk,
+                      std::string* error);
+
+std::string JoinPath(const std::string& dir, const std::string& leaf);
+bool FileExists(const std::string& path);
+
+bool PackFrame(const int32_t* codes12, uint16_t seq, int codebook_size,
+               uint8_t* dst, size_t cap, size_t* out_len);
+bool UnpackFrame(const uint8_t* src, size_t len, int codebook_size,
+                 int32_t* codes12, uint16_t* seq);
+
+// codes: frame-major, `frames` * codebooks. lat: channel-major (48, frames).
+void CodesToLatent(const int32_t* codes, int frames, int codebooks, float* lat);
+
+struct CodecStats {
+  int64_t packets = 0;
+  int64_t payload_bytes = 0;
+  int64_t samples_24k = 0;
+  int packet_bytes_min = 0;
+  int packet_bytes_max = 0;
+  std::vector<double> window_ms;
+  std::vector<double> prediction_ms;
+  double load_ms = 0;
+  std::string compute;
+  std::string backend;
+  ChunkConfig chunk;
+  bool hidden_tail = true;
+
+  void AddPacket(int bytes);
+  void AddWindow(double window, double prediction);
+  double PayloadBitrateBps() const;
+  double Mean(const std::vector<double>& v) const;
+  std::string ToJson() const;
+  bool WriteJson(const std::string& path) const;
+};
+
+class WavWriter {
+ public:
+  WavWriter() = default;
+  ~WavWriter();
+  WavWriter(const WavWriter&) = delete;
+  WavWriter& operator=(const WavWriter&) = delete;
+
+  bool Open(const std::string& path, int sample_rate_hz, std::string* error);
+  void Write(const int16_t* pcm, size_t n);
+  void Close();
+  bool ok() const { return file_ != nullptr; }
+
+ private:
+  void* file_ = nullptr;
+  int rate_ = 0;
+  uint32_t frames_ = 0;
+  std::string path_;
+};
+
+struct WavData {
+  int sample_rate_hz = 0;
+  int channels = 0;
+  std::vector<int16_t> mono;
+};
+
+bool ReadWav(const std::string& path, WavData* out, std::string* error);
+
+// Emits one 80 ms packet per 80 ms of input once codes for that frame exist.
+// Codes that a chunked model returns in a burst stay queued so NetEq sees a
+// steady 80 ms stream instead of a multi-second burst.
+struct PacedPacket {
+  uint32_t timestamp = 0;
+  std::array<int32_t, kCodebooks> codes{};
+};
+
+class FramePacer {
+ public:
+  explicit FramePacer(int frames_per_packet_10ms = 8);
+
+  std::optional<PacedPacket> Tick(uint32_t rtp_timestamp,
+                                  const int32_t* new_codes,
+                                  int nframes);
+  void Reset();
+  int queued() const { return static_cast<int>(slots_.size()); }
+
+ private:
+  struct Slot {
+    uint32_t timestamp = 0;
+    bool ready = false;
+    std::array<int32_t, kCodebooks> codes{};
+  };
+  int ticks_per_frame_;
+  int ticks_ = 0;
+  uint32_t frame_ts_ = 0;
+  std::vector<Slot> slots_;
+};
+
+}  // namespace liquid
+}  // namespace webrtc
+
+#endif  // MODULES_AUDIO_CODING_CODECS_LIQUIDCODEC_LIQUID_CODEC_H_

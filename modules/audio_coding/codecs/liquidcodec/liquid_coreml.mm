@@ -1,0 +1,573 @@
+#import <CoreML/CoreML.h>
+#import <Foundation/Foundation.h>
+
+#include <chrono>
+#include <cmath>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <vector>
+
+#include "modules/audio_coding/codecs/liquidcodec/liquid_backend.h"
+#include "modules/audio_coding/codecs/liquidcodec/liquid_tail.h"
+#include "rtc_base/logging.h"
+
+namespace webrtc {
+namespace liquid {
+namespace {
+
+void* RetainId(id obj) {
+  if (!obj) return nullptr;
+#if __has_feature(objc_arc)
+  return (__bridge_retained void*)obj;
+#else
+  return (void*)[obj retain];
+#endif
+}
+
+void ReleaseId(void* p) {
+  if (!p) return;
+#if __has_feature(objc_arc)
+  (void)(__bridge_transfer id)p;
+#else
+  [(id)p release];
+#endif
+}
+
+id ToId(void* p) {
+#if __has_feature(objc_arc)
+  return (__bridge id)p;
+#else
+  return (id)p;
+#endif
+}
+
+uint16_t FloatToHalf(float value) {
+  uint32_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  const uint16_t sign = static_cast<uint16_t>((bits >> 16) & 0x8000);
+  int32_t exp = static_cast<int32_t>((bits >> 23) & 0xff) - 127 + 15;
+  uint32_t mant = bits & 0x7fffff;
+  if ((bits & 0x7fffffff) > 0x7f800000) return static_cast<uint16_t>(sign | 0x7e00);
+  if (exp <= 0) {
+    if (exp < -10) return sign;
+    mant |= 0x800000;
+    const uint32_t shift = static_cast<uint32_t>(1 - exp);
+    uint32_t half = mant >> (shift + 13);
+    if ((mant >> (shift + 12)) & 1) ++half;
+    return static_cast<uint16_t>(sign | half);
+  }
+  if (exp >= 31) return static_cast<uint16_t>(sign | 0x7c00);
+  uint16_t half = static_cast<uint16_t>(sign | (exp << 10) | (mant >> 13));
+  if (mant & 0x1000) ++half;
+  return half;
+}
+
+float HalfToFloat(uint16_t h) {
+  const uint32_t sign = static_cast<uint32_t>(h & 0x8000) << 16;
+  uint32_t exp = (h >> 10) & 0x1f;
+  uint32_t mant = h & 0x3ff;
+  uint32_t bits = 0;
+  if (exp == 0) {
+    if (mant == 0) {
+      bits = sign;
+    } else {
+      exp = 127 - 15 + 1;
+      while ((mant & 0x400) == 0) {
+        mant <<= 1;
+        --exp;
+      }
+      mant &= 0x3ff;
+      bits = sign | (exp << 23) | (mant << 13);
+    }
+  } else if (exp == 31) {
+    bits = sign | 0x7f800000 | (mant << 13);
+  } else {
+    bits = sign | ((exp + (127 - 15)) << 23) | (mant << 13);
+  }
+  float out = 0;
+  std::memcpy(&out, &bits, sizeof(out));
+  return out;
+}
+
+MLComputeUnits Units(const std::string& name) {
+  if (name == "cpu") return MLComputeUnitsCPUOnly;
+  if (name == "all") return MLComputeUnitsAll;
+  return MLComputeUnitsCPUAndNeuralEngine;
+}
+
+std::string NsError(NSError* err) {
+  if (!err) return "unknown Core ML error";
+  return err.localizedDescription.UTF8String ? err.localizedDescription.UTF8String : "Core ML error";
+}
+
+std::string JoinNames(NSDictionary<NSString*, MLFeatureDescription*>* map) {
+  NSMutableString* s = [NSMutableString string];
+  for (NSString* key in map) {
+    if (s.length) [s appendString:@", "];
+    [s appendString:key];
+  }
+  return s.length ? std::string(s.UTF8String) : std::string("(none)");
+}
+
+NSString* ResolveName(NSDictionary<NSString*, MLFeatureDescription*>* map,
+                      const std::string& wanted, std::string* error, const char* what) {
+  NSString* key = [NSString stringWithUTF8String:wanted.c_str()];
+  if (map[key]) return key;
+  if (map.count == 1) return map.allKeys.firstObject;
+  if (error) {
+    *error = std::string(what) + " \"" + wanted + "\" was not found. Model has: " +
+             JoinNames(map);
+  }
+  return nil;
+}
+
+bool ShapeOf(MLFeatureDescription* fd, std::vector<int>* shape, std::string* error) {
+  if (fd.type != MLFeatureTypeMultiArray || !fd.multiArrayConstraint) {
+    if (error) *error = "Core ML feature is not a multiarray";
+    return false;
+  }
+  shape->clear();
+  for (NSNumber* n in fd.multiArrayConstraint.shape) shape->push_back(n.intValue);
+  return true;
+}
+
+int Product(const std::vector<int>& shape) {
+  int p = 1;
+  for (int d : shape) {
+    if (d < 0) return -1;
+    p *= d;
+  }
+  return p;
+}
+
+MLMultiArray* MakeArray(const std::vector<int>& shape, MLMultiArrayDataType type, NSError** err) {
+  NSMutableArray<NSNumber*>* dims = [NSMutableArray arrayWithCapacity:shape.size()];
+  for (int d : shape) [dims addObject:@(d)];
+  return [[MLMultiArray alloc] initWithShape:dims dataType:type error:err];
+}
+
+void WriteFloats(MLMultiArray* arr, const float* src, int n) {
+  const int count = arr.count > 0 ? static_cast<int>(arr.count) : n;
+  const int use = count < n ? count : n;
+  if (arr.dataType == MLMultiArrayDataTypeFloat16) {
+    uint16_t* p = static_cast<uint16_t*>(arr.dataPointer);
+    for (int i = 0; i < use; ++i) p[i] = FloatToHalf(src[i]);
+  } else if (arr.dataType == MLMultiArrayDataTypeFloat32) {
+    float* p = static_cast<float*>(arr.dataPointer);
+    std::memcpy(p, src, static_cast<size_t>(use) * sizeof(float));
+  } else if (arr.dataType == MLMultiArrayDataTypeInt32) {
+    int32_t* p = static_cast<int32_t*>(arr.dataPointer);
+    for (int i = 0; i < use; ++i) p[i] = static_cast<int32_t>(std::lrintf(src[i]));
+  }
+}
+
+std::vector<float> ReadFloats(MLMultiArray* arr) {
+  const int n = static_cast<int>(arr.count);
+  std::vector<float> out(static_cast<size_t>(n));
+  if (arr.dataType == MLMultiArrayDataTypeFloat16) {
+    const uint16_t* p = static_cast<const uint16_t*>(arr.dataPointer);
+    for (int i = 0; i < n; ++i) out[static_cast<size_t>(i)] = HalfToFloat(p[i]);
+  } else if (arr.dataType == MLMultiArrayDataTypeFloat32) {
+    std::memcpy(out.data(), arr.dataPointer, static_cast<size_t>(n) * sizeof(float));
+  } else if (arr.dataType == MLMultiArrayDataTypeDouble) {
+    const double* p = static_cast<const double*>(arr.dataPointer);
+    for (int i = 0; i < n; ++i) out[static_cast<size_t>(i)] = static_cast<float>(p[i]);
+  } else if (arr.dataType == MLMultiArrayDataTypeInt32) {
+    const int32_t* p = static_cast<const int32_t*>(arr.dataPointer);
+    for (int i = 0; i < n; ++i) out[static_cast<size_t>(i)] = static_cast<float>(p[i]);
+  }
+  return out;
+}
+
+std::vector<int> StridesOf(MLMultiArray* arr) {
+  std::vector<int> s;
+  for (NSNumber* n in arr.strides) s.push_back(n.intValue);
+  return s;
+}
+
+std::vector<int> ShapeOfArray(MLMultiArray* arr) {
+  std::vector<int> s;
+  for (NSNumber* n in arr.shape) s.push_back(n.intValue);
+  return s;
+}
+
+// Row-major fill when the last dimension is the sample/time axis and every
+// other dimension is 1. Returns false if the package uses a different layout.
+bool WriteTimeMajor(MLMultiArray* arr, const float* src, int n, std::string* error) {
+  const std::vector<int> shape = ShapeOfArray(arr);
+  if (shape.empty() || shape.back() != n) {
+    if (error) {
+      *error = "Core ML time axis must be the last dimension and match the chunk";
+    }
+    return false;
+  }
+  for (size_t i = 0; i + 1 < shape.size(); ++i) {
+    if (shape[i] != 1) {
+      if (error) *error = "Core ML input has more than one non-time axis";
+      return false;
+    }
+  }
+  WriteFloats(arr, src, n);
+  return true;
+}
+
+bool ReadCodes(MLMultiArray* arr, int codebooks, int new_frames, int ctx_frames,
+               const std::string& layout, int32_t* dst, std::string* error) {
+  const std::vector<int> shape = ShapeOfArray(arr);
+  const std::vector<float> raw = ReadFloats(arr);
+  int codebook_axis = -1;
+  int time_axis = -1;
+  const int time_full = ctx_frames + new_frames;
+  for (int i = 0; i < static_cast<int>(shape.size()); ++i) {
+    if (shape[static_cast<size_t>(i)] == codebooks && codebook_axis < 0) codebook_axis = i;
+    else if (shape[static_cast<size_t>(i)] == new_frames ||
+             shape[static_cast<size_t>(i)] == time_full) {
+      time_axis = i;
+    }
+  }
+  if (codebook_axis < 0 || time_axis < 0) {
+    if (new_frames == codebooks) {
+      // Both axes are the same length. Honor the manifest layout.
+      int seen = 0;
+      for (int i = 0; i < static_cast<int>(shape.size()); ++i) {
+        if (shape[static_cast<size_t>(i)] != codebooks) continue;
+        if (seen == 0) {
+          if (layout == "time_codebook") time_axis = i;
+          else codebook_axis = i;
+        } else if (seen == 1) {
+          if (layout == "time_codebook") codebook_axis = i;
+          else time_axis = i;
+        }
+        ++seen;
+      }
+    }
+  }
+  if (codebook_axis < 0 || time_axis < 0) {
+    if (error) *error = "cannot find codebook and time axes on the encoder output";
+    return false;
+  }
+  const int time_len = shape[static_cast<size_t>(time_axis)];
+  const int time0 = time_len == new_frames ? 0 : time_len - new_frames;
+  const std::vector<int> strides = StridesOf(arr);
+  for (int f = 0; f < new_frames; ++f) {
+    for (int q = 0; q < codebooks; ++q) {
+      std::vector<int> idx(shape.size(), 0);
+      idx[static_cast<size_t>(time_axis)] = time0 + f;
+      idx[static_cast<size_t>(codebook_axis)] = q;
+      int offset = 0;
+      for (size_t d = 0; d < idx.size(); ++d) {
+        offset += idx[d] * strides[d];
+      }
+      dst[f * codebooks + q] = static_cast<int32_t>(std::lrintf(raw[static_cast<size_t>(offset)]));
+    }
+  }
+  return true;
+}
+
+class CoreMlBackend final : public LiquidBackend {
+ public:
+  ~CoreMlBackend() override {
+    ReleaseId(encoder_);
+    ReleaseId(decoder_);
+  }
+
+  const char* name() const override { return "coreml"; }
+
+  bool Start(const ModelPaths& paths, const ChunkConfig& chunk, std::string* error) override {
+    std::lock_guard<std::mutex> lock(mu_);
+    paths_ = paths;
+    chunk_ = chunk;
+    const auto t0 = std::chrono::steady_clock::now();
+    NSError* err = nil;
+    MLModelConfiguration* cfg = [[MLModelConfiguration alloc] init];
+    cfg.computeUnits = Units(paths.compute);
+    const std::string enc_path = JoinPath(paths.model_dir, paths.encoder_model);
+    const std::string dec_path = JoinPath(paths.model_dir, paths.decoder_model);
+    MLModel* enc = [MLModel modelWithContentsOfURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:enc_path.c_str()]]
+                                    configuration:cfg
+                                            error:&err];
+    if (!enc) {
+      if (error) *error = "encoder model failed to load: " + NsError(err);
+      return false;
+    }
+    NSString* enc_in = ResolveName(enc.modelDescription.inputDescriptionsByName, paths.encoder_input,
+                                   error, "encoder input");
+    NSString* enc_out = ResolveName(enc.modelDescription.outputDescriptionsByName, paths.encoder_output,
+                                    error, "encoder output");
+    if (!enc_in || !enc_out) return false;
+    enc_in_ = enc_in.UTF8String;
+    enc_out_ = enc_out.UTF8String;
+    std::vector<int> in_shape;
+    if (!ShapeOf(enc.modelDescription.inputDescriptionsByName[enc_in], &in_shape, error)) return false;
+    const int samples = (paths.encoder_window == "new" ? chunk.new_frames : chunk.WindowFrames()) *
+                        chunk.frame_samples;
+    if (!in_shape.empty() && in_shape.back() > 0 && in_shape.back() != samples) {
+      if (error) {
+        *error = "encoder expects " + std::to_string(in_shape.back()) +
+                 " samples in the last dimension but ctx/new require " +
+                 std::to_string(samples) +
+                 ". Pass --liquid-ctx and --liquid-new to match the fetched model. "
+                 "This branch does not re-convert it.";
+      }
+      return false;
+    }
+    MLModel* dec = [MLModel modelWithContentsOfURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:dec_path.c_str()]]
+                                    configuration:cfg
+                                            error:&err];
+    if (!dec) {
+      if (error) *error = "decoder model failed to load: " + NsError(err);
+      return false;
+    }
+    if (paths.decoder_kind == "hidden") {
+      NSString* lat = ResolveName(dec.modelDescription.inputDescriptionsByName, paths.decoder_lat_input,
+                                  error, "decoder lat input");
+      NSString* valid = ResolveName(dec.modelDescription.inputDescriptionsByName, paths.decoder_valid_input,
+                                    error, "decoder valid input");
+      NSString* hid = ResolveName(dec.modelDescription.outputDescriptionsByName, paths.decoder_output,
+                                  error, "decoder output");
+      if (!lat || !valid || !hid) return false;
+      dec_lat_ = lat.UTF8String;
+      dec_valid_ = valid.UTF8String;
+      dec_out_ = hid.UTF8String;
+      std::vector<int> lat_shape;
+      if (!ShapeOf(dec.modelDescription.inputDescriptionsByName[lat], &lat_shape, error)) return false;
+      if (!lat_shape.empty() && lat_shape.back() > 0 && lat_shape.back() != chunk.WindowFrames()) {
+        if (error) {
+          *error = "decoder lat last dimension is " + std::to_string(lat_shape.back()) +
+                   " frames but ctx+new is " + std::to_string(chunk.WindowFrames()) +
+                   ". Match --liquid-ctx/--liquid-new to the model. This branch does not re-convert it.";
+        }
+        return false;
+      }
+      if (!tail_.Load(JoinPath(paths.model_dir, paths.tail), error)) return false;
+    } else {
+      NSString* in_name = ResolveName(dec.modelDescription.inputDescriptionsByName,
+                                     paths.decoder_lat_input, error, "decoder pcm input");
+      NSString* hid = ResolveName(dec.modelDescription.outputDescriptionsByName, paths.decoder_output,
+                                  error, "decoder pcm output");
+      if (!in_name || !hid) return false;
+      dec_lat_ = in_name.UTF8String;
+      dec_out_ = hid.UTF8String;
+    }
+    encoder_ = RetainId(enc);
+    decoder_ = RetainId(dec);
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0)
+                          .count();
+    fprintf(stderr,
+            "LiquidCodec Core ML loaded in %.0f ms (compute=%s, ctx=%d, new=%d, encoder=%s, decoder=%s)\n",
+            ms, paths.compute.c_str(), chunk.ctx_frames, chunk.new_frames, enc_path.c_str(),
+            dec_path.c_str());
+    RTC_LOG(LS_INFO) << "LiquidCodec models loaded in " << ms << " ms";
+    return true;
+  }
+
+  bool EncodeWindow(const int16_t* pcm, const ChunkConfig& chunk, int32_t* codes_out,
+                    WindowTiming* timing, std::string* error) override {
+    std::lock_guard<std::mutex> lock(mu_);
+    const auto t0 = std::chrono::steady_clock::now();
+    const int samples = (paths_.encoder_window == "new" ? chunk.new_frames : chunk.WindowFrames()) *
+                        chunk.frame_samples;
+    const int offset = (paths_.encoder_window == "new" ? chunk.ctx_frames * chunk.frame_samples : 0);
+    std::vector<float> audio(static_cast<size_t>(samples));
+    for (int i = 0; i < samples; ++i) {
+      audio[static_cast<size_t>(i)] =
+          static_cast<float>(pcm[offset + i]) / 32768.f;
+    }
+    NSError* err = nil;
+    MLModel* model = (MLModel*)ToId(encoder_);
+    MLFeatureDescription* fd = model.modelDescription.inputDescriptionsByName[
+        [NSString stringWithUTF8String:enc_in_.c_str()]];
+    std::vector<int> shape;
+    if (!ShapeOf(fd, &shape, error)) return false;
+    if (!shape.empty() && shape.back() < 0) shape.back() = samples;
+    MLMultiArray* arr = MakeArray(shape, fd.multiArrayConstraint.dataType, &err);
+    if (!arr || !WriteTimeMajor(arr, audio.data(), samples, error)) {
+      if (error && error->empty()) *error = NsError(err);
+      return false;
+    }
+    MLFeatureValue* audio_value = [MLFeatureValue featureValueWithMultiArray:arr];
+    MLDictionaryFeatureProvider* provider = [[MLDictionaryFeatureProvider alloc]
+        initWithDictionary:@{[NSString stringWithUTF8String:enc_in_.c_str()] : audio_value}
+                     error:&err];
+    const auto p0 = std::chrono::steady_clock::now();
+    id<MLFeatureProvider> out = [model predictionFromFeatures:provider error:&err];
+    const auto p1 = std::chrono::steady_clock::now();
+    if (!out) {
+      if (error) *error = "encoder prediction failed: " + NsError(err);
+      return false;
+    }
+    MLMultiArray* codes = [out featureValueForName:[NSString stringWithUTF8String:enc_out_.c_str()]]
+                              .multiArrayValue;
+    if (!codes || !ReadCodes(codes, chunk.codebooks, chunk.new_frames, chunk.ctx_frames,
+                             paths_.encoder_codes_layout, codes_out, error)) {
+      return false;
+    }
+    for (int i = 0; i < chunk.new_frames * chunk.codebooks; ++i) {
+      if (codes_out[i] < 0 || codes_out[i] >= chunk.codebook_size) {
+        if (error) *error = "encoder produced a code outside the codebook";
+        return false;
+      }
+    }
+    if (timing) {
+      timing->window_ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      timing->prediction_ms = std::chrono::duration<double, std::milli>(p1 - p0).count();
+    }
+    return true;
+  }
+
+  bool DecodeWindow(const int32_t* codes, const ChunkConfig& chunk, int16_t* pcm_out,
+                    WindowTiming* timing, std::string* error) override {
+    std::lock_guard<std::mutex> lock(mu_);
+    const auto t0 = std::chrono::steady_clock::now();
+    const int fr = chunk.WindowFrames();
+    NSError* err = nil;
+    MLModel* model = (MLModel*)ToId(decoder_);
+    NSMutableDictionary* inputs = [NSMutableDictionary dictionary];
+    if (paths_.decoder_kind == "hidden") {
+      std::vector<float> lat(static_cast<size_t>(kLatent * fr));
+      CodesToLatent(codes, fr, chunk.codebooks, lat.data());
+      std::vector<float> valid(static_cast<size_t>(fr * kUpsample), 0.f);
+      for (int i = 0; i < fr; ++i) {
+        bool real = i >= chunk.ctx_frames;
+        if (!real) {
+          real = true;
+          for (int q = 0; q < chunk.codebooks; ++q) {
+            if (codes[i * chunk.codebooks + q] < 0) real = false;
+          }
+        }
+        const float v = real ? 1.f : 0.f;
+        for (int k = 0; k < kUpsample; ++k) valid[static_cast<size_t>(i * kUpsample + k)] = v;
+      }
+      if (!AddInput(model, dec_lat_, lat, inputs, error)) return false;
+      if (!AddInput(model, dec_valid_, valid, inputs, error)) return false;
+    } else {
+      std::vector<float> as_float(static_cast<size_t>(fr * chunk.codebooks));
+      for (size_t i = 0; i < as_float.size(); ++i) as_float[i] = static_cast<float>(codes[i]);
+      const std::string input = dec_lat_.empty() ? paths_.decoder_lat_input : dec_lat_;
+      if (!AddInput(model, input, as_float, inputs, error)) return false;
+    }
+    MLDictionaryFeatureProvider* provider =
+        [[MLDictionaryFeatureProvider alloc] initWithDictionary:inputs error:&err];
+    const auto p0 = std::chrono::steady_clock::now();
+    id<MLFeatureProvider> out = [model predictionFromFeatures:provider error:&err];
+    const auto p1 = std::chrono::steady_clock::now();
+    if (!out) {
+      if (error) *error = "decoder prediction failed: " + NsError(err);
+      return false;
+    }
+    MLMultiArray* hidden =
+        [out featureValueForName:[NSString stringWithUTF8String:dec_out_.c_str()]].multiArrayValue;
+    if (!hidden) {
+      if (error) *error = "decoder output missing";
+      return false;
+    }
+    std::vector<float> pcm;
+    if (paths_.decoder_kind == "pcm") {
+      pcm = ReadFloats(hidden);
+    } else {
+      const int t75 = fr * kUpsample;
+      const int keep = chunk.new_frames * kUpsample;
+      const int c0 = chunk.ctx_frames * kUpsample;
+      std::vector<float> raw = ReadFloats(hidden);
+      const std::vector<int> shape = ShapeOfArray(hidden);
+      const std::vector<int> strides = StridesOf(hidden);
+      int hidden_axis = -1;
+      int time_axis = -1;
+      for (int i = 0; i < static_cast<int>(shape.size()); ++i) {
+        if (shape[static_cast<size_t>(i)] == kHidden) hidden_axis = i;
+        if (shape[static_cast<size_t>(i)] == t75) time_axis = i;
+      }
+      if (hidden_axis < 0 || time_axis < 0) {
+        if (error) *error = "decoder hidden shape is not [512, ctx+new frames at 75 Hz]";
+        return false;
+      }
+      std::vector<float> slice(static_cast<size_t>(kHidden * keep));
+      for (int c = 0; c < kHidden; ++c) {
+        for (int t = 0; t < keep; ++t) {
+          std::vector<int> idx(shape.size(), 0);
+          idx[static_cast<size_t>(hidden_axis)] = c;
+          idx[static_cast<size_t>(time_axis)] = c0 + t;
+          int offset = 0;
+          for (size_t d = 0; d < idx.size(); ++d) offset += idx[d] * strides[d];
+          slice[static_cast<size_t>(c * keep + t)] = raw[static_cast<size_t>(offset)];
+        }
+      }
+      pcm = tail_.PushHidden(slice.data(), keep);
+    }
+    std::vector<int16_t> s16;
+    s16.reserve(pcm.size());
+    for (float x : pcm) {
+      float y = x * 32767.f;
+      if (y > 32767.f) y = 32767.f;
+      if (y < -32768.f) y = -32768.f;
+      s16.push_back(static_cast<int16_t>(std::lrintf(y)));
+    }
+    fifo_.insert(fifo_.end(), s16.begin(), s16.end());
+    const int need = chunk.new_frames * chunk.frame_samples;
+    if (static_cast<int>(fifo_.size()) < need) {
+      fifo_.insert(fifo_.begin(), static_cast<size_t>(need - fifo_.size()), 0);
+    }
+    std::memcpy(pcm_out, fifo_.data(), static_cast<size_t>(need) * sizeof(int16_t));
+    fifo_.erase(fifo_.begin(), fifo_.begin() + need);
+    if (timing) {
+      timing->window_ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      timing->prediction_ms = std::chrono::duration<double, std::milli>(p1 - p0).count();
+    }
+    return true;
+  }
+
+  void Reset() override {
+    std::lock_guard<std::mutex> lock(mu_);
+    tail_.Reset();
+    fifo_.clear();
+  }
+
+ private:
+  bool AddInput(MLModel* model, const std::string& name, const std::vector<float>& src,
+                NSMutableDictionary* inputs, std::string* error) {
+    NSError* err = nil;
+    NSString* key = [NSString stringWithUTF8String:name.c_str()];
+    MLFeatureDescription* fd = model.modelDescription.inputDescriptionsByName[key];
+    if (!fd) {
+      if (error) *error = "missing decoder input " + name;
+      return false;
+    }
+    std::vector<int> shape;
+    if (!ShapeOf(fd, &shape, error)) return false;
+    if (Product(shape) > 0 && Product(shape) != static_cast<int>(src.size())) {
+      if (error) *error = "decoder input " + name + " has " + std::to_string(Product(shape)) +
+                          " elements, chunk produced " + std::to_string(src.size());
+      return false;
+    }
+    MLMultiArray* arr = MakeArray(shape, fd.multiArrayConstraint.dataType, &err);
+    if (!arr) {
+      if (error) *error = NsError(err);
+      return false;
+    }
+    WriteFloats(arr, src.data(), static_cast<int>(src.size()));
+    inputs[key] = [MLFeatureValue featureValueWithMultiArray:arr];
+    return true;
+  }
+
+  std::mutex mu_;
+  ModelPaths paths_;
+  ChunkConfig chunk_;
+  void* encoder_ = nullptr;
+  void* decoder_ = nullptr;
+  std::string enc_in_, enc_out_, dec_lat_, dec_valid_, dec_out_;
+  LiquidTail tail_;
+  std::vector<int16_t> fifo_;
+};
+
+}  // namespace
+
+std::unique_ptr<LiquidBackend> CreateCoreMlBackend() {
+  return std::make_unique<CoreMlBackend>();
+}
+
+}  // namespace liquid
+}  // namespace webrtc

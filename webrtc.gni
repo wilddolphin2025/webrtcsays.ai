@@ -195,6 +195,10 @@ declare_args() {
   # Set to false to disable
   rtc_use_speech_audio_devices = true
 
+  # LiquidCodec (Core ML / Apple Neural Engine) inside directcall.
+  # macOS only. Default off so Linux and the arm64 Frame build are unchanged.
+  rtc_use_liquidcodec = false
+
   # When set to true, replace the audio output with a sinus tone at 440Hz.
   # The ADM will ask for audio data from WebRTC but instead of reading real
   # audio samples from NetEQ, a sinus tone will be generated and replace the
@@ -260,6 +264,9 @@ declare_args() {
   # When true, include the Perfetto library.
   rtc_use_perfetto = false
 }
+
+assert(!rtc_use_liquidcodec || is_mac,
+       "rtc_use_liquidcodec is macOS-only and must stay off for Linux/Frame builds")
 
 if (!build_with_mozilla) {
   import("//testing/test.gni")

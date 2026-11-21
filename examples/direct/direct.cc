@@ -36,6 +36,10 @@
 
 #include "direct.h"
 #include "option.h"
+#include "audio_tap.h"
+#if defined(WEBRTC_USE_LIQUIDCODEC)
+#include "modules/audio_coding/codecs/liquidcodec/liquid_factory.h"
+#endif
 #include "video.h"
 #include "status.h"
 
@@ -343,8 +347,63 @@ bool DirectApplication::CreatePeerConnection() {
     deps.socket_factory = pss();
     deps.network_manager = std::move(network_manager);
     deps.adm = audio_device_module_;
-    deps.audio_encoder_factory = webrtc::CreateBuiltinAudioEncoderFactory();
-    deps.audio_decoder_factory = webrtc::CreateBuiltinAudioDecoderFactory();
+    webrtc::scoped_refptr<webrtc::AudioEncoderFactory> audio_encoder_factory =
+        webrtc::CreateBuiltinAudioEncoderFactory();
+    webrtc::scoped_refptr<webrtc::AudioDecoderFactory> audio_decoder_factory =
+        webrtc::CreateBuiltinAudioDecoderFactory();
+    if (opts_.audio_codec == "liquidcodec") {
+#if defined(WEBRTC_USE_LIQUIDCODEC)
+      webrtc::liquid::RuntimeConfig liquid;
+      liquid.paths.model_dir = opts_.liquid_model_dir.empty()
+                                   ? "scripts/liquidcodec/models"
+                                   : opts_.liquid_model_dir;
+      liquid.paths.compute = opts_.liquid_decode.empty() ? "ane" : opts_.liquid_decode;
+      liquid.record_dir = opts_.record_dir;
+      liquid.inject_wav = opts_.inject_wav;
+      const std::string manifest = opts_.liquid_manifest.empty()
+                                       ? webrtc::liquid::JoinPath(liquid.paths.model_dir,
+                                                                  "liquidcodec.json")
+                                       : opts_.liquid_manifest;
+      std::string manifest_error;
+      if (webrtc::liquid::FileExists(manifest)) {
+        if (!webrtc::liquid::LoadManifestFile(manifest, &liquid.paths, &liquid.chunk,
+                                              &manifest_error)) {
+          fprintf(stderr, "LiquidCodec manifest: %s\n", manifest_error.c_str());
+          return false;
+        }
+      } else {
+        fprintf(stderr,
+                "LiquidCodec manifest %s not found; assuming ctx=20 new=20 "
+                "(published decoder geometry) until the fork ships liquidcodec.json\n",
+                manifest.c_str());
+      }
+      if (opts_.liquid_ctx > 0) liquid.chunk.ctx_frames = opts_.liquid_ctx;
+      if (opts_.liquid_new > 0) liquid.chunk.new_frames = opts_.liquid_new;
+      liquid.paths.model_dir = opts_.liquid_model_dir.empty()
+                                   ? "scripts/liquidcodec/models"
+                                   : opts_.liquid_model_dir;
+      std::string liquid_error;
+      if (!webrtc::ConfigureLiquidRuntime(liquid, &liquid_error)) {
+        fprintf(stderr, "%s\n", liquid_error.c_str());
+        return false;
+      }
+      audio_encoder_factory = webrtc::CreateLiquidAudioEncoderFactory();
+      audio_decoder_factory = webrtc::CreateLiquidAudioDecoderFactory();
+#else
+      fprintf(stderr,
+              "LiquidCodec is not in this build. On Apple Silicon run "
+              "./build.sh release liquidcodec\n");
+      return false;
+#endif
+    }
+    if (!opts_.record_dir.empty() || !opts_.inject_wav.empty()) {
+      audio_encoder_factory = webrtc::CreateTappingAudioEncoderFactory(
+          audio_encoder_factory, opts_.record_dir, opts_.inject_wav);
+      audio_decoder_factory = webrtc::CreateTappingAudioDecoderFactory(
+          audio_decoder_factory, opts_.record_dir);
+    }
+    deps.audio_encoder_factory = audio_encoder_factory;
+    deps.audio_decoder_factory = audio_decoder_factory;
     deps.audio_processing_builder =
         std::make_unique<webrtc::BuiltinAudioProcessingBuilder>();
     // H.264 first, then VP8 and VP9. AV1 and HEVC are not offered.
@@ -823,6 +882,50 @@ void DirectApplication::ConfigureOutgoingVideo() {
               width, height, fps, max_bps);
     }
   }
+}
+
+void DirectApplication::ConfigureOutgoingAudio() {
+  if (!peer_connection_ || !peer_connection_factory_) return;
+  const bool liquid = opts_.audio_codec == "liquidcodec";
+  const bool opus = opts_.audio_codec == "opus" || opts_.opus_bitrate_bps > 0;
+  if (!liquid && !opus) return;
+  const auto caps =
+      peer_connection_factory_->GetRtpSenderCapabilities(webrtc::MediaType::AUDIO).codecs;
+  std::vector<webrtc::RtpCodecCapability> preferred;
+  for (auto codec : caps) {
+    std::string name = codec.name;
+    for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (liquid) {
+      if (name == "liquidcodec") preferred.push_back(std::move(codec));
+    } else if (name == "opus") {
+      if (opts_.opus_bitrate_bps > 0) {
+        codec.parameters["maxaveragebitrate"] = std::to_string(opts_.opus_bitrate_bps);
+        codec.parameters["stereo"] = "0";
+        codec.parameters["sprop-stereo"] = "0";
+        codec.parameters["usedtx"] = "0";
+      }
+      preferred.push_back(std::move(codec));
+    }
+  }
+  if (preferred.empty()) {
+    fprintf(stderr, "audio codec %s is not available in this build\n",
+            liquid ? "liquidcodec" : "opus");
+    RTC_LOG(LS_ERROR) << "Requested audio codec is not available";
+    return;
+  }
+  for (const auto& transceiver : peer_connection_->GetTransceivers()) {
+    if (!transceiver || transceiver->media_type() != webrtc::MediaType::AUDIO) continue;
+    std::span<webrtc::RtpCodecCapability> codec_span(preferred.data(), preferred.size());
+    auto err = transceiver->SetCodecPreferences(codec_span);
+    if (!err.ok()) {
+      RTC_LOG(LS_ERROR) << "Audio SetCodecPreferences failed: " << err.message();
+      fprintf(stderr, "audio SetCodecPreferences failed: %s\n", err.message());
+    }
+  }
+  fprintf(stderr, "audio codec: %s%s\n", preferred.front().name.c_str(),
+          opts_.opus_bitrate_bps > 0
+              ? (" maxaveragebitrate=" + std::to_string(opts_.opus_bitrate_bps)).c_str()
+              : "");
 }
 
 // New method to ensure video send is active with the current source

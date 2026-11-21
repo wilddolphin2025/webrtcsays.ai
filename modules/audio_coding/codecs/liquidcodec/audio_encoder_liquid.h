@@ -1,0 +1,74 @@
+#ifndef MODULES_AUDIO_CODING_CODECS_LIQUIDCODEC_AUDIO_ENCODER_LIQUID_H_
+#define MODULES_AUDIO_CODING_CODECS_LIQUIDCODEC_AUDIO_ENCODER_LIQUID_H_
+
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "api/audio_codecs/audio_encoder.h"
+#include "api/units/time_delta.h"
+#include "common_audio/resampler/include/push_resampler.h"
+#include "modules/audio_coding/codecs/liquidcodec/liquid_codec.h"
+#include "modules/audio_coding/codecs/liquidcodec/liquid_stream.h"
+
+namespace webrtc {
+namespace liquid {
+
+struct RuntimeConfig {
+  ModelPaths paths;
+  ChunkConfig chunk;
+  std::string record_dir;
+  std::string inject_wav;
+  bool hidden_tail = true;
+};
+
+// Process-wide settings copied from directcall before the peer connection
+// factory is created. The macOS build reads them when the codec is negotiated.
+RuntimeConfig* MutableRuntime();
+const RuntimeConfig& Runtime();
+
+}  // namespace liquid
+
+class AudioEncoderLiquid final : public AudioEncoder {
+ public:
+  AudioEncoderLiquid(int payload_type, liquid::RuntimeConfig config);
+  ~AudioEncoderLiquid() override;
+
+  int SampleRateHz() const override { return liquid::kWebRtcClockHz; }
+  size_t NumChannels() const override { return 1; }
+  size_t Num10MsFramesInNextPacket() const override { return 8; }
+  size_t Max10MsFramesInAPacket() const override { return 8; }
+  int GetTargetBitrate() const override;
+  void Reset() override;
+  std::optional<std::pair<TimeDelta, TimeDelta>> GetFrameLengthRange()
+      const override;
+
+ protected:
+  EncodedInfo EncodeImpl(uint32_t rtp_timestamp,
+                         std::span<const int16_t> audio,
+                         Buffer* encoded) override;
+
+ private:
+  bool EnsureStarted(std::string* error);
+  bool TakeInject(int16_t* dst24, std::string* error);
+
+  int payload_type_;
+  liquid::RuntimeConfig config_;
+  std::unique_ptr<liquid::LiquidBackend> backend_;
+  std::unique_ptr<liquid::StreamEncoder> stream_;
+  liquid::FramePacer pacer_;
+  liquid::CodecStats stats_;
+  liquid::WavWriter codec_wav_;
+  PushResampler<int16_t> down_;
+  std::vector<int16_t> inject_;
+  size_t inject_pos_ = 0;
+  int inject_rate_ = 0;
+  bool failed_ = false;
+};
+
+}  // namespace webrtc
+
+#endif

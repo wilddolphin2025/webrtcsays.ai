@@ -515,6 +515,7 @@ fi
 # Parse script parameters
 BUILD_TYPE="debug"
 ENABLE_WHILLATS="false"
+ENABLE_LIQUIDCODEC="false"
 IOS_BUILD="false"
 if [ $# -ge 1 ]; then
     if [[ "$1" == "debug" || "$1" == "release" ]]; then
@@ -542,6 +543,7 @@ if [ $# -ge 1 ]; then
         echo ""
         echo "Options:"
         echo "  whillats    Enable whillats speech/AI features"
+        echo "  liquidcodec macOS only: LiquidCodec Core ML in directcall (off on Linux)"
         echo ""
         echo "iOS-specific usage:"
         echo "  $0 [-b REF] ios [debug|release] [whillats]"
@@ -584,6 +586,19 @@ if [ $# -ge 3 ]; then
     if [[ "$3" == "whillats" ]] && [[ "$IOS_BUILD" == "true" ]]; then
         ENABLE_WHILLATS="true"
     fi
+fi
+for arg in "$@"; do
+    if [[ "$arg" == "liquidcodec" ]]; then
+        ENABLE_LIQUIDCODEC="true"
+    fi
+done
+if [[ "$ENABLE_LIQUIDCODEC" == "true" ]]; then
+    if [[ "$IOS_BUILD" == "true" || "$OSTYPE" != darwin* ]]; then
+        echo "ERROR: liquidcodec is macOS Apple Silicon only. Linux and iOS builds leave it off."
+        exit 1
+    fi
+    EXTRA_ARGS="$EXTRA_ARGS rtc_use_liquidcodec=true"
+    echo "LiquidCodec Core ML will be compiled into directcall (rtc_use_liquidcodec=true)."
 fi
 
 # Handle whillats building

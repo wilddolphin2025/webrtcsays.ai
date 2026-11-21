@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "sample_rate_hz": 24000,
+  "frame_samples": 1920,
+  "codebooks": 12,
+  "codebook_size": 2016,
+  "ctx_frames": 20,
+  "new_frames": 1,
+  "encoder_model": "lc_enc_ane_int8.mlmodelc",
+  "decoder_model": "lc_dec_ane_int8.mlmodelc",
+  "tail": "lc_tail_f32.bin",
+  "decoder_kind": "hidden",
+  "encoder_input": "audio",
+  "encoder_output": "codes",
+  "decoder_lat_input": "lat",
+  "decoder_valid_input": "valid",
+  "decoder_output": "hidden",
+  "encoder_window": "ctx+new",
+  "encoder_codes_layout": "codebook_time",
+  "compute": "ane"
+}

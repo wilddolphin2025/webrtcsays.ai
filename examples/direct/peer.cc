@@ -506,7 +506,8 @@ void DirectPeer::Start() {
 
     if (is_caller()) {
         webrtc::AudioOptions audio_options;
-        if (opts_.llama) {
+        if (opts_.llama || opts_.audio_codec == "liquidcodec" || opts_.audio_codec == "opus" ||
+            opts_.opus_bitrate_bps > 0 || !opts_.record_dir.empty() || !opts_.inject_wav.empty()) {
             audio_options.echo_cancellation = false;
             audio_options.auto_gain_control = false;
             audio_options.noise_suppression = false;
@@ -535,6 +536,7 @@ void DirectPeer::Start() {
         if (opts_.video) {
             ConfigureOutgoingVideo();
         }
+        ConfigureOutgoingAudio();
 
         webrtc::PeerConnectionInterface::RTCOfferAnswerOptions offer_options;
 
@@ -912,7 +914,9 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                     // SetLocalDescription fail.
 
                     webrtc::AudioOptions audio_options;
-                    if (opts_.llama) {
+                    if (opts_.llama || opts_.audio_codec == "liquidcodec" ||
+                        opts_.audio_codec == "opus" || opts_.opus_bitrate_bps > 0 ||
+                        !opts_.record_dir.empty() || !opts_.inject_wav.empty()) {
                         audio_options.echo_cancellation = false;
                         audio_options.auto_gain_control = false;
                         audio_options.noise_suppression = false;
@@ -1025,6 +1029,7 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                         }
                         RTC_LOG(LS_INFO) << "Video source configured for callee.";
                     }
+                    ConfigureOutgoingAudio();
 
                     create_session_observer_ = webrtc::make_ref_counted<LambdaCreateSessionDescriptionObserver>(
                         [this](std::unique_ptr<webrtc::SessionDescriptionInterface> desc) {

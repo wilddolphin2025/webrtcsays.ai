@@ -130,6 +130,15 @@ struct Options {
     int stats_interval_sec = 0;
     int call_duration_sec = 0;
     std::string audio{};                // "dummy" forces the fake audio device
+    std::string audio_codec{};          // empty = built-in default; opus; liquidcodec
+    int opus_bitrate_bps = 0;           // 0 = Opus default; else maxaveragebitrate
+    std::string record_dir{};           // WAV + stats for a quality run
+    std::string inject_wav{};           // replace the mic with this 16-bit PCM wav
+    std::string liquid_model_dir{};
+    std::string liquid_manifest{};
+    int liquid_ctx = 0;                 // 0 = manifest default
+    int liquid_new = 0;                 // 0 = manifest default
+    std::string liquid_decode{"ane"};   // ane, cpu, all
     std::string parse_error{};
 };
 

@@ -1,0 +1,290 @@
+#include <sys/stat.h>
+
+#include <array>
+#include <cmath>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <iostream>
+#include <string>
+#include <vector>
+
+#include "modules/audio_coding/codecs/liquidcodec/liquid_codec.h"
+#include "modules/audio_coding/codecs/liquidcodec/liquid_stream.h"
+#include "modules/audio_coding/codecs/liquidcodec/liquid_tail.h"
+
+namespace {
+
+int g_fails = 0;
+
+void Expect(bool ok, const std::string& what) {
+  if (ok) {
+    std::cout << "ok  " << what << "\n";
+  } else {
+    std::cout << "FAIL " << what << "\n";
+    ++g_fails;
+  }
+}
+
+class MockBackend final : public webrtc::liquid::LiquidBackend {
+ public:
+  bool Start(const webrtc::liquid::ModelPaths&, const webrtc::liquid::ChunkConfig&,
+             std::string*) override {
+    return true;
+  }
+  bool EncodeWindow(const int16_t* pcm, const webrtc::liquid::ChunkConfig& chunk,
+                    int32_t* codes_out, webrtc::liquid::WindowTiming* timing,
+                    std::string*) override {
+    const int16_t* news = pcm + chunk.ctx_frames * chunk.frame_samples;
+    for (int f = 0; f < chunk.new_frames; ++f) {
+      for (int q = 0; q < webrtc::liquid::kCodebooks; ++q) {
+        const int sample = news[f * chunk.frame_samples];
+        codes_out[f * webrtc::liquid::kCodebooks + q] =
+            (sample + 1000 + q) % chunk.codebook_size;
+      }
+    }
+    if (timing) {
+      timing->window_ms = 1.5;
+      timing->prediction_ms = 0.25;
+    }
+    ++encodes_;
+    return true;
+  }
+  bool DecodeWindow(const int32_t* codes, const webrtc::liquid::ChunkConfig& chunk,
+                    int16_t* pcm_out, webrtc::liquid::WindowTiming* timing,
+                    std::string*) override {
+    const int32_t* news = codes + chunk.ctx_frames * webrtc::liquid::kCodebooks;
+    for (int f = 0; f < chunk.new_frames; ++f) {
+      const int16_t value = static_cast<int16_t>(news[f * webrtc::liquid::kCodebooks]);
+      for (int i = 0; i < chunk.frame_samples; ++i) {
+        pcm_out[f * chunk.frame_samples + i] = value;
+      }
+    }
+    if (timing) {
+      timing->window_ms = 2.0;
+      timing->prediction_ms = 0.5;
+    }
+    ++decodes_;
+    return true;
+  }
+  void Reset() override {}
+  const char* name() const override { return "mock"; }
+  int encodes_ = 0;
+  int decodes_ = 0;
+};
+
+void TestPayload() {
+  int32_t codes[12];
+  for (int i = 0; i < 12; ++i) codes[i] = 100 + i;
+  uint8_t bytes[64];
+  size_t len = 0;
+  Expect(webrtc::liquid::PackFrame(codes, 7, 2016, bytes, sizeof(bytes), &len), "pack");
+  Expect(len == 28, "payload is 28 bytes");
+  int32_t back[12];
+  uint16_t seq = 0;
+  Expect(webrtc::liquid::UnpackFrame(bytes, len, 2016, back, &seq), "unpack");
+  Expect(seq == 7, "sequence");
+  Expect(std::memcmp(codes, back, sizeof(codes)) == 0, "codes roundtrip");
+  codes[0] = 2016;
+  Expect(!webrtc::liquid::PackFrame(codes, 1, 2016, bytes, sizeof(bytes), &len),
+         "reject code 2016");
+}
+
+void TestLatency() {
+  webrtc::liquid::ChunkConfig chunk;
+  chunk.new_frames = 20;
+  chunk.ctx_frames = 20;
+  const auto big = webrtc::liquid::DescribeLatency(chunk, true);
+  Expect(big.sender_collect_ms == 1600, "new=20 sender collect 1600 ms");
+  Expect(big.receiver_collect_ms == 1520, "new=20 receiver collect 1520 ms");
+  Expect(big.ola_holdback_ms == 20, "tail holdback 20 ms");
+  Expect(big.algorithmic_ms == 3140, "new=20 algorithmic 3140 ms");
+  chunk.new_frames = 1;
+  const auto small = webrtc::liquid::DescribeLatency(chunk, true);
+  Expect(small.sender_collect_ms == 80, "new=1 sender collect 80 ms");
+  Expect(small.receiver_collect_ms == 0, "new=1 receiver collect 0");
+  Expect(small.algorithmic_ms == 100, "new=1 algorithmic 100 ms");
+  const auto pcm = webrtc::liquid::DescribeLatency(chunk, false);
+  Expect(pcm.ola_holdback_ms == 0, "pcm decoder has no tail holdback");
+  const double info = webrtc::liquid::InformationBitrateBps(chunk);
+  Expect(info > 1640.0 && info < 1650.0, "information bitrate about 1646 bps");
+  Expect(std::fabs(webrtc::liquid::PayloadBitrateBps() - 2800.0) < 0.1,
+         "payload bitrate 2800 bps");
+}
+
+void TestManifest() {
+  const char* json = R"({
+    "ctx_frames": 20,
+    "new_frames": 1,
+    "encoder_model": "lc_enc_ane_int8.mlmodelc",
+    "decoder_model": "lc_dec_ane_int8.mlmodelc",
+    "decoder_kind": "hidden",
+    "encoder_window": "ctx+new",
+    "compute": "cpu"
+  })";
+  webrtc::liquid::ModelPaths paths;
+  webrtc::liquid::ChunkConfig chunk;
+  std::string error;
+  Expect(webrtc::liquid::ParseManifest(json, &paths, &chunk, &error), error);
+  Expect(chunk.ctx_frames == 20 && chunk.new_frames == 1, "manifest chunk");
+  Expect(paths.encoder_model == "lc_enc_ane_int8.mlmodelc", "manifest encoder");
+  Expect(paths.compute == "cpu", "manifest compute");
+  Expect(!webrtc::liquid::ParseManifest("{\"decoder_kind\": \"nope\"}", &paths, &chunk, &error),
+         "reject bad decoder_kind");
+}
+
+void TestLatent() {
+  int32_t codes[12] = {};
+  codes[0] = 1;
+  float lat[48];
+  webrtc::liquid::CodesToLatent(codes, 1, 12, lat);
+  Expect(std::fabs(lat[0] - (-0.75f)) < 1e-6, "code 1 dim0");
+  Expect(std::fabs(lat[1] - (-1.f)) < 1e-6, "code 1 dim1");
+  int32_t zeros[12] = {};
+  webrtc::liquid::CodesToLatent(zeros, 1, 12, lat);
+  bool all_neg = true;
+  for (float v : lat) {
+    if (std::fabs(v - (-1.f)) > 1e-6) all_neg = false;
+  }
+  Expect(all_neg, "code 0 is the bottom FSQ level");
+}
+
+void TestPacer() {
+  webrtc::liquid::FramePacer pacer(8);
+  webrtc::liquid::ChunkConfig chunk;
+  chunk.new_frames = 4;
+  chunk.ctx_frames = 2;
+  MockBackend backend;
+  webrtc::liquid::StreamEncoder encoder(&backend, chunk);
+  int emitted = 0;
+  uint32_t first_ts = 0;
+  bool have_first = false;
+  uint32_t prev_ts = 0;
+  for (int frame = 0; frame < 4; ++frame) {
+    for (int tick = 0; tick < 8; ++tick) {
+      const uint32_t ts = static_cast<uint32_t>((frame * 8 + tick) * 480);
+      std::vector<std::array<int32_t, 12>> codes;
+      webrtc::liquid::WindowTiming timing;
+      std::string error;
+      if (tick == 7) {
+        std::vector<int16_t> frame_pcm(1920, static_cast<int16_t>(1000 + frame));
+        Expect(encoder.Push(frame_pcm.data(), frame_pcm.size(), &codes, &timing, &error),
+               "stream push");
+      }
+      std::vector<int32_t> flat;
+      for (const auto& c : codes) flat.insert(flat.end(), c.begin(), c.end());
+      const auto packet = pacer.Tick(ts, flat.empty() ? nullptr : flat.data(),
+                                     static_cast<int>(codes.size()));
+      if (packet) {
+        if (!have_first) {
+          first_ts = packet->timestamp;
+          have_first = true;
+        } else {
+          Expect(packet->timestamp == prev_ts + 3840, "paced timestamps step 80 ms");
+        }
+        prev_ts = packet->timestamp;
+        ++emitted;
+      } else if (frame < 3) {
+        Expect(codes.empty(), "no codes before the chunk completes");
+      }
+    }
+  }
+  Expect(backend.encodes_ == 1, "one encode window for four frames");
+  Expect(emitted == 1, "first packet leaves when the chunk is ready");
+  Expect(have_first && first_ts == 0, "first packet keeps the first frame timestamp");
+  for (int frame = 0; frame < 3; ++frame) {
+    for (int tick = 0; tick < 8; ++tick) {
+      const uint32_t ts = static_cast<uint32_t>((40 + frame * 8 + tick) * 480);
+      const auto packet = pacer.Tick(ts, nullptr, 0);
+      if (packet) {
+        Expect(packet->timestamp == prev_ts + 3840, "drain timestamp");
+        prev_ts = packet->timestamp;
+        ++emitted;
+      }
+    }
+  }
+  Expect(emitted == 4, "four paced packets for four frames");
+}
+
+void TestDecodeChunk() {
+  webrtc::liquid::ChunkConfig chunk;
+  chunk.new_frames = 2;
+  chunk.ctx_frames = 3;
+  MockBackend backend;
+  webrtc::liquid::StreamDecoder decoder(&backend, chunk);
+  std::vector<int16_t> audio;
+  webrtc::liquid::WindowTiming timing;
+  std::string error;
+  int32_t frame[12] = {};
+  frame[0] = 42;
+  Expect(decoder.PushFrame(frame, &audio, &timing, &error) && audio.empty(),
+         "decoder waits for the chunk");
+  frame[0] = 43;
+  Expect(decoder.PushFrame(frame, &audio, &timing, &error), "second frame decodes");
+  Expect(audio.size() == static_cast<size_t>(2 * 1920), "chunk audio length");
+  Expect(audio.front() == 42 && audio[1920] == 43, "decoded frames stay in order");
+  Expect(backend.decodes_ == 1, "one decode window");
+}
+
+void TestWavAndTail(const std::string& dir) {
+  const std::string wav_path = dir + "/round.wav";
+  webrtc::liquid::WavWriter writer;
+  std::string error;
+  Expect(writer.Open(wav_path, 24000, &error), "wav open");
+  int16_t tone[480];
+  for (int i = 0; i < 480; ++i) tone[i] = static_cast<int16_t>(i - 240);
+  writer.Write(tone, 480);
+  writer.Close();
+  webrtc::liquid::WavData data;
+  Expect(webrtc::liquid::ReadWav(wav_path, &data, &error), error.empty() ? "wav read" : error);
+  Expect(data.sample_rate_hz == 24000 && data.mono.size() == 480, "wav shape");
+  Expect(data.mono[10] == tone[10], "wav sample");
+
+  constexpr int n75 = 8;
+  std::vector<float> y(static_cast<size_t>(webrtc::liquid::kLinear * n75), -8.f);
+  for (int t = 0; t < n75; ++t) {
+    y[static_cast<size_t>(0 * n75 + t)] = 0.f;
+    y[static_cast<size_t>(1 * n75 + t)] = 0.f;
+    y[static_cast<size_t>(webrtc::liquid::kBins * n75 + t)] = 0.f;
+    y[static_cast<size_t>((webrtc::liquid::kBins + 1) * n75 + t)] = 0.5f;
+  }
+  webrtc::liquid::LiquidTail tail;
+  auto pcm = tail.PushLinear(y.data(), n75);
+  auto rest = tail.Finalize();
+  pcm.insert(pcm.end(), rest.begin(), rest.end());
+  const std::string bin = dir + "/tail_case.bin";
+  FILE* f = std::fopen(bin.c_str(), "wb");
+  Expect(f != nullptr, "tail case file");
+  if (f) {
+    const int32_t n = n75;
+    const int32_t np = static_cast<int32_t>(pcm.size());
+    std::fwrite(&n, 4, 1, f);
+    std::fwrite(y.data(), sizeof(float), y.size(), f);
+    std::fwrite(&np, 4, 1, f);
+    std::fwrite(pcm.data(), sizeof(float), pcm.size(), f);
+    std::fclose(f);
+  }
+  Expect(pcm.size() == static_cast<size_t>(n75 * webrtc::liquid::kHop),
+         "tail length matches trimmed ISTFT");
+}
+
+}  // namespace
+
+int main() {
+  const char* dir = std::getenv("LIQUID_TEST_DIR");
+  const std::string out = dir ? dir : "scripts/liquidcodec/out";
+  mkdir(out.c_str(), 0755);
+  TestPayload();
+  TestLatency();
+  TestManifest();
+  TestLatent();
+  TestPacer();
+  TestDecodeChunk();
+  TestWavAndTail(out);
+  if (g_fails) {
+    std::cout << g_fails << " failed\n";
+    return 1;
+  }
+  std::cout << "all glue tests passed\n";
+  return 0;
+}

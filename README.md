@@ -235,6 +235,90 @@ Adjust these fields as needed for your deployment and use case.
 
 ---
 
+## LiquidCodec on Apple Silicon
+
+This is a quality-test path, not the default call. Opus stays the default. LiquidCodec is compiled only when you pass `liquidcodec` to `build.sh` on macOS. Linux and the arm64 Frame build do not include it.
+
+The Core ML encoder and a smaller streaming decoder chunk are fetched from `wilddolphin2025/liquidcodec-ane` (override with `LIQUIDCODEC_REPO` and `LIQUIDCODEC_REF`). This branch does not convert either model. Weights stay out of git. They are Liquid AI's Liquid-Codec under the LFM Open License v1.0 (commercial use only below USD 10M annual revenue). See `scripts/liquidcodec/NOTICE`.
+
+Until that fork publishes `models/liquidcodec.json`, a fetch cannot succeed. The glue reads that manifest for chunk size (`ctx_frames` left context, `new_frames` per Core ML call), model filenames, and tensor names. `--liquid-ctx` and `--liquid-new` override the manifest and must match the compiled model's fixed shape. The published shershah1024 decoder, if you point the fetch at it, is `ctx=20` and `new=20`.
+
+Calculated latency, not a measurement: the sender collects `new_frames * 80` ms before the first packet, then releases one 80 ms RTP packet at a time. The receiver waits for the rest of that chunk before its Core ML call. With the CPU STFT tail that is another 20 ms. For `new_frames=20` that is 3140 ms. For `new_frames=1` it is 100 ms. Left context is lookback and is not added. NetEq's jitter buffer and the actual ANE/CPU time are not included; `decoder_stats.json` records them on a Mac after a call. Payload is 28 bytes per 80 ms frame (2800 bps on the wire). The codec's information rate is about 1646 bps. SDP name is `LIQUIDCODEC` at a 48 kHz clock, because NetEq does not accept 24 kHz; the codec itself is 24 kHz mono.
+
+From a checkout such as `~/Public/webrtcsays-m156` or `~/Dev/webrtcsays.ai`:
+
+```bash
+cd ~/Public/webrtcsays-m156   # or ~/Dev/webrtcsays.ai
+git fetch origin liquidcodec-ane
+git checkout liquidcodec-ane
+
+# Models. Repo and ref are optional; these are the defaults.
+scripts/liquidcodec/fetch_models.sh
+# scripts/liquidcodec/fetch_models.sh --repo wilddolphin2025/liquidcodec-ane --ref main
+
+./build.sh release liquidcodec
+BIN=src/out/release/directcall
+
+# 16-bit PCM WAV. 24 kHz mono is the codec rate; 16 kHz and 48 kHz are resampled.
+# afconvert -f WAVE -d LEI16@24000 input.flac "$HOME/liquid-clip.wav"
+
+# One Mac, two processes. Callee first. Headphones, so the mic does not hear the speaker.
+# AEC, AGC, noise suppression, and the high-pass filter are off for this run.
+mkdir -p "$HOME/liquidcodec-record/callee" "$HOME/liquidcodec-record/caller"
+
+"$BIN" --mode=callee --user_name=alice --room_name=liquid \
+  --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama \
+  --audio-codec=liquidcodec \
+  --liquid-decode=ane \
+  --record-dir="$HOME/liquidcodec-record/callee" \
+  127.0.0.1:3456
+
+"$BIN" --mode=caller --user_name=bob --target_name=alice --room_name=liquid \
+  --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama \
+  --audio-codec=liquidcodec \
+  --liquid-decode=ane \
+  --inject-wav="$HOME/liquid-clip.wav" \
+  --record-dir="$HOME/liquidcodec-record/caller" \
+  --duration=20 \
+  127.0.0.1:3456
+```
+
+Two Macs on a LAN: run the callee the same way with that Mac's LAN address instead of `127.0.0.1`, and point the caller at the same `192.168.x.x:3456`. Both machines need the fetched models and a `liquidcodec` build.
+
+Listen and compare:
+
+- `~/liquidcodec-record/caller/codec_in_24k.wav` is the 24 kHz audio LiquidCodec encoded.
+- `~/liquidcodec-record/callee/codec_out_24k.wav` is the 24 kHz audio after the Core ML decoder and CPU tail, without the priming silence.
+- `caller/input_48k.wav` and `callee/output_48k.wav` are what WebRTC sent and played, including the wait before the first chunk.
+- `caller/encoder_stats.json` and `callee/decoder_stats.json` have payload bitrate, packet size, chunk size, the calculated latency, and `prediction_ms_mean` for the Core ML call.
+- `tap_stats.json` is the same payload accounting for an Opus run.
+
+Repeat the caller and callee with `--liquid-decode=cpu` to compare that prediction time with the ANE run. Nothing in this repo has measured either one.
+
+Opus A/B, same clip, same record dirs (use a different folder so the WAVs are not overwritten):
+
+```bash
+# Comparable: Opus floor is 6000 bps. LiquidCodec's information rate is about 1646 bps.
+"$BIN" --mode=callee --user_name=alice --room_name=liquid \
+  --no-encryption --no-websocket_signaling --no-video \
+  --audio-codec=opus --opus-bitrate=6000 \
+  --record-dir="$HOME/liquidcodec-record/opus6k-callee" \
+  127.0.0.1:3456
+
+"$BIN" --mode=caller --user_name=bob --target_name=alice --room_name=liquid \
+  --no-encryption --no-websocket_signaling --no-video \
+  --audio-codec=opus --opus-bitrate=6000 \
+  --inject-wav="$HOME/liquid-clip.wav" \
+  --record-dir="$HOME/liquidcodec-record/opus6k-caller" \
+  --duration=20 \
+  127.0.0.1:3456
+
+# Normal speech rate.
+# same commands with --opus-bitrate=32000 and record dirs opus32k-callee / opus32k-caller
+```
+
+`--audio-codec` omitted is the existing Opus path with no extra flags. The manifest contract is `scripts/liquidcodec/liquidcodec.example.json`.
+
 ## Troubleshooting
 - If you encounter missing dependencies, ensure all prerequisites are installed.
 - For Linux/ARM64, the script will attempt to build missing runtime libraries if needed.

@@ -1031,7 +1031,13 @@ if (!build_with_chromium) {
         "direct/pattern_video.h",
         "direct/call_stats.cc",
         "direct/call_stats.h",
+        "direct/audio_tap.cc",
+        "direct/audio_tap.h",
       ]
+
+      if (is_mac && rtc_use_liquidcodec) {
+        defines += [ "WEBRTC_USE_LIQUIDCODEC" ]
+      }
 
       if (rtc_use_speech_audio_devices) {
         defines += [ "WEBRTC_SPEECH_DEVICES", "LLAMA_NOTIFICATION_ENABLED" ]
@@ -1079,6 +1085,7 @@ if (!build_with_chromium) {
         "../api/audio_codecs:audio_codecs_api",
         "../api/audio_codecs:builtin_audio_decoder_factory",
         "../api/audio_codecs:builtin_audio_encoder_factory",
+        "../common_audio",
         "../api/video_codecs:video_decoder_factory_template",
         "../api/video_codecs:video_decoder_factory_template_dav1d_adapter",
         "../api/video_codecs:video_decoder_factory_template_libvpx_vp8_adapter",
@@ -1118,6 +1125,10 @@ if (!build_with_chromium) {
         "//third_party/jsoncpp:jsoncpp",
       ]
 
+      if (is_mac && rtc_use_liquidcodec) {
+        deps += [ "//modules/audio_coding/codecs/liquidcodec:liquidcodec" ]
+      }
+
       if (rtc_use_speech_audio_devices) {
         if (is_mac) {
           frameworks = [ "CoreAudio.framework" ]
@@ -1132,6 +1143,16 @@ if (!build_with_chromium) {
         } else if (is_linux) {
           # Thin whillats compiled in-tree via speech_audio_device — no external .so
         }
+      }
+
+      if (is_mac && rtc_use_liquidcodec) {
+        if (!defined(frameworks)) {
+          frameworks = []
+        }
+        frameworks += [
+          "CoreML.framework",
+          "Foundation.framework",
+        ]
       }
 
       if (is_mac) {

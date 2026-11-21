@@ -233,6 +233,8 @@ class DIRECT_API DirectApplication : public webrtc::PeerConnectionObserver {
   void EnsureVideoSendActive();
   // H.264 first (or forced), resolution and frame rate on the video sender.
   void ConfigureOutgoingVideo();
+  // Opus (optional bitrate) or LiquidCodec, when the caller asked for one.
+  void ConfigureOutgoingAudio();
 
 #if defined(WEBRTC_IOS) && defined(__OBJC__)
   // Getter methods for video tracks (iOS only)

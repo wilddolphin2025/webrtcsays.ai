@@ -409,6 +409,15 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --fps=30                           Send frame rate, 1..60 (default 30)\n"
       "  --video-source=pattern|camera|screen  pattern if no camera; screen falls back to pattern\n"
       "  --audio=dummy                      Use a fake audio device (no Pulse/PipeWire)\n"
+      "  --audio-codec=opus|liquidcodec     Opus is the default. liquidcodec is macOS-only.\n"
+      "  --opus-bitrate=<bps>               Opus maxaveragebitrate (6000 or 32000 for an A/B)\n"
+      "  --record-dir=<path>                Write input/output WAVs and stats for a quality run\n"
+      "  --inject-wav=<path>                Send this 16-bit PCM WAV instead of the microphone\n"
+      "  --liquid-model-dir=<path>          Fetched Core ML models (default scripts/liquidcodec/models)\n"
+      "  --liquid-manifest=<path>           liquidcodec.json from the model fetch\n"
+      "  --liquid-ctx=<frames>              Left-context frames (0 = manifest)\n"
+      "  --liquid-new=<frames>              New frames per Core ML call (0 = manifest)\n"
+      "  --liquid-decode=ane|cpu|all        Core ML compute units\n"
       "  --stats=<seconds>                  Log a GetStats JSON line on this interval\n"
       "  --duration=<seconds>               Hang up and exit after this many seconds\n"
       "  --help                             Show this help message\n\n"
@@ -435,6 +444,11 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--token-env", "--token_env", "--ca-file", "--ca_file", "--stun",
     "--codec", "--res", "--fps", "--video-source", "--video_source",
     "--audio", "--stats", "--duration",
+    "--audio-codec", "--audio_codec", "--opus-bitrate", "--opus_bitrate",
+    "--record-dir", "--record_dir", "--inject-wav", "--inject_wav",
+    "--liquid-model-dir", "--liquid_model_dir", "--liquid-manifest", "--liquid_manifest",
+    "--liquid-ctx", "--liquid_ctx", "--liquid-new", "--liquid_new",
+    "--liquid-decode", "--liquid_decode",
     "--help"
   };
 
@@ -524,6 +538,33 @@ Options parseOptions(const std::vector<std::string>& args) {
         if (config_json.isMember("address") && config_json["address"].isString()) {
              RTC_LOG(LS_INFO) << "Config address: " << config_json["address"].asString(); // Log value
              opts.address = config_json["address"].asString();
+        }
+        if (config_json.isMember("audio_codec") && config_json["audio_codec"].isString()) {
+             opts.audio_codec = config_json["audio_codec"].asString();
+        }
+        if (config_json.isMember("opus_bitrate") && config_json["opus_bitrate"].isInt()) {
+             opts.opus_bitrate_bps = config_json["opus_bitrate"].asInt();
+        }
+        if (config_json.isMember("record_dir") && config_json["record_dir"].isString()) {
+             opts.record_dir = expandHomePath(config_json["record_dir"].asString());
+        }
+        if (config_json.isMember("inject_wav") && config_json["inject_wav"].isString()) {
+             opts.inject_wav = expandHomePath(config_json["inject_wav"].asString());
+        }
+        if (config_json.isMember("liquid_model_dir") && config_json["liquid_model_dir"].isString()) {
+             opts.liquid_model_dir = expandHomePath(config_json["liquid_model_dir"].asString());
+        }
+        if (config_json.isMember("liquid_manifest") && config_json["liquid_manifest"].isString()) {
+             opts.liquid_manifest = expandHomePath(config_json["liquid_manifest"].asString());
+        }
+        if (config_json.isMember("liquid_ctx") && config_json["liquid_ctx"].isInt()) {
+             opts.liquid_ctx = config_json["liquid_ctx"].asInt();
+        }
+        if (config_json.isMember("liquid_new") && config_json["liquid_new"].isInt()) {
+             opts.liquid_new = config_json["liquid_new"].asInt();
+        }
+        if (config_json.isMember("liquid_decode") && config_json["liquid_decode"].isString()) {
+             opts.liquid_decode = config_json["liquid_decode"].asString();
         }
         if (config_json.isMember("turns")) {
             const Json::Value& t = config_json["turns"];
@@ -800,6 +841,33 @@ Options parseOptions(const std::vector<std::string>& args) {
         const auto eq = arg.find('=');
         opts.video_source = arg.substr(eq + 1);
         opts.video = true;
+    } else if (arg.find("--audio-codec=") == 0 || arg.find("--audio_codec=") == 0) {
+        const auto eq = arg.find('=');
+        opts.audio_codec = arg.substr(eq + 1);
+    } else if (arg.find("--opus-bitrate=") == 0 || arg.find("--opus_bitrate=") == 0) {
+        const auto eq = arg.find('=');
+        opts.opus_bitrate_bps = std::atoi(arg.substr(eq + 1).c_str());
+    } else if (arg.find("--record-dir=") == 0 || arg.find("--record_dir=") == 0) {
+        const auto eq = arg.find('=');
+        opts.record_dir = arg.substr(eq + 1);
+    } else if (arg.find("--inject-wav=") == 0 || arg.find("--inject_wav=") == 0) {
+        const auto eq = arg.find('=');
+        opts.inject_wav = arg.substr(eq + 1);
+    } else if (arg.find("--liquid-model-dir=") == 0 || arg.find("--liquid_model_dir=") == 0) {
+        const auto eq = arg.find('=');
+        opts.liquid_model_dir = arg.substr(eq + 1);
+    } else if (arg.find("--liquid-manifest=") == 0 || arg.find("--liquid_manifest=") == 0) {
+        const auto eq = arg.find('=');
+        opts.liquid_manifest = arg.substr(eq + 1);
+    } else if (arg.find("--liquid-ctx=") == 0 || arg.find("--liquid_ctx=") == 0) {
+        const auto eq = arg.find('=');
+        opts.liquid_ctx = std::atoi(arg.substr(eq + 1).c_str());
+    } else if (arg.find("--liquid-new=") == 0 || arg.find("--liquid_new=") == 0) {
+        const auto eq = arg.find('=');
+        opts.liquid_new = std::atoi(arg.substr(eq + 1).c_str());
+    } else if (arg.find("--liquid-decode=") == 0 || arg.find("--liquid_decode=") == 0) {
+        const auto eq = arg.find('=');
+        opts.liquid_decode = arg.substr(eq + 1);
     } else if (arg.find("--audio=") == 0) {
         opts.audio = arg.substr(8);
     } else if (arg.find("--stats=") == 0) {
@@ -996,6 +1064,26 @@ Options parseOptions(const std::vector<std::string>& args) {
       codec.clear();
     }
     opts.video_codec = codec;
+  }
+
+  for (char& c : opts.audio_codec) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  if (opts.audio_codec == "liquid") opts.audio_codec = "liquidcodec";
+  if (!opts.audio_codec.empty() && opts.audio_codec != "opus" &&
+      opts.audio_codec != "liquidcodec") {
+    opts.parse_error = "audio-codec must be opus or liquidcodec";
+  }
+  for (char& c : opts.liquid_decode) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  if (opts.liquid_decode != "ane" && opts.liquid_decode != "cpu" &&
+      opts.liquid_decode != "all") {
+    opts.parse_error = "liquid-decode must be ane, cpu, or all";
+  }
+  if (opts.opus_bitrate_bps != 0 &&
+      (opts.opus_bitrate_bps < 6000 || opts.opus_bitrate_bps > 510000)) {
+    opts.parse_error = "opus-bitrate must be 6000..510000";
   }
 
   RTC_LOG(LS_INFO) << "Mode used " << opts.mode; // Log final mode value

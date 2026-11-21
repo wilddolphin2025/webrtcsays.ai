@@ -239,11 +239,11 @@ Adjust these fields as needed for your deployment and use case.
 
 This is a quality-test path, not the default call. Opus stays the default. LiquidCodec is compiled only when you pass `liquidcodec` to `build.sh` on macOS. Linux and the arm64 Frame build do not include it.
 
-The Core ML encoder and a smaller streaming decoder chunk are fetched from `wilddolphin2025/liquidcodec-ane` (override with `LIQUIDCODEC_REPO` and `LIQUIDCODEC_REF`). This branch does not convert either model. Weights stay out of git. They are Liquid AI's Liquid-Codec under the LFM Open License v1.0 (commercial use only below USD 10M annual revenue). See `scripts/liquidcodec/NOTICE`.
+The Core ML packages are fetched from `wilddolphin2025/liquidcodec-ane`. The default ref is `cursor/liquidcodec-stream-51d0` (draft PR 1) until that branch merges. Override with `LIQUIDCODEC_REPO` and `LIQUIDCODEC_REF`. This branch does not convert either model. Weights stay out of git. They are Liquid AI's Liquid-Codec under the LFM Open License v1.0 (commercial use only below USD 10M annual revenue). See `scripts/liquidcodec/NOTICE`.
 
-Until that fork publishes `models/liquidcodec.json`, a fetch cannot succeed. The glue reads that manifest for chunk size (`ctx_frames` left context, `new_frames` per Core ML call), model filenames, and tensor names. `--liquid-ctx` and `--liquid-new` override the manifest and must match the compiled model's fixed shape. The published shershah1024 decoder, if you point the fetch at it, is `ctx=20` and `new=20`.
+`models/liquidcodec.json` from that branch is the manifest. The decoder half is a stateless window: `ctx_frames` 20 and `new_frames` 1, 2, or 4, inputs `lat` and `valid`, output `hidden`, plus `lc_tail_f32.bin`. The encoder half is a one-frame step (`encoder_kind` `stateful_io`). Each call takes 2400 samples, the 80 ms frame plus 480 samples of real lookahead, and five state tensors (`hist`, `k_cache`, `v_cache`, `conv_state`, `pos`) that come back updated. The model applies the first-call left pad itself when those tensors are zero. The glue waits for the 480 real samples and does not reflect-pad them. A manifest without `encoder_kind` still uses the older stateless window (`ctx+new`, or `new` with no lookahead). `--liquid-ctx` and `--liquid-new` override the manifest and must match the decoder package.
 
-Calculated latency, not a measurement: the sender collects `new_frames * 80` ms before the first packet, then releases one 80 ms RTP packet at a time. The receiver waits for the rest of that chunk before its Core ML call. With the CPU STFT tail that is another 20 ms. For `new_frames=20` that is 3140 ms. For `new_frames=1` it is 100 ms. Left context is lookback and is not added. NetEq's jitter buffer and the actual ANE/CPU time are not included; `decoder_stats.json` records them on a Mac after a call. Payload is 28 bytes per 80 ms frame (2800 bps on the wire). The codec's information rate is about 1646 bps. SDP name is `LIQUIDCODEC` at a 48 kHz clock, because NetEq does not accept 24 kHz; the codec itself is 24 kHz mono.
+Calculated latency, not a measurement. For the streaming encoder, the first packet waits 80 ms plus the 20 ms lookahead, the receiver then waits `(new_frames - 1) * 80` ms, and the CPU STFT tail holds 20 ms. At `new_frames=1` that is **120 ms**. At `new_frames=4` it is 360 ms. The older stateless 20-frame window, with no lookahead, is still 3140 ms. Left context is lookback. NetEq's jitter buffer and the Core ML runtime are not in these numbers. `decoder_stats.json` records `prediction_ms_mean` only after a call on a Mac. Payload is 28 bytes per 80 ms frame (2800 bps on the wire). The information rate is about 1646 bps. SDP name is `LIQUIDCODEC` at a 48 kHz clock, because NetEq does not accept 24 kHz; the codec itself is 24 kHz mono.
 
 From a checkout such as `~/Public/webrtcsays-m156` or `~/Dev/webrtcsays.ai`:
 
@@ -252,9 +252,9 @@ cd ~/Public/webrtcsays-m156   # or ~/Dev/webrtcsays.ai
 git fetch origin liquidcodec-ane
 git checkout liquidcodec-ane
 
-# Models. Repo and ref are optional; these are the defaults.
+# Default ref is the streaming draft branch. After that PR merges, pass --ref master.
 scripts/liquidcodec/fetch_models.sh
-# scripts/liquidcodec/fetch_models.sh --repo wilddolphin2025/liquidcodec-ane --ref main
+# scripts/liquidcodec/fetch_models.sh --repo wilddolphin2025/liquidcodec-ane --ref cursor/liquidcodec-stream-51d0
 
 ./build.sh release liquidcodec
 BIN=src/out/release/directcall

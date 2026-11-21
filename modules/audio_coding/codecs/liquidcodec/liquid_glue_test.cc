@@ -106,6 +106,19 @@ void TestLatency() {
   Expect(small.algorithmic_ms == 100, "new=1 algorithmic 100 ms");
   const auto pcm = webrtc::liquid::DescribeLatency(chunk, false);
   Expect(pcm.ola_holdback_ms == 0, "pcm decoder has no tail holdback");
+  webrtc::liquid::ModelPaths step;
+  step.encoder_kind = "stateful_io";
+  step.lookahead_samples = 480;
+  step.encoder_input_samples = 2400;
+  chunk.new_frames = 1;
+  const auto live = webrtc::liquid::DescribeLatency(chunk, true, step);
+  Expect(live.encoder_lookahead_ms == 20, "encoder lookahead is 20 ms");
+  Expect(live.sender_collect_ms == 100, "new=1 sender collect includes lookahead");
+  Expect(live.receiver_collect_ms == 0, "new=1 stateful receiver collect");
+  Expect(live.algorithmic_ms == 120, "new=1 stateful algorithmic latency is 120 ms");
+  chunk.new_frames = 4;
+  const auto wider = webrtc::liquid::DescribeLatency(chunk, true, step);
+  Expect(wider.algorithmic_ms == 360, "new=4 stateful latency is 360 ms");
   const double info = webrtc::liquid::InformationBitrateBps(chunk);
   Expect(info > 1640.0 && info < 1650.0, "information bitrate about 1646 bps");
   Expect(std::fabs(webrtc::liquid::PayloadBitrateBps() - 2800.0) < 0.1,
@@ -131,6 +144,80 @@ void TestManifest() {
   Expect(paths.compute == "cpu", "manifest compute");
   Expect(!webrtc::liquid::ParseManifest("{\"decoder_kind\": \"nope\"}", &paths, &chunk, &error),
          "reject bad decoder_kind");
+  const char* fork = R"({
+    "ctx_frames": 20,
+    "new_frames": 1,
+    "encoder_window": "new",
+    "encoder_kind": "stateful_io",
+    "lookahead_samples": 480,
+    "encoder_input_samples": 2400,
+    "encoder_cache_frames": 4096,
+    "encoder_model": "stream/lc_enc_step_int8.mlpackage",
+    "encoder_states_in": ["hist", "k_cache", "v_cache", "conv_state", "pos"],
+    "encoder_states_out": ["hist_out", "k_cache_out", "v_cache_out", "conv_state_out", "pos_out"]
+  })";
+  webrtc::liquid::ModelPaths live;
+  webrtc::liquid::ChunkConfig live_chunk;
+  Expect(webrtc::liquid::ParseManifest(fork, &live, &live_chunk, &error), error);
+  Expect(live.Stateful() && live.lookahead_samples == 480, "fork manifest is stateful");
+  Expect(live.encoder_input_samples == 2400, "fork step is 2400 samples");
+  Expect(live.encoder_states_in.size() == 5 && live.encoder_states_in[0] == "hist",
+         "fork state inputs");
+  Expect(live.encoder_states_out.back() == "pos_out", "fork state outputs");
+  Expect(live_chunk.new_frames == 1 && live_chunk.ctx_frames == 20, "fork decoder chunk");
+}
+
+void TestStatefulHold() {
+  webrtc::liquid::ChunkConfig chunk;
+  chunk.new_frames = 1;
+  chunk.ctx_frames = 20;
+  webrtc::liquid::ModelPaths paths;
+  paths.encoder_kind = "stateful_io";
+  paths.lookahead_samples = 480;
+  paths.encoder_input_samples = 2400;
+  class HoldMock final : public webrtc::liquid::LiquidBackend {
+   public:
+    bool Start(const webrtc::liquid::ModelPaths&, const webrtc::liquid::ChunkConfig&,
+               std::string*) override {
+      return true;
+    }
+    bool EncodeWindow(const int16_t* pcm, const webrtc::liquid::ChunkConfig&, int32_t* codes_out,
+                      webrtc::liquid::WindowTiming*, std::string*) override {
+      last.assign(pcm, pcm + 2400);
+      ++calls;
+      for (int q = 0; q < 12; ++q) codes_out[q] = 3;
+      return true;
+    }
+    bool DecodeWindow(const int32_t*, const webrtc::liquid::ChunkConfig&, int16_t*,
+                      webrtc::liquid::WindowTiming*, std::string*) override {
+      return true;
+    }
+    void Reset() override {}
+    const char* name() const override { return "hold"; }
+    int calls = 0;
+    std::vector<int16_t> last;
+  } backend;
+  webrtc::liquid::StreamEncoder encoder(&backend, chunk, paths);
+  std::vector<int16_t> audio(2400);
+  for (int i = 0; i < 2400; ++i) audio[static_cast<size_t>(i)] = static_cast<int16_t>(i);
+  std::vector<std::array<int32_t, 12>> codes;
+  webrtc::liquid::WindowTiming timing;
+  std::string error;
+  Expect(encoder.Push(audio.data(), 2399, &codes, &timing, &error) && codes.empty() &&
+             backend.calls == 0,
+         "stateful encoder waits for the 480-sample lookahead");
+  Expect(encoder.Push(audio.data() + 2399, 1, &codes, &timing, &error), "lookahead arrived");
+  Expect(backend.calls == 1 && codes.size() == 1, "one frame encoded, no reflect pad");
+  Expect(backend.last.size() == 2400 && backend.last[0] == 0 && backend.last[1919] == 1919 &&
+             backend.last[1920] == 1920 && backend.last[2399] == 2399,
+         "step is the real frame plus the next 480 samples");
+  std::vector<int16_t> more(1920);
+  for (int i = 0; i < 1920; ++i) more[static_cast<size_t>(i)] = static_cast<int16_t>(2400 + i);
+  codes.clear();
+  Expect(encoder.Push(more.data(), more.size(), &codes, &timing, &error), "second frame");
+  Expect(backend.calls == 2 && backend.last[0] == 1920 && backend.last[479] == 2399 &&
+             backend.last[480] == 2400,
+         "next step keeps the previous lookahead as the frame start");
 }
 
 void TestLatent() {
@@ -277,6 +364,7 @@ int main() {
   TestPayload();
   TestLatency();
   TestManifest();
+  TestStatefulHold();
   TestLatent();
   TestPacer();
   TestDecodeChunk();

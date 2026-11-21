@@ -1,18 +1,50 @@
 #include "modules/audio_coding/codecs/liquidcodec/liquid_stream.h"
 
 #include <cstring>
+#include <utility>
 
 namespace webrtc {
 namespace liquid {
 
-StreamEncoder::StreamEncoder(LiquidBackend* backend, ChunkConfig chunk)
-    : backend_(backend), chunk_(chunk) {}
+StreamEncoder::StreamEncoder(LiquidBackend* backend, ChunkConfig chunk, ModelPaths paths)
+    : backend_(backend), chunk_(chunk), paths_(std::move(paths)) {}
 
 bool StreamEncoder::Push(const int16_t* pcm, size_t n,
                          std::vector<std::array<int32_t, kCodebooks>>* codes,
                          WindowTiming* timing, std::string* error) {
   if (!backend_ || !codes) return false;
   if (n && pcm) pending_.insert(pending_.end(), pcm, pcm + n);
+  if (paths_.Stateful()) return PushStateful(codes, timing, error);
+  return PushWindow(codes, timing, error);
+}
+
+bool StreamEncoder::PushStateful(std::vector<std::array<int32_t, kCodebooks>>* codes,
+                                 WindowTiming* timing, std::string* error) {
+  // One codec frame plus real lookahead. The lookahead is the next audio,
+  // never a reflected copy. The model applies its own left pad on the first
+  // call when the state tensors are zero.
+  const int frame = chunk_.frame_samples;
+  const int step = paths_.EncoderStepSamples(frame);
+  const int lookahead = step - frame;
+  if (lookahead < 0 || step <= 0) {
+    if (error) *error = "stateful encoder step is shorter than one codec frame";
+    return false;
+  }
+  while (static_cast<int>(pending_.size()) >= step) {
+    std::vector<int32_t> out(kCodebooks);
+    if (!backend_->EncodeWindow(pending_.data(), chunk_, out.data(), timing, error)) {
+      return false;
+    }
+    std::array<int32_t, kCodebooks> one{};
+    for (int c = 0; c < kCodebooks; ++c) one[static_cast<size_t>(c)] = out[static_cast<size_t>(c)];
+    codes->push_back(one);
+    pending_.erase(pending_.begin(), pending_.begin() + frame);
+  }
+  return true;
+}
+
+bool StreamEncoder::PushWindow(std::vector<std::array<int32_t, kCodebooks>>* codes,
+                               WindowTiming* timing, std::string* error) {
   const int need = chunk_.new_frames * chunk_.frame_samples;
   const int ctx_samples = chunk_.ctx_frames * chunk_.frame_samples;
   if (static_cast<int>(pending_.size()) < need) return true;

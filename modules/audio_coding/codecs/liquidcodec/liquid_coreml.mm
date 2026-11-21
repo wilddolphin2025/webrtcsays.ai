@@ -265,11 +265,32 @@ bool ReadCodes(MLMultiArray* arr, int codebooks, int new_frames, int ctx_frames,
   return true;
 }
 
+int ElementBytes(MLMultiArrayDataType type) {
+  switch (type) {
+    case MLMultiArrayDataTypeFloat16:
+      return 2;
+    case MLMultiArrayDataTypeFloat32:
+    case MLMultiArrayDataTypeInt32:
+      return 4;
+    case MLMultiArrayDataTypeDouble:
+      return 8;
+    default:
+      return 4;
+  }
+}
+
+struct KeptState {
+  std::string in_name;
+  std::string out_name;
+  void* array = nullptr;
+};
+
 class CoreMlBackend final : public LiquidBackend {
  public:
   ~CoreMlBackend() override {
     ReleaseId(encoder_);
     ReleaseId(decoder_);
+    for (KeptState& state : states_) ReleaseId(state.array);
   }
 
   const char* name() const override { return "coreml"; }
@@ -300,17 +321,56 @@ class CoreMlBackend final : public LiquidBackend {
     enc_out_ = enc_out.UTF8String;
     std::vector<int> in_shape;
     if (!ShapeOf(enc.modelDescription.inputDescriptionsByName[enc_in], &in_shape, error)) return false;
-    const int samples = (paths.encoder_window == "new" ? chunk.new_frames : chunk.WindowFrames()) *
-                        chunk.frame_samples;
+    const bool stateful = paths.Stateful();
+    const int samples =
+        stateful ? paths.encoder_input_samples
+                 : (paths.encoder_window == "new" ? chunk.new_frames : chunk.WindowFrames()) *
+                       chunk.frame_samples;
     if (!in_shape.empty() && in_shape.back() > 0 && in_shape.back() != samples) {
       if (error) {
         *error = "encoder expects " + std::to_string(in_shape.back()) +
-                 " samples in the last dimension but ctx/new require " +
+                 " samples in the last dimension but this manifest requires " +
                  std::to_string(samples) +
-                 ". Pass --liquid-ctx and --liquid-new to match the fetched model. "
+                 (stateful ? " (one frame plus lookahead_samples). " :
+                             ". Pass --liquid-ctx and --liquid-new to match the fetched model. ") +
                  "This branch does not re-convert it.";
       }
       return false;
+    }
+    if (stateful) {
+      for (KeptState& state : states_) ReleaseId(state.array);
+      states_.clear();
+      if (paths.encoder_states_in.size() != paths.encoder_states_out.size()) {
+        if (error) *error = "encoder state input and output lists differ in length";
+        return false;
+      }
+      for (size_t i = 0; i < paths.encoder_states_in.size(); ++i) {
+        NSString* key = [NSString stringWithUTF8String:paths.encoder_states_in[i].c_str()];
+        MLFeatureDescription* fd = enc.modelDescription.inputDescriptionsByName[key];
+        if (!fd) {
+          if (error) {
+            *error = "encoder state \"" + paths.encoder_states_in[i] +
+                     "\" was not found. Model inputs: " +
+                     JoinNames(enc.modelDescription.inputDescriptionsByName);
+          }
+          return false;
+        }
+        std::vector<int> shape;
+        if (!ShapeOf(fd, &shape, error)) return false;
+        NSError* state_err = nil;
+        MLMultiArray* arr = MakeArray(shape, fd.multiArrayConstraint.dataType, &state_err);
+        if (!arr) {
+          if (error) *error = NsError(state_err);
+          return false;
+        }
+        std::memset(arr.dataPointer, 0,
+                    static_cast<size_t>(arr.count) * ElementBytes(arr.dataType));
+        KeptState kept;
+        kept.in_name = paths.encoder_states_in[i];
+        kept.out_name = paths.encoder_states_out[i];
+        kept.array = RetainId(arr);
+        states_.push_back(kept);
+      }
     }
     MLModel* dec = [MLModel modelWithContentsOfURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:dec_path.c_str()]]
                                     configuration:cfg
@@ -367,9 +427,15 @@ class CoreMlBackend final : public LiquidBackend {
                     WindowTiming* timing, std::string* error) override {
     std::lock_guard<std::mutex> lock(mu_);
     const auto t0 = std::chrono::steady_clock::now();
-    const int samples = (paths_.encoder_window == "new" ? chunk.new_frames : chunk.WindowFrames()) *
-                        chunk.frame_samples;
-    const int offset = (paths_.encoder_window == "new" ? chunk.ctx_frames * chunk.frame_samples : 0);
+    const bool stateful = paths_.Stateful();
+    const int samples =
+        stateful ? paths_.encoder_input_samples
+                 : (paths_.encoder_window == "new" ? chunk.new_frames : chunk.WindowFrames()) *
+                       chunk.frame_samples;
+    const int offset = (!stateful && paths_.encoder_window == "new")
+                           ? chunk.ctx_frames * chunk.frame_samples
+                           : 0;
+    const int frames_out = stateful ? 1 : chunk.new_frames;
     std::vector<float> audio(static_cast<size_t>(samples));
     for (int i = 0; i < samples; ++i) {
       audio[static_cast<size_t>(i)] =
@@ -388,9 +454,14 @@ class CoreMlBackend final : public LiquidBackend {
       return false;
     }
     MLFeatureValue* audio_value = [MLFeatureValue featureValueWithMultiArray:arr];
-    MLDictionaryFeatureProvider* provider = [[MLDictionaryFeatureProvider alloc]
-        initWithDictionary:@{[NSString stringWithUTF8String:enc_in_.c_str()] : audio_value}
-                     error:&err];
+    NSMutableDictionary* features = [NSMutableDictionary dictionary];
+    features[[NSString stringWithUTF8String:enc_in_.c_str()]] = audio_value;
+    for (const KeptState& state : states_) {
+      features[[NSString stringWithUTF8String:state.in_name.c_str()]] =
+          [MLFeatureValue featureValueWithMultiArray:(MLMultiArray*)ToId(state.array)];
+    }
+    MLDictionaryFeatureProvider* provider =
+        [[MLDictionaryFeatureProvider alloc] initWithDictionary:features error:&err];
     const auto p0 = std::chrono::steady_clock::now();
     id<MLFeatureProvider> out = [model predictionFromFeatures:provider error:&err];
     const auto p1 = std::chrono::steady_clock::now();
@@ -400,11 +471,23 @@ class CoreMlBackend final : public LiquidBackend {
     }
     MLMultiArray* codes = [out featureValueForName:[NSString stringWithUTF8String:enc_out_.c_str()]]
                               .multiArrayValue;
-    if (!codes || !ReadCodes(codes, chunk.codebooks, chunk.new_frames, chunk.ctx_frames,
+    if (!codes || !ReadCodes(codes, chunk.codebooks, frames_out, stateful ? 0 : chunk.ctx_frames,
                              paths_.encoder_codes_layout, codes_out, error)) {
       return false;
     }
-    for (int i = 0; i < chunk.new_frames * chunk.codebooks; ++i) {
+    for (const KeptState& state : states_) {
+      MLMultiArray* updated =
+          [out featureValueForName:[NSString stringWithUTF8String:state.out_name.c_str()]]
+              .multiArrayValue;
+      MLMultiArray* dest = (MLMultiArray*)ToId(state.array);
+      if (!updated || !dest || updated.count != dest.count || updated.dataType != dest.dataType) {
+        if (error) *error = "encoder state \"" + state.out_name + "\" did not match the stored tensor";
+        return false;
+      }
+      std::memcpy(dest.dataPointer, updated.dataPointer,
+                  static_cast<size_t>(updated.count) * ElementBytes(updated.dataType));
+    }
+    for (int i = 0; i < frames_out * chunk.codebooks; ++i) {
       if (codes_out[i] < 0 || codes_out[i] >= chunk.codebook_size) {
         if (error) *error = "encoder produced a code outside the codebook";
         return false;
@@ -524,6 +607,12 @@ class CoreMlBackend final : public LiquidBackend {
     std::lock_guard<std::mutex> lock(mu_);
     tail_.Reset();
     fifo_.clear();
+    for (const KeptState& state : states_) {
+      MLMultiArray* dest = (MLMultiArray*)ToId(state.array);
+      if (!dest) continue;
+      std::memset(dest.dataPointer, 0,
+                  static_cast<size_t>(dest.count) * ElementBytes(dest.dataType));
+    }
   }
 
  private:
@@ -559,6 +648,7 @@ class CoreMlBackend final : public LiquidBackend {
   void* encoder_ = nullptr;
   void* decoder_ = nullptr;
   std::string enc_in_, enc_out_, dec_lat_, dec_valid_, dec_out_;
+  std::vector<KeptState> states_;
   LiquidTail tail_;
   std::vector<int16_t> fifo_;
 };

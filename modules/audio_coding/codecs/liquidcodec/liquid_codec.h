@@ -69,6 +69,7 @@ struct ChunkConfig {
 };
 
 struct LatencyReport {
+  int encoder_lookahead_ms = 0;
   int sender_collect_ms = 0;
   int receiver_collect_ms = 0;
   int ola_holdback_ms = 0;
@@ -76,7 +77,11 @@ struct LatencyReport {
   std::string summary;
 };
 
+struct ModelPaths;
+
 LatencyReport DescribeLatency(const ChunkConfig& chunk, bool hidden_tail);
+LatencyReport DescribeLatency(const ChunkConfig& chunk, bool hidden_tail,
+                              const ModelPaths& paths);
 
 double InformationBitrateBps(const ChunkConfig& chunk);
 double PayloadBitrateBps();
@@ -93,12 +98,30 @@ struct ModelPaths {
   std::string decoder_valid_input = "valid";
   std::string decoder_output = "hidden";
   // "ctx+new": each encoder call sees left context plus new audio.
-  // "new": each call sees only the new audio (stateful model).
+  // "new": each call sees only the new audio. With encoder_kind stateful_io
+  // that audio is one frame plus lookahead_samples, and the model keeps state.
   std::string encoder_window = "ctx+new";
   // "codebook_time" (default) or "time_codebook", used only when both axes
   // have the same length.
   std::string encoder_codes_layout = "codebook_time";
   std::string compute = "ane";  // ane, cpu, all
+  // Empty or "window": stateless chunk. "stateful_io": one-frame step plus
+  // the state tensors named below. lookahead_samples > 0 also selects it.
+  std::string encoder_kind;
+  int lookahead_samples = 0;
+  int stft_lookback_samples = 0;
+  int encoder_input_samples = 0;
+  int encoder_cache_frames = 0;
+  std::vector<std::string> encoder_states_in;
+  std::vector<std::string> encoder_states_out;
+
+  bool Stateful() const {
+    return encoder_kind == "stateful_io" || lookahead_samples > 0;
+  }
+  int EncoderStepSamples(int frame_samples) const {
+    if (encoder_input_samples > 0) return encoder_input_samples;
+    return frame_samples + lookahead_samples;
+  }
 };
 
 // Flat JSON object. Unknown keys are ignored. Missing keys keep `defaults`.
@@ -136,6 +159,8 @@ struct CodecStats {
   std::string backend;
   ChunkConfig chunk;
   bool hidden_tail = true;
+  int lookahead_samples = 0;
+  bool stateful_encoder = false;
 
   void AddPacket(int bytes);
   void AddWindow(double window, double prediction);

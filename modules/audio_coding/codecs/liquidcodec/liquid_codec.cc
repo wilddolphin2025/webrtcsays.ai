@@ -46,20 +46,50 @@ bool FindKey(const std::string& json, const char* key, size_t* value_at) {
   return false;
 }
 
+bool ParseJsonStringAt(const std::string& json, size_t* at, std::string* out);
+
 bool ParseJsonString(const std::string& json, size_t at, std::string* out) {
-  if (at >= json.size() || json[at] != '"') return false;
-  ++at;
+  size_t end = at;
+  return ParseJsonStringAt(json, &end, out);
+}
+
+bool ParseJsonStringAt(const std::string& json, size_t* at, std::string* out) {
+  size_t i = *at;
+  if (i >= json.size() || json[i] != '"') return false;
+  ++i;
   out->clear();
-  while (at < json.size() && json[at] != '"') {
-    if (json[at] == '\\' && at + 1 < json.size()) {
-      out->push_back(json[at + 1]);
-      at += 2;
+  while (i < json.size() && json[i] != '"') {
+    if (json[i] == '\\' && i + 1 < json.size()) {
+      out->push_back(json[i + 1]);
+      i += 2;
       continue;
     }
-    out->push_back(json[at]);
-    ++at;
+    out->push_back(json[i]);
+    ++i;
   }
-  return at < json.size() && json[at] == '"';
+  if (i >= json.size() || json[i] != '"') return false;
+  *at = i + 1;
+  return true;
+}
+
+bool ParseStringList(const std::string& json, const char* key,
+                     std::vector<std::string>* out) {
+  size_t at = 0;
+  if (!FindKey(json, key, &at) || at >= json.size() || json[at] != '[') return false;
+  ++at;
+  out->clear();
+  while (at < json.size() && json[at] != ']') {
+    SkipWs(json, &at);
+    if (at >= json.size() || json[at] == ']') break;
+    if (json[at] == ',') {
+      ++at;
+      continue;
+    }
+    std::string value;
+    if (!ParseJsonStringAt(json, &at, &value)) return false;
+    out->push_back(value);
+  }
+  return true;
 }
 
 bool ParseJsonNumber(const std::string& json, size_t at, double* out) {
@@ -125,30 +155,45 @@ bool ChunkConfig::Ok() const {
 }
 
 LatencyReport DescribeLatency(const ChunkConfig& chunk, bool hidden_tail) {
+  return DescribeLatency(chunk, hidden_tail, ModelPaths{});
+}
+
+LatencyReport DescribeLatency(const ChunkConfig& chunk, bool hidden_tail,
+                              const ModelPaths& paths) {
   LatencyReport r;
-  r.sender_collect_ms = chunk.new_frames * kFrameMs;
-  // After the chunk is encoded, packets are released one per 80 ms so NetEq
-  // does not receive a multi-second burst. The receiver needs every frame of
-  // the chunk before its Core ML call, so it waits for the last of those
-  // paced packets.
-  r.receiver_collect_ms = (chunk.new_frames - 1) * kFrameMs;
+  const bool stateful = paths.Stateful();
+  r.encoder_lookahead_ms =
+      paths.lookahead_samples > 0
+          ? paths.lookahead_samples * 1000 / chunk.sample_rate_hz
+          : 0;
+  if (stateful) {
+    // The step encoder emits one frame once that frame plus the real
+    // lookahead have arrived. Later frames follow every 80 ms, so the
+    // receiver's wait is just the spacing until its chunk is full.
+    r.sender_collect_ms = kFrameMs + r.encoder_lookahead_ms;
+    r.receiver_collect_ms = (chunk.new_frames - 1) * kFrameMs;
+  } else {
+    // A stateless window emits nothing until every new frame is collected,
+    // then the packets are paced one per 80 ms.
+    r.sender_collect_ms = chunk.new_frames * kFrameMs;
+    r.receiver_collect_ms = (chunk.new_frames - 1) * kFrameMs;
+  }
   r.ola_holdback_ms = hidden_tail ? (kTrim * 1000) / kSampleRateHz : 0;
-  r.algorithmic_ms =
-      r.sender_collect_ms + r.receiver_collect_ms + r.ola_holdback_ms;
+  r.algorithmic_ms = r.sender_collect_ms + r.receiver_collect_ms + r.ola_holdback_ms;
   std::ostringstream o;
-  o << "Calculated codec latency " << r.algorithmic_ms
-    << " ms (sender collect " << r.sender_collect_ms << " ms + receiver collect "
-    << r.receiver_collect_ms << " ms";
+  o << "Calculated codec latency " << r.algorithmic_ms << " ms (sender collect "
+    << r.sender_collect_ms << " ms";
+  if (r.encoder_lookahead_ms > 0) {
+    o << ", including " << r.encoder_lookahead_ms << " ms encoder lookahead";
+  }
+  o << " + receiver collect " << r.receiver_collect_ms << " ms";
   if (hidden_tail) {
     o << " + STFT tail holdback " << r.ola_holdback_ms << " ms";
   }
   o << "). Left context is " << chunk.ctx_frames
     << " frames of lookback and is not added. "
-       "NetEq jitter and Core ML runtime are not included. "
-       "new_frames="
-    << chunk.new_frames << " ctx_frames=" << chunk.ctx_frames
-    << ". A smaller new_frames comes from the fetched model, not from this "
-       "branch.";
+       "NetEq jitter and Core ML runtime are not included. new_frames="
+    << chunk.new_frames << " ctx_frames=" << chunk.ctx_frames << ".";
   r.summary = o.str();
   return r;
 }
@@ -182,6 +227,13 @@ bool ParseManifest(const std::string& json,
   MaybeString(json, "encoder_window", &paths->encoder_window);
   MaybeString(json, "encoder_codes_layout", &paths->encoder_codes_layout);
   MaybeString(json, "compute", &paths->compute);
+  MaybeString(json, "encoder_kind", &paths->encoder_kind);
+  MaybeInt(json, "lookahead_samples", &paths->lookahead_samples);
+  MaybeInt(json, "stft_lookback_samples", &paths->stft_lookback_samples);
+  MaybeInt(json, "encoder_input_samples", &paths->encoder_input_samples);
+  MaybeInt(json, "encoder_cache_frames", &paths->encoder_cache_frames);
+  ParseStringList(json, "encoder_states_in", &paths->encoder_states_in);
+  ParseStringList(json, "encoder_states_out", &paths->encoder_states_out);
   MaybeInt(json, "sample_rate_hz", &chunk->sample_rate_hz);
   MaybeInt(json, "frame_samples", &chunk->frame_samples);
   MaybeInt(json, "codebooks", &chunk->codebooks);
@@ -195,6 +247,21 @@ bool ParseManifest(const std::string& json,
   if (paths->encoder_window != "ctx+new" && paths->encoder_window != "new") {
     if (error) *error = "encoder_window must be \"ctx+new\" or \"new\"";
     return false;
+  }
+  if (paths->Stateful()) {
+    if (paths->lookahead_samples <= 0) paths->lookahead_samples = 480;
+    if (paths->encoder_input_samples <= 0) {
+      paths->encoder_input_samples = chunk->frame_samples + paths->lookahead_samples;
+    }
+    if (paths->encoder_states_in.empty()) {
+      paths->encoder_states_in = {"hist", "k_cache", "v_cache", "conv_state", "pos"};
+      paths->encoder_states_out = {"hist_out", "k_cache_out", "v_cache_out",
+                                   "conv_state_out", "pos_out"};
+    }
+    if (paths->encoder_states_in.size() != paths->encoder_states_out.size()) {
+      if (error) *error = "encoder_states_in and encoder_states_out differ in length";
+      return false;
+    }
   }
   if (!chunk->Ok()) {
     if (error) {
@@ -322,7 +389,10 @@ double CodecStats::Mean(const std::vector<double>& v) const {
 }
 
 std::string CodecStats::ToJson() const {
-  const LatencyReport latency = DescribeLatency(chunk, hidden_tail);
+  ModelPaths paths;
+  paths.lookahead_samples = lookahead_samples;
+  if (stateful_encoder) paths.encoder_kind = "stateful_io";
+  const LatencyReport latency = DescribeLatency(chunk, hidden_tail, paths);
   std::ostringstream o;
   o.setf(std::ios::fixed);
   o.precision(3);
@@ -349,6 +419,7 @@ std::string CodecStats::ToJson() const {
   o << "  \"window_calls\": " << window_ms.size() << ",\n";
   o << "  \"prediction_ms_mean\": " << Mean(prediction_ms) << ",\n";
   o << "  \"algorithmic_latency_ms\": " << latency.algorithmic_ms << ",\n";
+  o << "  \"encoder_lookahead_ms\": " << latency.encoder_lookahead_ms << ",\n";
   o << "  \"sender_collect_ms\": " << latency.sender_collect_ms << ",\n";
   o << "  \"receiver_collect_ms\": " << latency.receiver_collect_ms << ",\n";
   o << "  \"ola_holdback_ms\": " << latency.ola_holdback_ms << ",\n";
@@ -510,7 +581,15 @@ std::optional<PacedPacket> FramePacer::Tick(uint32_t rtp_timestamp,
       ++assigned;
     }
   }
-  if (!boundary || slots_.empty() || !slots_.front().ready) return std::nullopt;
+  int ready = 0;
+  for (const Slot& slot : slots_) {
+    if (slot.ready) ++ready;
+  }
+  // A stateless chunk returns many frames at one boundary. Those stay paced
+  // at 80 ms. A single ready frame (the streaming encoder, whose lookahead
+  // arrives between boundaries) is sent on the tick it becomes ready.
+  if (slots_.empty() || !slots_.front().ready) return std::nullopt;
+  if (ready > 1 && !boundary) return std::nullopt;
   PacedPacket packet;
   packet.timestamp = slots_.front().timestamp;
   packet.codes = slots_.front().codes;

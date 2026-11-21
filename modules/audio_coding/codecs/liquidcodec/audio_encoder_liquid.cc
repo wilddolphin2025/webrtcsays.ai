@@ -52,13 +52,15 @@ bool AudioEncoderLiquid::EnsureStarted(std::string* error) {
     failed_ = true;
     return false;
   }
-  stream_ = std::make_unique<liquid::StreamEncoder>(backend_.get(), config_.chunk);
+  stream_ = std::make_unique<liquid::StreamEncoder>(backend_.get(), config_.chunk, config_.paths);
   stats_.backend = backend_->name();
   stats_.compute = config_.paths.compute;
   stats_.chunk = config_.chunk;
   stats_.hidden_tail = config_.hidden_tail;
+  stats_.lookahead_samples = config_.paths.lookahead_samples;
+  stats_.stateful_encoder = config_.paths.Stateful();
   const liquid::LatencyReport latency =
-      liquid::DescribeLatency(config_.chunk, config_.hidden_tail);
+      liquid::DescribeLatency(config_.chunk, config_.hidden_tail, config_.paths);
   RTC_LOG(LS_INFO) << latency.summary;
   fprintf(stderr, "%s\n", latency.summary.c_str());
   fprintf(stderr,

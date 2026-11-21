@@ -11,7 +11,7 @@ namespace liquid {
 
 class StreamEncoder {
  public:
-  StreamEncoder(LiquidBackend* backend, ChunkConfig chunk);
+  StreamEncoder(LiquidBackend* backend, ChunkConfig chunk, ModelPaths paths = {});
 
   // Append 24 kHz samples. Completed code frames are appended to `codes`
   // (each entry is one frame of 12 codes, in time order).
@@ -20,8 +20,14 @@ class StreamEncoder {
   void Reset();
 
  private:
+  bool PushStateful(std::vector<std::array<int32_t, kCodebooks>>* codes, WindowTiming* timing,
+                    std::string* error);
+  bool PushWindow(std::vector<std::array<int32_t, kCodebooks>>* codes, WindowTiming* timing,
+                  std::string* error);
+
   LiquidBackend* backend_;
   ChunkConfig chunk_;
+  ModelPaths paths_;
   std::vector<int16_t> history_;
   std::vector<int16_t> pending_;
 };

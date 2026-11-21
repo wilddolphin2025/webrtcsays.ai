@@ -105,7 +105,8 @@ bool ConfigureLiquidRuntime(const liquid::RuntimeConfig& config, std::string* er
   }
   *liquid::MutableRuntime() = config;
   liquid::MutableRuntime()->hidden_tail = config.paths.decoder_kind != "pcm";
-  RTC_LOG(LS_INFO) << liquid::DescribeLatency(config.chunk, config.paths.decoder_kind != "pcm")
+  RTC_LOG(LS_INFO) << liquid::DescribeLatency(config.chunk, config.paths.decoder_kind != "pcm",
+                                             config.paths)
                           .summary;
   return true;
 }

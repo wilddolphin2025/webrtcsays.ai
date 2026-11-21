@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Download LiquidCodec Core ML packages. Weights are not committed.
 #
-# Default source is the founder's fork, which is expected to publish a Core ML
-# encoder and a smaller-chunk decoder plus models/liquidcodec.json.
-# Override the repo or ref when pointing at another checkout:
+# Default source is wilddolphin2025/liquidcodec-ane. The default ref is the
+# draft streaming branch (PR 1) until that branch is merged; override it:
+#   LIQUIDCODEC_REF=master scripts/liquidcodec/fetch_models.sh
 #   LIQUIDCODEC_REPO=shershah1024/liquidcodec-ane LIQUIDCODEC_REF=master \
 #     scripts/liquidcodec/fetch_models.sh
 #
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 REPO="${LIQUIDCODEC_REPO:-wilddolphin2025/liquidcodec-ane}"
-REF="${LIQUIDCODEC_REF:-main}"
+REF="${LIQUIDCODEC_REF:-cursor/liquidcodec-stream-51d0}"
 DEST="${LIQUIDCODEC_DEST:-scripts/liquidcodec/models}"
 DRY=0
 PROBE=0

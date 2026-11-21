@@ -33,12 +33,29 @@ class SocketClient:
         await self.writer.drain()
 
     async def recv(self) -> str:
+        _opcode, payload = await self.recv_frame()
+        return payload.decode("utf-8")
+
+    async def recv_frame(self) -> tuple[int, bytes]:
         header = await asyncio.wait_for(self.reader.readexactly(2), timeout=2)
+        opcode = header[0] & 0x0F
+        masked = (header[1] & 0x80) != 0
         length = header[1] & 0x7F
         if length == 126:
             length = int.from_bytes(await self.reader.readexactly(2), "big")
-        payload = await self.reader.readexactly(length)
-        return payload.decode("utf-8")
+        mask = await self.reader.readexactly(4) if masked else b""
+        payload = await self.reader.readexactly(length) if length else b""
+        if masked:
+            payload = bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload))
+        return opcode, payload
+
+    async def send_pong(self, payload: bytes = b"") -> None:
+        mask = os.urandom(4)
+        frame = bytearray([0x8A, 0x80 | len(payload)])
+        frame += mask
+        frame += bytes(byte ^ mask[i % 4] for i, byte in enumerate(payload))
+        self.writer.write(frame)
+        await self.writer.drain()
 
 
 async def open_client(port: int, room: str, auth: str = "ok", query: str = "") -> SocketClient:
@@ -75,11 +92,15 @@ async def open_client(port: int, room: str, auth: str = "ok", query: str = "") -
 
 class RouterTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
+        self._idle = frame_router.IDLE_TIMEOUT
+        self._ping = frame_router.PING_INTERVAL
         frame_router.ROUTER = frame_router.Router()
         self.server = await frame_router.serve("127.0.0.1", 0)
         self.port = self.server.sockets[0].getsockname()[1]
 
     async def asyncTearDown(self) -> None:
+        frame_router.IDLE_TIMEOUT = self._idle
+        frame_router.PING_INTERVAL = self._ping
         self.server.close()
         await self.server.wait_closed()
 
@@ -143,6 +164,86 @@ class RouterTest(unittest.IsolatedAsyncioTestCase):
         done, _pending = await asyncio.wait({waiter}, timeout=0.2)
         self.assertFalse(done)
         waiter.cancel()
+
+    async def test_production_idle_window_is_two_minutes(self) -> None:
+        self.assertEqual(self._idle, 120.0)
+        self.assertEqual(self._ping, 30.0)
+        self.assertLess(self._ping, self._idle)
+
+    async def test_silent_viewer_is_released_at_idle_timeout(self) -> None:
+        import time
+
+        viewer = await open_client(self.port, "frame101")
+        await viewer.send("VIEW")
+        peer = None
+        for _ in range(50):
+            state = frame_router.ROUTER.rooms.get("frame101")
+            if state and state.get("viewer") is not None:
+                peer = state["viewer"]
+                break
+            await asyncio.sleep(0.01)
+        self.assertIsNotNone(peer)
+        peer.seen = time.monotonic() - (frame_router.IDLE_TIMEOUT + 1)
+        peer.last_tx_ping = peer.seen
+        await frame_router.ROUTER.sweep()
+        self.assertEqual(await viewer.recv(), "480 Temporarily Unavailable")
+
+    async def test_pong_keeps_a_waiting_viewer(self) -> None:
+        frame_router.IDLE_TIMEOUT = 0.45
+        frame_router.PING_INTERVAL = 0.12
+        viewer = await open_client(self.port, "frame101")
+        await viewer.send("VIEW")
+        await asyncio.sleep(0.15)
+        await frame_router.ROUTER.sweep()
+        opcode, payload = await viewer.recv_frame()
+        self.assertEqual(opcode, 0x9)
+        self.assertEqual(payload, b"")
+        peer = frame_router.ROUTER.rooms["frame101"]["viewer"]
+        seen = peer.seen
+        await viewer.send_pong(payload)
+        refreshed = False
+        for _ in range(30):
+            await asyncio.sleep(0.01)
+            if peer.seen > seen:
+                refreshed = True
+                break
+        self.assertTrue(refreshed)
+        await asyncio.sleep(0.2)
+        await frame_router.ROUTER.sweep()
+        try:
+            opcode, payload = await asyncio.wait_for(viewer.recv_frame(), timeout=0.15)
+        except asyncio.TimeoutError:
+            opcode, payload = 0x9, b""
+        self.assertNotEqual(payload, b"480 Temporarily Unavailable")
+        self.assertIn(opcode, (0x9, 0xA))
+
+    async def test_caller_without_a_viewer_is_not_given_an_offer(self) -> None:
+        caller = await open_client(self.port, "frame101")
+        await caller.send("HELLO:viewer")
+        waiter = asyncio.create_task(caller.recv())
+        done, _pending = await asyncio.wait({waiter}, timeout=0.2)
+        self.assertFalse(done)
+        waiter.cancel()
+        caller.writer.close()
+        await caller.writer.wait_closed()
+
+    async def test_log_records_the_verb_and_not_the_payload(self) -> None:
+        import contextlib
+        import io
+
+        viewer = await open_client(self.port, "frame101")
+        caller = await open_client(self.port, "frame101")
+        await viewer.send("VIEW")
+        await caller.send("HELLO:viewer")
+        await viewer.recv()
+        secret = "supersecretvalue"
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            await caller.send("ICE:0:candidate-" + secret)
+            await viewer.recv()
+        text = captured.getvalue()
+        self.assertIn("kind=ICE", text)
+        self.assertNotIn(secret, text)
 
 
 if __name__ == "__main__":

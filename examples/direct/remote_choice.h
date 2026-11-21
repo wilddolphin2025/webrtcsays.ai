@@ -13,6 +13,7 @@ enum class RemoteWindowChoice {
   kNone = 0,
   kOpenVr,
   kSdl,
+  kApp,
 };
 
 // `openvr_ready` means IVROverlay_028 loaded. `display_ready` means SDL2
@@ -21,7 +22,9 @@ enum class RemoteWindowChoice {
 inline RemoteWindowChoice ChooseRemoteWindow(const std::string& requested,
                                              bool openvr_ready,
                                              bool display_ready) {
-  if (requested == "none") return RemoteWindowChoice::kNone;
+  if (requested == "none" || requested == "app") {
+    return requested == "app" ? RemoteWindowChoice::kApp : RemoteWindowChoice::kNone;
+  }
   if (requested == "openvr") {
     return openvr_ready ? RemoteWindowChoice::kOpenVr : RemoteWindowChoice::kNone;
   }
@@ -39,6 +42,8 @@ inline const char* RemoteWindowName(RemoteWindowChoice choice) {
       return "openvr";
     case RemoteWindowChoice::kSdl:
       return "sdl";
+    case RemoteWindowChoice::kApp:
+      return "app";
     case RemoteWindowChoice::kNone:
       return "none";
   }

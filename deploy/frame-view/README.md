@@ -114,7 +114,11 @@ The viewer stylesheet repeats the palette tokens from `1dfe20dbc1` (`#1B2838`, `
 
 ## Browser
 
-Open the viewer URL after the PR 17 login. Press Connect. The page does not call `getUserMedia`. Connect is the playback gesture for desktop Safari and iPhone. If playback is still blocked, tap the video. The page prefers H.264 and shows the codec `getStats` actually negotiated, including `profile-level-id` when present. TURN is fetched from the existing `/demo/turn` cookie endpoint. A 503 leaves the page on STUN.
+Open the viewer URL after the PR 17 login. The page opens its socket and answers the Frame without a second Connect press. Connect remains a retry. That socket is not permission to capture: Share screen, Camera, and Microphone stay separate consents. Connect does not call `getUserMedia` or `getDisplayMedia`. Share screen, Camera, and Microphone are separate consents and can be turned on before Connect, while waiting, or after the answer. The same button stops that source. Cancelling a prompt leaves the previous choice. A blank hold track, not the camera or microphone, keeps the answer `sendrecv` so a later consent can replace it without a second offer. The page prefers H.264 and shows the codec `getStats` actually negotiated, including `profile-level-id` when present.
+
+The router pings each peer every 30 seconds. A live browser answers with a pong, which refreshes the idle clock. A peer that sends nothing for 120 seconds, including no pong, is released with `480`. The page then shows `disconnected` and `no media`. The caller handshake is unchanged: `HELLO:viewer` is answered by the browser, not by the router. With no viewer those HELLOs stay queued and the caller is released after the 20 second queue limit.
+
+`/demo/turn` is unchanged and still returns `uris`. The headset reads the bearer token from its file, GETs `https://rtc.wilddolphin.us/demo/turn`, and writes `urls` into `~/babelfish/call/app/turn.json` (directory `0700`, file `0600`). `--turns-file` is that path. The username and credential are not argv values and are not logged. Only `rtc.wilddolphin.us` TURN URIs are kept. TLS verification stays on. The self-signed `turns:` certificate is a separate repair, so that URI is not treated as working, and UDP/TCP 3478 is not treated as verified either. `WEBRTCSAYS_ICE_POLICY=relay` passes `--ice-policy=relay` for a TURN-only candidate test. The default remains every candidate type. A 503 leaves the page on STUN. Signaling can start while TURN stays unconfigured.
 
 ## Checks already run here
 

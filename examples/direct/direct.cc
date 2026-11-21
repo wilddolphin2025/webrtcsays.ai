@@ -384,8 +384,14 @@ bool DirectApplication::CreatePeerConnection() {
     peer_connection_factory_->SetOptions(options);
   }
 
-  // Host, srflx and relay candidates so LAN calls connect directly.
-  config.type = webrtc::PeerConnectionInterface::kAll;
+  // Relay keeps the test on TURN. TLS verification stays required either way.
+  if (opts_.ice_policy == "relay") {
+    config.type = webrtc::PeerConnectionInterface::kRelay;
+    RTC_LOG(LS_INFO) << "ice policy: relay";
+  } else {
+    config.type = webrtc::PeerConnectionInterface::kAll;
+    RTC_LOG(LS_INFO) << "ice policy: all";
+  }
   config.bundle_policy = webrtc::PeerConnectionInterface::kBundlePolicyMaxBundle;
   config.rtcp_mux_policy = webrtc::PeerConnectionInterface::kRtcpMuxPolicyRequire;
   config.continual_gathering_policy =

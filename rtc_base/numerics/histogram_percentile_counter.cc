@@ -18,7 +18,7 @@
 
 #include "rtc_base/checks.h"
 
-namespace rtc {
+namespace webrtc {
 HistogramPercentileCounter::HistogramPercentileCounter(
     uint32_t long_tail_boundary)
     : histogram_low_(size_t{long_tail_boundary}),
@@ -27,15 +27,6 @@ HistogramPercentileCounter::HistogramPercentileCounter(
       total_elements_low_(0) {}
 
 HistogramPercentileCounter::~HistogramPercentileCounter() = default;
-
-void HistogramPercentileCounter::Add(const HistogramPercentileCounter& other) {
-  for (uint32_t value = 0; value < other.long_tail_boundary_; ++value) {
-    Add(value, other.histogram_low_[value]);
-  }
-  for (const auto& it : histogram_high_) {
-    Add(it.first, it.second);
-  }
-}
 
 void HistogramPercentileCounter::Add(uint32_t value, size_t count) {
   if (value < long_tail_boundary_) {
@@ -79,4 +70,4 @@ std::optional<uint32_t> HistogramPercentileCounter::GetPercentile(
   return std::nullopt;
 }
 
-}  // namespace rtc
+}  // namespace webrtc

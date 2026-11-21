@@ -21,22 +21,22 @@
 #include <vector>
 
 #include "api/environment/environment.h"
+#include "api/scoped_refptr.h"
 #include "api/sequence_checker.h"
 #include "api/task_queue/task_queue_base.h"
 #include "api/test/videocodec_test_fixture.h"
+#include "api/test/videocodec_test_stats.h"
 #include "api/video/encoded_image.h"
 #include "api/video/i420_buffer.h"
-#include "api/video/resolution.h"
-#include "api/video/video_bitrate_allocation.h"
 #include "api/video/video_bitrate_allocator.h"
+#include "api/video/video_codec_type.h"
 #include "api/video/video_frame.h"
+#include "api/video/video_frame_buffer.h"
 #include "api/video_codecs/video_decoder.h"
 #include "api/video_codecs/video_encoder.h"
-#include "modules/include/module_common_types.h"
 #include "modules/video_coding/codecs/test/videocodec_test_stats_impl.h"
 #include "modules/video_coding/include/video_codec_interface.h"
 #include "modules/video_coding/utility/ivf_file_writer.h"
-#include "rtc_base/buffer.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/system/no_unique_address.h"
 #include "rtc_base/thread_annotations.h"
@@ -120,6 +120,10 @@ class VideoProcessor {
       return Result(Result::OK, 0);
     }
 
+    void OnFrameDropped(uint32_t /*rtp_timestamp*/,
+                        int /*spatial_id*/,
+                        bool /*is_end_of_temporal_unit*/) override {}
+
    private:
     VideoProcessor* const video_processor_;
     TaskQueueBase* const task_queue_;
@@ -183,6 +187,7 @@ class VideoProcessor {
 
   void HandleTailDrops();
 
+  const Environment env_;
   // Test config.
   const VideoCodecTestFixture::Config config_;
   const size_t num_simulcast_or_spatial_layers_;
@@ -245,7 +250,7 @@ class VideoProcessor {
   // simulcast_svc_idx -> frame_number.
   std::vector<size_t> last_decoded_frame_num_ RTC_GUARDED_BY(sequence_checker_);
   // simulcast_svc_idx -> buffer.
-  std::vector<rtc::scoped_refptr<I420Buffer>> last_decoded_frame_buffer_
+  std::vector<scoped_refptr<I420Buffer>> last_decoded_frame_buffer_
       RTC_GUARDED_BY(sequence_checker_);
 
   // Time spent in frame encode callback. It is accumulated for layers and

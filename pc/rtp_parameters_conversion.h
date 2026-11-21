@@ -12,18 +12,15 @@
 #define PC_RTP_PARAMETERS_CONVERSION_H_
 
 #include <optional>
-#include <vector>
+#include <span>
 
-#include "api/rtc_error.h"
 #include "api/rtp_parameters.h"
 #include "media/base/codec.h"
-#include "media/base/stream_params.h"
-#include "pc/session_description.h"
 
 namespace webrtc {
 
 //*****************************************************************************
-// Functions for converting from old cricket:: structures to new webrtc::
+// Functions for converting from old webrtc:: structures to new webrtc::
 // structures. These are permissive with regards to
 // input validation; it's assumed that any necessary validation already
 // occurred.
@@ -35,13 +32,13 @@ namespace webrtc {
 // Returns empty value if `cricket_feedback` is a feedback type not
 // supported/recognized.
 std::optional<RtcpFeedback> ToRtcpFeedback(
-    const cricket::FeedbackParam& cricket_feedback);
+    const FeedbackParam& cricket_feedback);
 
-RtpCodecCapability ToRtpCodecCapability(const cricket::Codec& cricket_codec);
+RtpCodecCapability ToRtpCodecCapability(const Codec& cricket_codec);
 
 RtpCapabilities ToRtpCapabilities(
-    const std::vector<cricket::Codec>& cricket_codecs,
-    const cricket::RtpHeaderExtensions& cricket_extensions);
+    std::span<const Codec> cricket_codecs,
+    std::span<const RtpHeaderExtensionCapability> extensions);
 
 }  // namespace webrtc
 

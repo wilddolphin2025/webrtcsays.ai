@@ -1,7 +1,7 @@
 /*
- *  (c) 2025, wilddolphin2022 
+ *  (c) 2025, wilddolphin2025 
  *  For WebRTCsays.ai project
- *  https://github.com/wilddolphin2022/webrtcsays.ai
+ *  https://github.com/wilddolphin2025/webrtcsays.ai
  *
  *  Use of this source code is governed by a BSD-style license
  *  that can be found in the LICENSE file in the root of the source
@@ -20,9 +20,9 @@ class SpeechAudioDevice : public webrtc::AudioDeviceGeneric {
   virtual void speakText(const std::string& text) = 0;
   virtual void askLlama(const std::string& text) = 0;
 
-  bool _whispering = false;
-  bool _llaming = false;
-  bool _ttsing = false;
+  bool _whisper_enabled = false;
+  bool _llama_enabled = false;
+  bool _tts_enabled = false;
 
   virtual ~SpeechAudioDevice() {}
 };

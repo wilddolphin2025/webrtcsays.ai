@@ -42,6 +42,7 @@ LIB_TO_LICENSES_DICT = {
     ],
     'boringssl': ['third_party/boringssl/src/LICENSE'],
     'crc32c': ['third_party/crc32c/src/LICENSE'],
+    'compiler-rt': ['third_party/compiler-rt/src/LICENSE.TXT'],
     'cpu_features': ['third_party/cpu_features/src/LICENSE'],
     'dav1d': ['third_party/dav1d/LICENSE'],
     'errorprone': [
@@ -55,7 +56,6 @@ LIB_TO_LICENSES_DICT = {
     'libaom': ['third_party/libaom/source/libaom/LICENSE'],
     'libc++': ['third_party/libc++/src/LICENSE.TXT'],
     'libc++abi': ['third_party/libc++abi/src/LICENSE.TXT'],
-    'libevent': ['third_party/libevent/LICENSE'],
     'libjpeg_turbo': ['third_party/libjpeg_turbo/LICENSE.md'],
     'libsrtp': ['third_party/libsrtp/LICENSE'],
     'libunwind': ['third_party/libunwind/src/LICENSE.TXT'],
@@ -67,11 +67,10 @@ LIB_TO_LICENSES_DICT = {
     'pffft': ['third_party/pffft/LICENSE'],
     'protobuf': ['third_party/protobuf/LICENSE'],
     'rnnoise': ['third_party/rnnoise/COPYING'],
+    'sframe': ['third_party/sframe/src/LICENSE'],
     'webrtc': ['LICENSE'],
     'zlib': ['third_party/zlib/LICENSE'],
     'base64': ['rtc_base/third_party/base64/LICENSE'],
-    'sigslot': ['rtc_base/third_party/sigslot/LICENSE'],
-    'portaudio': ['modules/third_party/portaudio/LICENSE'],
     'fft': ['modules/third_party/fft/LICENSE'],
     'g711': ['modules/third_party/g711/LICENSE'],
     'g722': ['modules/third_party/g722/LICENSE'],
@@ -81,15 +80,25 @@ LIB_TO_LICENSES_DICT = {
     'jni_zero': ['third_party/jni_zero/LICENSE'],
     'protobuf-javascript': ['third_party/protobuf-javascript/LICENSE'],
     'perfetto': ['third_party/perfetto/LICENSE'],
-    # TODO(bugs.webrtc.org/1110): Remove this hack. This is not a lib.
-    # For some reason it is listed as so in _get_third_party_libraries.
+    'rust_stdlib': [
+        'third_party/rust-toolchain/share/doc/rustc/licenses/Apache-2.0.txt',
+        'third_party/rust-toolchain/share/doc/rustc/licenses/MIT.txt',
+    ],
+    'rust/cxx/v1':
+    ['third_party/rust/chromium_crates_io/vendor/cxx-v1/LICENSE-APACHE'],
+    'rust/foldhash/v0_2':
+    ['third_party/rust/chromium_crates_io/vendor/foldhash-v0_2/LICENSE'],
+
+    # These are not libraries but collections of libraries.
     'android_deps': [],
-    # This is not a library but a collection of libraries.
     'androidx': [],
 
     # Compile time dependencies, no license needed:
     'ow2_asm': [],
     'jdk': [],
+
+    # Compile-time Rust proc-macro crates, no license needed in binary:
+    'rust/cxxbridge_macro/v1': []
 }
 
 # Third_party library _regex_ to licences mapping. Keys are regular expression
@@ -122,8 +131,11 @@ if SRC_DIR.endswith(os.path.join('third_party', 'webrtc')):
 sys.path.append(os.path.join(SRC_DIR, 'build'))
 import find_depot_tools
 
-THIRD_PARTY_LIB_SIMPLE_NAME_REGEX = r'^.*/third_party/([\w\-+]+).*$'
+THIRD_PARTY_LIB_SIMPLE_NAME_REGEX = re.compile(
+    r'^.*/third_party/(rust/\w+/\w+|[\w\-+]+).*$')
 THIRD_PARTY_LIB_REGEX_TEMPLATE = r'^.*/third_party/%s$'
+RUST_HOST_BUILD_TOOLS_REGEX = re.compile(
+    r'\(//build/toolchain/.*_for_rust_host_build_tools\)$')
 
 
 class LicenseBuilder:
@@ -158,7 +170,7 @@ class LicenseBuilder:
 
     Outputs libname or None if this is not a third_party dependency.
     """
-        groups = re.match(THIRD_PARTY_LIB_SIMPLE_NAME_REGEX, dep)
+        groups = THIRD_PARTY_LIB_SIMPLE_NAME_REGEX.match(dep)
         return groups.group(1) if groups else None
 
     def _parse_library(self, dep):
@@ -170,6 +182,11 @@ class LicenseBuilder:
 
     Outputs matched dict key or None if this is not a third_party dependency.
     """
+        if RUST_HOST_BUILD_TOOLS_REGEX.search(dep):
+            return None
+        if dep.startswith('//build/rust/std:'):
+            return 'rust_stdlib'
+
         libname = LicenseBuilder._parse_library_name(dep)
 
         for lib_regex in self.lib_regex_to_licenses_dict:
@@ -196,7 +213,12 @@ class LicenseBuilder:
         return output_json
 
     def _get_third_party_libraries(self, buildfile_dir, target):
-        output = json.loads(LicenseBuilder._run_gn(buildfile_dir, target))
+        license_json = LicenseBuilder._run_gn(buildfile_dir, target)
+        try:
+            output = json.loads(license_json)
+        except:
+            logging.error("unable to parse license_json = '%s'", license_json)
+            raise
         libraries = set()
         for described_target in list(output.values()):
             third_party_libs = (self._parse_library(dep)

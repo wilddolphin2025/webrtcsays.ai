@@ -17,6 +17,8 @@
 #include <optional>
 #include <string>
 
+#include "absl/functional/any_invocable.h"
+#include "api/audio/audio_mixer.h"
 #include "api/audio_codecs/audio_codec_pair_id.h"
 #include "api/audio_codecs/audio_decoder_factory.h"
 #include "api/audio_codecs/audio_format.h"
@@ -25,6 +27,7 @@
 #include "api/crypto/frame_decryptor_interface.h"
 #include "api/frame_transformer_interface.h"
 #include "api/rtp_headers.h"
+#include "api/rtp_packet_infos.h"
 #include "api/scoped_refptr.h"
 #include "api/units/time_delta.h"
 #include "api/units/timestamp.h"
@@ -43,6 +46,10 @@ class AudioReceiveStreamInterface : public MediaReceiveStreamInterface {
     int64_t payload_bytes_received = 0;
     int64_t header_and_padding_bytes_received = 0;
     uint32_t packets_received = 0;
+    // https://w3c.github.io/webrtc-stats/#dom-rtcreceivedrtpstreamstats-packetsreceivedwithect1
+    int64_t packets_received_with_ect1 = 0;
+    // https://w3c.github.io/webrtc-stats/#dom-rtcreceivedrtpstreamstats-packetsreceivedwithce
+    int64_t packets_received_with_ce = 0;
     uint64_t fec_packets_received = 0;
     uint64_t fec_packets_discarded = 0;
     int32_t packets_lost = 0;
@@ -112,9 +119,12 @@ class AudioReceiveStreamInterface : public MediaReceiveStreamInterface {
     TimeDelta total_round_trip_time = TimeDelta::Zero();
     int round_trip_time_measurements = 0;
   };
-
   struct Config {
     Config();
+    Config(const Config&) = delete;
+    Config& operator=(const Config&) = delete;
+    Config(Config&&);
+    Config& operator=(Config&&);
     ~Config();
 
     std::string ToString() const;
@@ -149,7 +159,7 @@ class AudioReceiveStreamInterface : public MediaReceiveStreamInterface {
     // Decoder specifications for every payload type that we can receive.
     std::map<int, SdpAudioFormat> decoder_map;
 
-    rtc::scoped_refptr<AudioDecoderFactory> decoder_factory;
+    scoped_refptr<AudioDecoderFactory> decoder_factory;
 
     std::optional<AudioCodecPairId> codec_pair_id;
 
@@ -162,14 +172,23 @@ class AudioReceiveStreamInterface : public MediaReceiveStreamInterface {
     // TODO(tommi): Remove this member variable from the struct. It's not
     // a part of the AudioReceiveStreamInterface state but rather a pass through
     // variable.
-    rtc::scoped_refptr<webrtc::FrameDecryptorInterface> frame_decryptor;
+    scoped_refptr<webrtc::FrameDecryptorInterface> frame_decryptor;
 
     // An optional frame transformer used by insertable streams to transform
     // encoded frames.
     // TODO(tommi): Remove this member variable from the struct. It's not
     // a part of the AudioReceiveStreamInterface state but rather a pass through
     // variable.
-    rtc::scoped_refptr<webrtc::FrameTransformerInterface> frame_transformer;
+    scoped_refptr<webrtc::FrameTransformerInterface> frame_transformer;
+
+    // Callback invoked on the first received packet for this stream.
+    absl::AnyInvocable<void(uint32_t ssrc) &&> on_first_packet;
+
+    // Callback invoked when an audio frame has been delivered. Note that this
+    // callback is called synchronously from audio/packet processing threads and
+    // must be thread-safe and non-blocking.
+    absl::AnyInvocable<void(const RtpPacketInfos&, Timestamp) const>
+        on_frame_delivered_callback;
   };
 
   // Methods that support reconfiguring the stream post initialization.
@@ -196,6 +215,13 @@ class AudioReceiveStreamInterface : public MediaReceiveStreamInterface {
   // is potentially forwarded to any attached AudioSinkInterface implementation.
   virtual void SetGain(float gain) = 0;
 
+  // Sets the maximum number of packets to hold in the jitter buffer.
+  virtual void SetJitterBufferMaxPackets(size_t max_packets) = 0;
+
+  // Sets if the FastAccelerate feature (accelerate based on arrival time) is
+  // enabled.
+  virtual void SetJitterBufferFastAccelerate(bool fast_accelerate) = 0;
+
   // Sets a base minimum for the playout delay. Base minimum delay sets lower
   // bound on minimum delay value determining lower bound on playout delay.
   //
@@ -210,8 +236,12 @@ class AudioReceiveStreamInterface : public MediaReceiveStreamInterface {
   // post initialization.
   virtual uint32_t remote_ssrc() const = 0;
 
+  // Get the object suitable to inject into the AudioMixer
+  // (normally "this").
+  virtual AudioMixer::Source* source() = 0;
+
  protected:
-  virtual ~AudioReceiveStreamInterface() {}
+  ~AudioReceiveStreamInterface() override {}
 };
 
 }  // namespace webrtc

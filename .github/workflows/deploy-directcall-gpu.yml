@@ -1,0 +1,111 @@
+name: Deploy DirectCall (GPU)
+
+on:
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: "Branch/tag/SHA to deploy"
+        required: false
+        default: "talkingface"
+      deploy_path:
+        description: "Target path on remote host"
+        required: false
+        default: "/opt/directcall"
+      service_name:
+        description: "systemd service name"
+        required: false
+        default: "directcall"
+      config_path:
+        description: "Repo config JSON path (used if secret missing)"
+        required: false
+        default: "scripts/deploy/directcall.config.json"
+      whillats_branch:
+        description: "Whillats branch to build on remote"
+        required: false
+        default: "talkingface"
+      dry_run:
+        description: "If true, build and validate artifact only — no SSH, remote binaries unchanged"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref }}
+          submodules: recursive
+
+      - name: Refuse shared production VPS
+        if: ${{ !inputs.dry_run }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST_GPU }}
+        run: |
+          case "${DEPLOY_HOST:-}" in
+            217.77.3.65|rtc.wilddolphin.us)
+              echo "Refusing Deploy DirectCall against the shared VPS."
+              echo "Phase 11 replaces nginx and can take down rtc, Matrix, and LiveKit."
+              echo "Stage-1 demo deploy is manual: deploy/webrtcsays-demo/README.md"
+              exit 1
+              ;;
+          esac
+
+      - name: Build directcall package
+        run: |
+          chmod +x scripts/ci/build_directcall_linux.sh
+          scripts/ci/build_directcall_linux.sh
+
+      - name: Prepare SSH key
+        if: ${{ !inputs.dry_run }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY_GPU }}" > ~/.ssh/id_wd2025
+          chmod 600 ~/.ssh/id_wd2025
+          cat > ~/.ssh/config <<'SSHCFG'
+          Host *
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+            LogLevel ERROR
+          SSHCFG
+          chmod 600 ~/.ssh/config
+
+      - name: Prepare runtime config
+        run: |
+          mkdir -p dist
+          if [ -n "${{ secrets.DIRECTCALL_CONFIG_JSON }}" ]; then
+            printf '%s\n' "${{ secrets.DIRECTCALL_CONFIG_JSON }}" > dist/directcall-config.json
+          elif [ -f "${{ inputs.config_path }}" ]; then
+            cp "${{ inputs.config_path }}" dist/directcall-config.json
+          else
+            echo "No config provided. Set DIRECTCALL_CONFIG_JSON secret or commit ${{ inputs.config_path }}"
+            exit 1
+          fi
+
+      - name: Deploy to remote host (or dry-run validate only)
+        env:
+          DEPLOY_DRY_RUN: ${{ inputs.dry_run }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST_GPU }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER_GPU }}
+          DEPLOY_PORT: 22
+          DEPLOY_PATH: ${{ inputs.deploy_path }}
+          SERVICE_NAME: ${{ inputs.service_name }}
+          SSH_KEY_PATH: ~/.ssh/id_wd2025
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          TURN_USER: ${{ secrets.TURN_USER }}
+          TURN_PASS: ${{ secrets.TURN_PASS }}
+          WHILLATS_BRANCH: ${{ inputs.whillats_branch }}
+          SKIP_COTURN: "true"
+        run: |
+          chmod +x scripts/deploy/deploy_directcall_remote.sh
+          scripts/deploy/deploy_directcall_remote.sh dist/directcall-linux.tar.gz dist/directcall-config.json
+
+      - name: Upload package artifact (dry run)
+        if: ${{ inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: directcall-linux-dry-run-gpu
+          path: dist/directcall-linux.tar.gz

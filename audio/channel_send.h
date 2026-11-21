@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "absl/strings/string_view.h"
@@ -26,6 +27,7 @@
 #include "api/environment/environment.h"
 #include "api/frame_transformer_interface.h"
 #include "api/function_view.h"
+#include "api/rtp_header_extension_id.h"
 #include "api/scoped_refptr.h"
 #include "api/units/data_rate.h"
 #include "api/units/time_delta.h"
@@ -38,13 +40,15 @@ namespace webrtc {
 class FrameEncryptorInterface;
 class RtpTransportControllerSendInterface;
 
-struct CallSendStatistics {
-  int64_t rttMs;
+struct ChannelSendStatistics {
+  TimeDelta round_trip_time;
   int64_t payload_bytes_sent;
   int64_t header_and_padding_bytes_sent;
   // https://w3c.github.io/webrtc-stats/#dom-rtcoutboundrtpstreamstats-retransmittedbytessent
   uint64_t retransmitted_bytes_sent;
-  int packetsSent;
+  int packets_sent;
+  // https://w3c.github.io/webrtc-stats/#dom-rtcoutboundrtpstreamstats-packetssentwithect1
+  int packets_sent_with_ect1;
   // https://w3c.github.io/webrtc-stats/#dom-rtcoutboundrtpstreamstats-totalpacketsenddelay
   TimeDelta total_packet_send_delay = TimeDelta::Zero();
   // https://w3c.github.io/webrtc-stats/#dom-rtcoutboundrtpstreamstats-retransmittedpacketssent
@@ -65,18 +69,19 @@ class ChannelSendInterface {
 
   virtual void ReceivedRTCPPacket(const uint8_t* packet, size_t length) = 0;
 
-  virtual CallSendStatistics GetRTCPStatistics() const = 0;
+  virtual ChannelSendStatistics GetRTCPStatistics() const = 0;
 
   virtual void SetEncoder(int payload_type,
                           const SdpAudioFormat& encoder_format,
                           std::unique_ptr<AudioEncoder> encoder) = 0;
   virtual void ModifyEncoder(
-      rtc::FunctionView<void(std::unique_ptr<AudioEncoder>*)> modifier) = 0;
-  virtual void CallEncoder(rtc::FunctionView<void(AudioEncoder*)> modifier) = 0;
+      FunctionView<void(std::unique_ptr<AudioEncoder>*)> modifier) = 0;
+  virtual void CallEncoder(FunctionView<void(AudioEncoder*)> modifier) = 0;
 
-  // Use 0 to indicate that the extension should not be registered.
   virtual void SetRTCP_CNAME(absl::string_view c_name) = 0;
-  virtual void SetSendAudioLevelIndicationStatus(bool enable, int id) = 0;
+  // Use RtpHeaderExtensionId::NotSet() to indicate that the extension should be
+  // disabled.
+  virtual void SetSendAudioLevelIndicationStatus(RtpHeaderExtensionId id) = 0;
   virtual void RegisterSenderCongestionControlObjects(
       RtpTransportControllerSendInterface* transport) = 0;
   virtual void ResetSenderCongestionControlObjects() = 0;
@@ -90,6 +95,10 @@ class ChannelSendInterface {
   virtual void OnBitrateAllocation(BitrateAllocationUpdate update) = 0;
   virtual int GetTargetBitrate() const = 0;
   virtual void SetInputMute(bool muted) = 0;
+  // Sets the list of CSRCs to be included in the RTP header. If more than
+  // kRtpCsrcSize CSRCs are provided, only the first kRtpCsrcSize elements are
+  // kept.
+  virtual void SetCsrcs(std::span<const uint32_t> csrcs) = 0;
 
   virtual void ProcessAndEncodeAudio(
       std::unique_ptr<AudioFrame> audio_frame) = 0;
@@ -100,13 +109,12 @@ class ChannelSendInterface {
 
   // E2EE Custom Audio Frame Encryption (Optional)
   virtual void SetFrameEncryptor(
-      rtc::scoped_refptr<FrameEncryptorInterface> frame_encryptor) = 0;
+      scoped_refptr<FrameEncryptorInterface> frame_encryptor) = 0;
 
   // Sets a frame transformer between encoder and packetizer, to transform
   // encoded frames before sending them out the network.
   virtual void SetEncoderToPacketizerFrameTransformer(
-      rtc::scoped_refptr<webrtc::FrameTransformerInterface>
-          frame_transformer) = 0;
+      scoped_refptr<webrtc::FrameTransformerInterface> frame_transformer) = 0;
 
   // Returns payload bitrate actually used.
   virtual std::optional<DataRate> GetUsedRate() const = 0;
@@ -124,7 +132,7 @@ std::unique_ptr<ChannelSendInterface> CreateChannelSend(
     bool extmap_allow_mixed,
     int rtcp_report_interval_ms,
     uint32_t ssrc,
-    rtc::scoped_refptr<FrameTransformerInterface> frame_transformer,
+    scoped_refptr<FrameTransformerInterface> frame_transformer,
     RtpTransportControllerSendInterface* transport_controller);
 
 }  // namespace voe

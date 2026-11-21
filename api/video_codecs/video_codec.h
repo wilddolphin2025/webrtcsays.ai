@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 
+#include "absl/strings/string_view.h"
 #include "api/video/video_codec_constants.h"
 #include "api/video/video_codec_type.h"
 #include "api/video_codecs/scalability_mode.h"
@@ -109,7 +110,7 @@ struct VideoCodecAV1 {
 
 // Translates from name of codec to codec type and vice versa.
 RTC_EXPORT const char* CodecTypeToPayloadString(VideoCodecType type);
-RTC_EXPORT VideoCodecType PayloadStringToCodecType(const std::string& name);
+RTC_EXPORT VideoCodecType PayloadStringToCodecType(absl::string_view name);
 
 union VideoCodecUnion {
   VideoCodecVP8 VP8;
@@ -143,6 +144,8 @@ class RTC_EXPORT VideoCodec {
 
   bool IsSinglecast() const { return numberOfSimulcastStreams <= 1; }
   bool IsSimulcast() const { return !IsSinglecast(); }
+  // Returns true if the codec is a mixed-codec simulcast.
+  bool IsMixedCodec() const;
 
   // Public variables. TODO(hta): Make them private with accessors.
   VideoCodecType codecType;

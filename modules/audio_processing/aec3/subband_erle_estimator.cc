@@ -11,10 +11,18 @@
 #include "modules/audio_processing/aec3/subband_erle_estimator.h"
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <functional>
+#include <memory>
+#include <span>
+#include <vector>
 
+#include "api/audio/echo_canceller3_config.h"
 #include "api/environment/environment.h"
 #include "api/field_trials_view.h"
+#include "modules/audio_processing/aec3/aec3_common.h"
+#include "modules/audio_processing/logging/apm_data_dumper.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/numerics/safe_minmax.h"
 
@@ -75,9 +83,9 @@ void SubbandErleEstimator::Reset() {
 }
 
 void SubbandErleEstimator::Update(
-    rtc::ArrayView<const float, kFftLengthBy2Plus1> X2,
-    rtc::ArrayView<const std::array<float, kFftLengthBy2Plus1>> Y2,
-    rtc::ArrayView<const std::array<float, kFftLengthBy2Plus1>> E2,
+    std::span<const float, kFftLengthBy2Plus1> X2,
+    std::span<const std::array<float, kFftLengthBy2Plus1>> Y2,
+    std::span<const std::array<float, kFftLengthBy2Plus1>> E2,
     const std::vector<bool>& converged_filters) {
   UpdateAccumulatedSpectra(X2, Y2, E2, converged_filters);
   UpdateBands(converged_filters);
@@ -141,7 +149,7 @@ void SubbandErleEstimator::UpdateBands(
             if (!use_min_erle_during_onsets_) {
               float alpha =
                   new_erle[k] < erle_during_onsets_[ch][k] ? 0.3f : 0.15f;
-              erle_during_onsets_[ch][k] = rtc::SafeClamp(
+              erle_during_onsets_[ch][k] = SafeClamp(
                   erle_during_onsets_[ch][k] +
                       alpha * (new_erle[k] - erle_during_onsets_[ch][k]),
                   min_erle_, max_erle_[k]);
@@ -159,8 +167,7 @@ void SubbandErleEstimator::UpdateBands(
       if (new_erle < erle) {
         alpha = low_render_energy ? 0.f : 0.1f;
       }
-      erle =
-          rtc::SafeClamp(erle + alpha * (new_erle - erle), min_erle, max_erle);
+      erle = SafeClamp(erle + alpha * (new_erle - erle), min_erle, max_erle);
     };
 
     for (size_t k = 1; k < kFftLengthBy2; ++k) {
@@ -214,9 +221,9 @@ void SubbandErleEstimator::ResetAccumulatedSpectra() {
 }
 
 void SubbandErleEstimator::UpdateAccumulatedSpectra(
-    rtc::ArrayView<const float, kFftLengthBy2Plus1> X2,
-    rtc::ArrayView<const std::array<float, kFftLengthBy2Plus1>> Y2,
-    rtc::ArrayView<const std::array<float, kFftLengthBy2Plus1>> E2,
+    std::span<const float, kFftLengthBy2Plus1> X2,
+    std::span<const std::array<float, kFftLengthBy2Plus1>> Y2,
+    std::span<const std::array<float, kFftLengthBy2Plus1>> E2,
     const std::vector<bool>& converged_filters) {
   auto& st = accum_spectra_;
   RTC_DCHECK_EQ(st.E2.size(), E2.size());

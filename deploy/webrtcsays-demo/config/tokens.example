@@ -1,0 +1,5 @@
+# client_id and secret, one pair per line, separated by a single space.
+# Secret: 16-128 letters or digits, for example the output of:
+#   openssl rand -hex 32
+# Lines that still contain REPLACE or EXAMPLE are ignored.
+# founder-iphone REPLACEWITHTHEHOSTSECRET

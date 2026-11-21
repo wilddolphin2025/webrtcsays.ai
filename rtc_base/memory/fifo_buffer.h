@@ -14,15 +14,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 
-#include "api/array_view.h"
 #include "api/sequence_checker.h"
 #include "api/task_queue/pending_task_safety_flag.h"
+#include "api/task_queue/task_queue_base.h"
 #include "rtc_base/stream.h"
-#include "rtc_base/thread.h"
 #include "rtc_base/thread_annotations.h"
 
-namespace rtc {
+namespace webrtc {
 
 // FifoBuffer allows for efficient, thread-safe buffering of data between
 // writer and reader.
@@ -31,7 +31,7 @@ class FifoBuffer final : public StreamInterface {
   // Creates a FIFO buffer with the specified capacity.
   explicit FifoBuffer(size_t length);
   // Creates a FIFO buffer with the specified capacity and owner
-  FifoBuffer(size_t length, Thread* owner);
+  FifoBuffer(size_t length, TaskQueueBase* owner);
   ~FifoBuffer() override;
 
   FifoBuffer(const FifoBuffer&) = delete;
@@ -42,10 +42,10 @@ class FifoBuffer final : public StreamInterface {
 
   // StreamInterface methods
   StreamState GetState() const override;
-  StreamResult Read(rtc::ArrayView<uint8_t> buffer,
+  StreamResult Read(std::span<uint8_t> buffer,
                     size_t& bytes_read,
                     int& error) override;
-  StreamResult Write(rtc::ArrayView<const uint8_t> buffer,
+  StreamResult Write(std::span<const uint8_t> buffer,
                      size_t& bytes_written,
                      int& error) override;
   void Close() override;
@@ -84,11 +84,10 @@ class FifoBuffer final : public StreamInterface {
  private:
   void PostEvent(int events, int err) {
     RTC_DCHECK_RUN_ON(owner_);
-    owner_->PostTask(
-        webrtc::SafeTask(task_safety_.flag(), [this, events, err]() {
-          RTC_DCHECK_RUN_ON(&callback_sequence_);
-          FireEvent(events, err);
-        }));
+    owner_->PostTask(SafeTask(task_safety_.flag(), [this, events, err]() {
+      RTC_DCHECK_RUN_ON(&callback_sequence_);
+      FireEvent(events, err);
+    }));
   }
 
   // Helper method that implements Read. Caller must acquire a lock
@@ -103,7 +102,7 @@ class FifoBuffer final : public StreamInterface {
                            size_t* bytes_written)
       RTC_EXCLUSIVE_LOCKS_REQUIRED(callback_sequence_);
 
-  webrtc::ScopedTaskSafety task_safety_;
+  ScopedTaskSafety task_safety_;
 
   // keeps the opened/closed state of the stream
   StreamState state_ RTC_GUARDED_BY(callback_sequence_);
@@ -116,9 +115,10 @@ class FifoBuffer final : public StreamInterface {
   // offset to the readable data
   size_t read_position_ RTC_GUARDED_BY(callback_sequence_);
   // stream callbacks are dispatched on this thread
-  Thread* const owner_;
+  TaskQueueBase* const owner_;
 };
 
-}  // namespace rtc
+}  //  namespace webrtc
+
 
 #endif  // RTC_BASE_MEMORY_FIFO_BUFFER_H_

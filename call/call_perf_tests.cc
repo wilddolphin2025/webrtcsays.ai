@@ -16,13 +16,14 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "absl/base/nullability.h"
 #include "absl/flags/flag.h"
 #include "absl/strings/string_view.h"
-#include "api/array_view.h"
 #include "api/audio/audio_device.h"
 #include "api/audio/builtin_audio_processing_builder.h"
 #include "api/audio_codecs/builtin_audio_encoder_factory.h"
@@ -30,6 +31,7 @@
 #include "api/field_trials_view.h"
 #include "api/make_ref_counted.h"
 #include "api/numerics/samples_stats_counter.h"
+#include "api/rtp_header_extension_id.h"
 #include "api/rtp_parameters.h"
 #include "api/scoped_refptr.h"
 #include "api/task_queue/pending_task_safety_flag.h"
@@ -74,13 +76,11 @@
 #include "test/drifting_clock.h"
 #include "test/encoder_settings.h"
 #include "test/fake_encoder.h"
-#include "test/field_trial.h"
 #include "test/frame_generator_capturer.h"
 #include "test/gtest.h"
 #include "test/network/simulated_network.h"
 #include "test/rtp_rtcp_observer.h"
 #include "test/test_flags.h"
-#include "test/testsupport/file_utils.h"
 #include "test/video_encoder_proxy_factory.h"
 #include "test/video_test_constants.h"
 #include "video/config/video_encoder_config.h"
@@ -90,15 +90,11 @@ using webrtc::test::DriftingClock;
 namespace webrtc {
 namespace {
 
-using ::webrtc::test::GetGlobalMetricsLogger;
-using ::webrtc::test::ImprovementDirection;
-using ::webrtc::test::Unit;
+using test::GetGlobalMetricsLogger;
+using test::ImprovementDirection;
+using test::Unit;
 
-enum : int {  // The first valid value is 1.
-  kTransportSequenceNumberExtensionId = 1,
-};
-
-}  // namespace
+constexpr RtpHeaderExtensionId kTransportSequenceNumberExtensionId(1);
 
 class CallPerfTest : public test::CallTest {
  public:
@@ -135,7 +131,7 @@ class CallPerfTest : public test::CallTest {
 };
 
 class VideoRtcpAndSyncObserver : public test::RtpRtcpObserver,
-                                 public rtc::VideoSinkInterface<VideoFrame> {
+                                 public VideoSinkInterface<VideoFrame> {
   static const int kInSyncThresholdMs = 50;
   static const int kStartupTimeMs = 2000;
   static const int kMinRunTimeMs = 30000;
@@ -155,22 +151,31 @@ class VideoRtcpAndSyncObserver : public test::RtpRtcpObserver,
   }
 
   void CheckStats() {
-    if (!receive_stream_)
+    if (video_receive_stream_ == nullptr || audio_receive_stream_ == nullptr)
       return;
 
-    VideoReceiveStreamInterface::Stats stats = receive_stream_->GetStats();
-    if (stats.sync_offset_ms == std::numeric_limits<int>::max())
+    const VideoReceiveStreamInterface::Stats video_stats =
+        video_receive_stream_->GetStats();
+    if (video_stats.sync_offset_ms == std::numeric_limits<int>::max())
       return;
 
-    int64_t now_ms = clock_->TimeInMilliseconds();
-    int64_t time_since_creation = now_ms - creation_time_ms_;
+    const AudioReceiveStreamInterface::Stats audio_stats =
+        audio_receive_stream_->GetStats(
+            /*get_and_clear_legacy_stats=*/false);
+    // Do not consider the streams synchronized until audio packets have been
+    // received and decoded.
+    if (audio_stats.packets_received == 0 || audio_stats.decoding_normal == 0)
+      return;
+
+    Timestamp now = clock_->CurrentTime();
+    int64_t time_since_creation = now.ms() - creation_time_ms_;
     // During the first couple of seconds audio and video can falsely be
     // estimated as being synchronized. We don't want to trigger on those.
     if (time_since_creation < kStartupTimeMs)
       return;
-    if (std::abs(stats.sync_offset_ms) < kInSyncThresholdMs) {
+    if (std::abs(video_stats.sync_offset_ms) < kInSyncThresholdMs) {
       if (first_time_in_sync_ == -1) {
-        first_time_in_sync_ = now_ms;
+        first_time_in_sync_ = now.ms();
         GetGlobalMetricsLogger()->LogSingleValueMetric(
             "sync_convergence_time" + test_label_, "synchronization",
             time_since_creation, Unit::kMilliseconds,
@@ -180,13 +185,17 @@ class VideoRtcpAndSyncObserver : public test::RtpRtcpObserver,
         observation_complete_.Set();
     }
     if (first_time_in_sync_ != -1)
-      sync_offset_ms_list_.AddSample(stats.sync_offset_ms);
+      sync_offset_ms_list_.AddSample(
+          {.value = static_cast<double>(video_stats.sync_offset_ms),
+           .time = now});
   }
 
-  void set_receive_stream(VideoReceiveStreamInterface* receive_stream) {
+  void set_receive_streams(
+      VideoReceiveStreamInterface* absl_nullable video_receive_stream,
+      AudioReceiveStreamInterface* absl_nullable audio_receive_stream) {
     RTC_DCHECK_EQ(task_queue_, TaskQueueBase::Current());
-    // Note that receive_stream may be nullptr.
-    receive_stream_ = receive_stream;
+    video_receive_stream_ = video_receive_stream;
+    audio_receive_stream_ = audio_receive_stream;
   }
 
   void PrintResults() {
@@ -200,7 +209,8 @@ class VideoRtcpAndSyncObserver : public test::RtpRtcpObserver,
   const std::string test_label_;
   const int64_t creation_time_ms_;
   int64_t first_time_in_sync_ = -1;
-  VideoReceiveStreamInterface* receive_stream_ = nullptr;
+  VideoReceiveStreamInterface* absl_nullable video_receive_stream_ = nullptr;
+  AudioReceiveStreamInterface* absl_nullable audio_receive_stream_ = nullptr;
   SamplesStatsCounter sync_offset_ms_list_;
   TaskQueueBase* const task_queue_;
 };
@@ -213,7 +223,6 @@ void CallPerfTest::TestAudioVideoSync(FecMode fec,
                                       absl::string_view test_label) {
   const char* kSyncGroup = "av_sync";
   const uint32_t kAudioSendSsrc = 1234;
-  const uint32_t kAudioRecvSsrc = 5678;
 
   BuiltInNetworkBehaviorConfig audio_net_config;
   audio_net_config.queue_delay_ms = 500;
@@ -235,10 +244,9 @@ void CallPerfTest::TestAudioVideoSync(FecMode fec,
 
   SendTask(task_queue(), [&]() {
     metrics::Reset();
-    rtc::scoped_refptr<AudioDeviceModule> fake_audio_device =
+    scoped_refptr<AudioDeviceModule> fake_audio_device =
         TestAudioDeviceModule::Create(
-            &env().task_queue_factory(),
-            TestAudioDeviceModule::CreatePulsedNoiseCapturer(256, 48000),
+            env(), TestAudioDeviceModule::CreatePulsedNoiseCapturer(256, 48000),
             TestAudioDeviceModule::CreateDiscardRenderer(48000),
             audio_rtp_speed);
     EXPECT_EQ(0, fake_audio_device->Init());
@@ -269,7 +277,7 @@ void CallPerfTest::TestAudioVideoSync(FecMode fec,
                  });
 
     audio_send_transport = std::make_unique<test::PacketTransport>(
-        task_queue(), sender_call_.get(), observer.get(),
+        send_env_, network_thread(), sender_call_.get(), observer.get(),
         test::PacketTransport::kSender, audio_pt_map,
         std::make_unique<FakeNetworkPipe>(
             Clock::GetRealTimeClock(),
@@ -278,7 +286,7 @@ void CallPerfTest::TestAudioVideoSync(FecMode fec,
     audio_send_transport->SetReceiver(receiver_call_->Receiver());
 
     video_send_transport = std::make_unique<test::PacketTransport>(
-        task_queue(), sender_call_.get(), observer.get(),
+        send_env_, network_thread(), sender_call_.get(), observer.get(),
         test::PacketTransport::kSender, video_pt_map,
         std::make_unique<FakeNetworkPipe>(
             Clock::GetRealTimeClock(),
@@ -287,7 +295,7 @@ void CallPerfTest::TestAudioVideoSync(FecMode fec,
     video_send_transport->SetReceiver(receiver_call_->Receiver());
 
     receive_transport = std::make_unique<test::PacketTransport>(
-        task_queue(), receiver_call_.get(), observer.get(),
+        recv_env_, network_thread(), receiver_call_.get(), observer.get(),
         test::PacketTransport::kReceiver, payload_type_map_,
         std::make_unique<FakeNetworkPipe>(
             Clock::GetRealTimeClock(),
@@ -300,7 +308,6 @@ void CallPerfTest::TestAudioVideoSync(FecMode fec,
 
     AudioSendStream::Config audio_send_config(audio_send_transport.get());
     audio_send_config.rtp.ssrc = kAudioSendSsrc;
-    // TODO(bugs.webrtc.org/14683): Let the tests fail with invalid config.
     audio_send_config.send_codec_spec = AudioSendStream::Config::SendCodecSpec(
         test::VideoTestConstants::kAudioSendPayloadType, {"OPUS", 48000, 2});
     audio_send_config.min_bitrate_bps = 6000;
@@ -326,7 +333,6 @@ void CallPerfTest::TestAudioVideoSync(FecMode fec,
 
     AudioReceiveStreamInterface::Config audio_recv_config;
     audio_recv_config.rtp.remote_ssrc = kAudioSendSsrc;
-    audio_recv_config.rtp.local_ssrc = kAudioRecvSsrc;
     audio_recv_config.rtcp_send_transport = receive_transport.get();
     audio_recv_config.sync_group = kSyncGroup;
     audio_recv_config.decoder_factory = audio_decoder_factory_;
@@ -334,16 +340,17 @@ void CallPerfTest::TestAudioVideoSync(FecMode fec,
         {test::VideoTestConstants::kAudioSendPayloadType, {"OPUS", 48000, 2}}};
 
     if (create_first == CreateOrder::kAudioFirst) {
-      audio_receive_stream =
-          receiver_call_->CreateAudioReceiveStream(audio_recv_config);
+      audio_receive_stream = receiver_call_->CreateAudioReceiveStream(
+          std::move(audio_recv_config));
       CreateVideoStreams();
     } else {
       CreateVideoStreams();
-      audio_receive_stream =
-          receiver_call_->CreateAudioReceiveStream(audio_recv_config);
+      audio_receive_stream = receiver_call_->CreateAudioReceiveStream(
+          std::move(audio_recv_config));
     }
     EXPECT_EQ(1u, video_receive_streams_.size());
-    observer->set_receive_stream(video_receive_streams_[0]);
+    observer->set_receive_streams(video_receive_streams_[0],
+                                  audio_receive_stream);
     drifting_clock =
         std::make_unique<DriftingClock>(&env().clock(), video_ntp_speed);
     CreateFrameGeneratorCapturerWithDrift(
@@ -362,8 +369,8 @@ void CallPerfTest::TestAudioVideoSync(FecMode fec,
       << "Timed out while waiting for audio and video to be synchronized.";
 
   SendTask(task_queue(), [&]() {
-    // Clear the pointer to the receive stream since it will now be deleted.
-    observer->set_receive_stream(nullptr);
+    // Clear the pointers to the receive streams since they will now be deleted.
+    observer->set_receive_streams(nullptr, nullptr);
 
     audio_send_stream->Stop();
     audio_receive_stream->Stop();
@@ -432,8 +439,7 @@ TEST_F(CallPerfTest,
 TEST_F(CallPerfTest, ReceivesCpuOveruseAndUnderuse) {
   // Minimal normal usage at the start, then 30s overuse to allow filter to
   // settle, and then 80s underuse to allow plenty of time for rampup again.
-  test::ScopedFieldTrials fake_overuse_settings(
-      "WebRTC-ForceSimulatedOveruseIntervalMs/1-30000-80000/");
+  field_trials().Set("WebRTC-ForceSimulatedOveruseIntervalMs", "1-30000-80000");
 
   class LoadObserver : public test::SendTest,
                        public test::FrameGeneratorCapturer::SinkWantsObserver {
@@ -452,8 +458,8 @@ TEST_F(CallPerfTest, ReceivesCpuOveruseAndUnderuse) {
     // OnSinkWantsChanged is called when FrameGeneratorCapturer::AddOrUpdateSink
     // is called.
     // TODO(sprang): Add integration test for maintain-framerate mode?
-    void OnSinkWantsChanged(rtc::VideoSinkInterface<VideoFrame>* /* sink */,
-                            const rtc::VideoSinkWants& wants) override {
+    void OnSinkWantsChanged(VideoSinkInterface<VideoFrame>* /* sink */,
+                            const VideoSinkWants& wants) override {
       RTC_LOG(LS_INFO) << "OnSinkWantsChanged fps:" << wants.max_framerate_fps
                        << " max_pixel_count " << wants.max_pixel_count
                        << " target_pixel_count"
@@ -534,7 +540,7 @@ TEST_F(CallPerfTest, ReceivesCpuOveruseAndUnderuse) {
     } test_phase_;
 
    private:
-    rtc::VideoSinkWants last_wants_;
+    VideoSinkWants last_wants_;
   } test;
 
   RunBaseTest(&test);
@@ -549,9 +555,11 @@ void CallPerfTest::TestMinTransmitBitrate(bool pad_to_min_bitrate) {
   static const int kAcceptableBitrateErrorMargin = 15;  // +- 7
   class BitrateObserver : public test::EndToEndTest {
    public:
-    explicit BitrateObserver(bool using_min_transmit_bitrate,
+    explicit BitrateObserver(const Environment& env,
+                             bool using_min_transmit_bitrate,
                              TaskQueueBase* task_queue)
         : EndToEndTest(test::VideoTestConstants::kLongTimeout),
+          env_(env),
           send_stream_(nullptr),
           converged_(false),
           pad_to_min_bitrate_(using_min_transmit_bitrate),
@@ -569,7 +577,7 @@ void CallPerfTest::TestMinTransmitBitrate(bool pad_to_min_bitrate) {
 
    private:
     // TODO(holmer): Run this with a timer instead of once per packet.
-    Action OnSendRtp(rtc::ArrayView<const uint8_t> /* packet */) override {
+    Action OnSendRtp(std::span<const uint8_t> /* packet */) override {
       task_queue_->PostTask(SafeTask(task_safety_flag_, [this]() {
         VideoSendStream::Stats stats = send_stream_->GetStats();
 
@@ -586,7 +594,9 @@ void CallPerfTest::TestMinTransmitBitrate(bool pad_to_min_bitrate) {
               observation_complete_.Set();
           }
           if (converged_)
-            bitrate_kbps_list_.AddSample(bitrate_kbps);
+            bitrate_kbps_list_.AddSample(
+                {.value = static_cast<double>(bitrate_kbps),
+                 .time = env_.clock().CurrentTime()});
         }
       }));
       return SEND_PACKET;
@@ -621,6 +631,7 @@ void CallPerfTest::TestMinTransmitBitrate(bool pad_to_min_bitrate) {
           ImprovementDirection::kNeitherIsBetter);
     }
 
+    Environment env_;
     VideoSendStream* send_stream_;
     bool converged_;
     const bool pad_to_min_bitrate_;
@@ -629,8 +640,8 @@ void CallPerfTest::TestMinTransmitBitrate(bool pad_to_min_bitrate) {
     int num_bitrate_observations_in_range_;
     SamplesStatsCounter bitrate_kbps_list_;
     TaskQueueBase* task_queue_;
-    rtc::scoped_refptr<PendingTaskSafetyFlag> task_safety_flag_;
-  } test(pad_to_min_bitrate, task_queue());
+    scoped_refptr<PendingTaskSafetyFlag> task_safety_flag_;
+  } test(env(), pad_to_min_bitrate, task_queue());
 
   fake_encoder_max_bitrate_ = kMaxEncodeBitrateKbps;
   RunBaseTest(&test);
@@ -667,7 +678,7 @@ TEST_F(CallPerfTest, MAYBE_KeepsHighBitrateWhenReconfiguringSender) {
         const FieldTrialsView& /*field_trials*/,
         int frame_width,
         int frame_height,
-        const webrtc::VideoEncoderConfig& encoder_config) override {
+        const VideoEncoderConfig& encoder_config) override {
       std::vector<VideoStream> streams =
           test::CreateVideoStreams(frame_width, frame_height, encoder_config);
       streams[0].min_bitrate_bps = 50000;
@@ -739,7 +750,7 @@ TEST_F(CallPerfTest, MAYBE_KeepsHighBitrateWhenReconfiguringSender) {
           bitrate_allocator_factory_.get();
       encoder_config->max_bitrate_bps = 2 * kReconfigureThresholdKbps * 1000;
       encoder_config->video_stream_factory =
-          rtc::make_ref_counted<VideoStreamFactory>();
+          make_ref_counted<VideoStreamFactory>();
 
       encoder_config_ = encoder_config->Copy();
     }
@@ -771,7 +782,7 @@ TEST_F(CallPerfTest, MAYBE_KeepsHighBitrateWhenReconfiguringSender) {
     }
 
    private:
-    rtc::Event time_to_reconfigure_;
+    Event time_to_reconfigure_;
     int encoder_inits_;
     uint32_t last_set_bitrate_kbps_;
     VideoSendStream* send_stream_;
@@ -863,8 +874,8 @@ void CallPerfTest::TestMinAudioVideoBitrate(int test_bitrate_from,
         send_simulated_network_->SetConfig(pipe_config);
         receive_simulated_network_->SetConfig(pipe_config);
 
-        rtc::Thread::SleepMs(quick_perf_test ? kShortDelayMs
-                                             : kBitrateStabilizationMs);
+        Thread::SleepMs(quick_perf_test ? kShortDelayMs
+                                        : kBitrateStabilizationMs);
 
         int64_t avg_rtt = 0;
         for (int i = 0; i < kBitrateMeasurements; i++) {
@@ -873,8 +884,8 @@ void CallPerfTest::TestMinAudioVideoBitrate(int test_bitrate_from,
             call_stats = sender_call_->GetStats();
           });
           avg_rtt += call_stats.rtt_ms;
-          rtc::Thread::SleepMs(quick_perf_test ? kShortDelayMs
-                                               : kBitrateMeasurementMs);
+          Thread::SleepMs(quick_perf_test ? kShortDelayMs
+                                          : kBitrateMeasurementMs);
         }
         avg_rtt = avg_rtt / kBitrateMeasurements;
         if (avg_rtt > kMinGoodRttMs) {
@@ -960,8 +971,8 @@ void CallPerfTest::TestEncodeFramerate(VideoEncoderFactory* encoder_factory,
       frame_generator_capturer->ChangeResolution(640, 360);
     }
 
-    void OnSinkWantsChanged(rtc::VideoSinkInterface<VideoFrame>* /* sink */,
-                            const rtc::VideoSinkWants& /* wants */) override {}
+    void OnSinkWantsChanged(VideoSinkInterface<VideoFrame>* /* sink */,
+                            const VideoSinkWants& /* wants */) override {}
 
     void ModifySenderBitrateConfig(
         BitrateConstraints* bitrate_config) override {
@@ -1021,7 +1032,7 @@ void CallPerfTest::TestEncodeFramerate(VideoEncoderFactory* encoder_factory,
       }
     }
 
-    Action OnSendRtp(rtc::ArrayView<const uint8_t> /* packet */) override {
+    Action OnSendRtp(std::span<const uint8_t> /* packet */) override {
       const Timestamp now = clock_->CurrentTime();
       if (now - last_getstats_time_ > kMinGetStatsInterval) {
         last_getstats_time_ = now;
@@ -1029,7 +1040,7 @@ void CallPerfTest::TestEncodeFramerate(VideoEncoderFactory* encoder_factory,
           VideoSendStream::Stats stats = send_stream_->GetStats();
           for (const auto& stat : stats.substreams) {
             encode_frame_rate_lists_[stat.first].AddSample(
-                stat.second.encode_frame_rate);
+                {.value = stat.second.encode_frame_rate, .time = now});
           }
           if (now - start_time_ > kMinRunTime) {
             VerifyStats();
@@ -1081,4 +1092,5 @@ TEST_F(CallPerfTest, TestEncodeFramerateVp8SimulcastLowerInputFps) {
                       /*max_framerates=*/{14, 20});
 }
 
+}  // namespace
 }  // namespace webrtc

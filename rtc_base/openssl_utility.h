@@ -13,11 +13,11 @@
 
 #include <openssl/ossl_typ.h>
 
-#include <string>
+#include <cstdint>
 
 #include "absl/strings/string_view.h"
 
-namespace rtc {
+namespace webrtc {
 // The openssl namespace holds static helper methods. All methods related
 // to OpenSSL that are commonly used and don't require global state should be
 // placed here.
@@ -43,6 +43,10 @@ bool VerifyPeerCertMatchesHost(SSL* ssl, absl::string_view host);
 // prefix can be provided for context.
 void LogSSLErrors(absl::string_view prefix);
 
+// Logs a human-readable description of the SSL connection's handshake state
+// and any alerts. Intended to be installed via SSL_CTX_set_info_callback().
+void SSLInfoCallback(const SSL* ssl, int where, int ret);
+
 #ifndef WEBRTC_EXCLUDE_BUILT_IN_SSL_ROOT_CERTS
 // Attempt to add the certificates from the loader into the SSL_CTX. False is
 // returned only if there are no certificates returned from the loader or none
@@ -55,6 +59,7 @@ CRYPTO_BUFFER_POOL* GetBufferPool();
 #endif
 
 }  // namespace openssl
-}  // namespace rtc
+}  // namespace webrtc
+
 
 #endif  // RTC_BASE_OPENSSL_UTILITY_H_

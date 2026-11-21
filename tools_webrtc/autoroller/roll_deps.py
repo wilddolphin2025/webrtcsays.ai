@@ -18,6 +18,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 
 
@@ -29,7 +31,8 @@ def FindRootPath():
     webrtc/src repo root.
     """
     root_dir = os.path.dirname(os.path.abspath(__file__))
-    while os.path.basename(root_dir) not in ('src', 'chromium'):
+    while not (os.path.exists(os.path.join(root_dir, 'DEPS'))
+               and os.path.exists(os.path.join(root_dir, '.git'))):
         par_dir = os.path.normpath(os.path.join(root_dir, os.pardir))
         if par_dir == root_dir:
             raise RuntimeError('Could not find the repo root.')
@@ -41,8 +44,6 @@ def FindRootPath():
 # Skip these dependencies (list without solution name prefix).
 DONT_AUTOROLL_THESE = [
     'src/examples/androidtests/third_party/gradle',
-    # Disable the roll of 'android_ndk' as it won't appear in chromium DEPS.
-    'src/third_party/android_ndk',
     'src/third_party/mockito/src',
     'src/third_party/protobuf-javascript',
 ]
@@ -58,10 +59,9 @@ WEBRTC_ONLY_DEPS = [
     'src/ios',
     'src/testing',
     'src/third_party',
-    'src/third_party/clang_format/script',
+    'src/third_party/grpc/src',
     'src/third_party/gtest-parallel',
-    'src/third_party/kotlin_stdlib',
-    'src/third_party/pipewire/linux-amd64',
+    'src/third_party/wireplumber/linux-amd64',
     'src/tools',
 ]
 
@@ -87,14 +87,18 @@ ANDROID_DEPS_PATH = 'src/third_party/android_deps/'
 
 NOTIFY_EMAIL = 'webrtc-trooper@grotations.appspotmail.com'
 
+GCS_OBJECTS_ERROR = (
+    'The number of objects in %s is different between '
+    'Chromium\'s DEPS and WebRTC\'s DEPS. They must be the same.\n'
+    'Old: %s\nNew: %s\n'
+    'Manually update the DEPS file and add appropriate conditions for any new '
+    'objects. Note that the order of objects matter and must be the same as in '
+    'Chromium.')
+
 sys.path.append(os.path.join(CHECKOUT_ROOT_DIR, 'build'))
 import find_depot_tools
 
 find_depot_tools.add_depot_tools_to_path()
-
-CLANG_UPDATE_SCRIPT_URL_PATH = 'tools/clang/scripts/update.py'
-CLANG_UPDATE_SCRIPT_LOCAL_PATH = os.path.join(CHECKOUT_ROOT_DIR, 'tools',
-                                              'clang', 'scripts', 'update.py')
 
 DepsEntry = collections.namedtuple('DepsEntry', 'path url revision')
 ChangedDep = collections.namedtuple('ChangedDep',
@@ -106,6 +110,8 @@ ChangedCipdPackage = collections.namedtuple(
     'ChangedCipdPackage', 'path package current_version new_version')
 ChangedVersionEntry = collections.namedtuple(
     'ChangedVersionEntry', 'path current_version new_version')
+ChangedGcsPackage = collections.namedtuple(
+    'ChangedGcsPackage', 'path setdep_arg current_version new_version')
 
 ChromiumRevisionUpdate = collections.namedtuple('ChromiumRevisionUpdate',
                                                 ('current_chromium_rev '
@@ -241,22 +247,28 @@ def ReadRemoteCrCommit(revision):
     return _ReadGitilesContent(CHROMIUM_COMMIT_TEMPLATE % revision)
 
 
-def ReadUrlContent(url):
-    """Connect to a remote host and read the contents.
+def ReadUrlContent(url, retry_limit=3, retry_delay_seconds=5):
+    """Connect to a remote host and read the contents with retries.
 
     Args:
       url: URL to connect to.
+      retry_limit: Number of retry attempts.
+      retry_delay_seconds: Delay between retries in seconds.
     Returns:
       A list of lines.
     """
-    conn = urllib.request.urlopen(url)
-    try:
-        return conn.readlines()
-    except IOError as e:
-        logging.exception('Error connecting to %s. Error: %s', url, e)
-        raise
-    finally:
-        conn.close()
+    for _ in range(retry_limit):
+        conn = None
+        try:
+            conn = urllib.request.urlopen(url)
+            return conn.readlines()
+        except (urllib.error.URLError, IOError) as e:
+            logging.warning('Error connecting to %s: %s.', url, e)
+            time.sleep(retry_delay_seconds)
+        finally:
+            if conn:
+                conn.close()
+    raise RollError('Failed to read %s after %d retries.' % (url, retry_limit))
 
 
 def GetMatchingDepsEntries(depsentry_dict, dir_path):
@@ -320,6 +332,25 @@ def BuildDepsentryDict(deps_dict):
         AddDepsEntries(deps_dict.get('deps_os', {}).get(deps_os, {}))
     AddVersionEntry(deps_dict.get('vars', {}))
     return result
+
+
+def _FindChangedGcsPackage(path, old_pkg, new_pkg):
+    old_object_names = [x['object_name'] for x in old_pkg.objects]
+    new_object_names = [x['object_name'] for x in new_pkg.objects]
+    assert len(old_pkg.objects) == len(
+        new_pkg.objects), (GCS_OBJECTS_ERROR %
+                           (path, old_object_names, new_object_names))
+    if old_object_names != new_object_names:
+        objects = [
+            ','.join([
+                o['object_name'], o['sha256sum'],
+                str(o['size_bytes']),
+                str(o['generation'])
+            ]) for o in new_pkg.objects
+        ]
+        setdep_arg = '%s@%s' % (path, '?'.join(objects))
+        yield ChangedGcsPackage(path, setdep_arg, ','.join(old_object_names),
+                                ','.join(new_object_names))
 
 
 def _FindChangedCipdPackages(path, old_pkgs, new_pkgs):
@@ -463,11 +494,8 @@ def CalculateChangedDeps(webrtc_deps, new_cr_deps):
 
             if isinstance(cr_deps_entry, GcsDepsEntry):
                 result.extend(
-                    _FindChangedVars(
-                        path, ','.join(x['object_name']
-                                       for x in webrtc_deps_entry.objects),
-                        ','.join(x['object_name']
-                                 for x in cr_deps_entry.objects)))
+                    _FindChangedGcsPackage(path, webrtc_deps_entry,
+                                           cr_deps_entry))
                 continue
 
             if isinstance(cr_deps_entry, VersionEntry):
@@ -501,26 +529,6 @@ def CalculateChangedDeps(webrtc_deps, new_cr_deps):
     return sorted(result)
 
 
-def CalculateChangedClang(new_cr_rev):
-
-    def GetClangRev(lines):
-        for line in lines:
-            match = CLANG_REVISION_RE.match(line)
-            if match:
-                return match.group(1)
-        raise RollError('Could not parse Clang revision!')
-
-    with open(CLANG_UPDATE_SCRIPT_LOCAL_PATH, 'r') as f:
-        current_lines = f.readlines()
-    current_rev = GetClangRev(current_lines)
-
-    new_clang_update_py = ReadRemoteCrFile(CLANG_UPDATE_SCRIPT_URL_PATH,
-                                           new_cr_rev).splitlines()
-    new_rev = GetClangRev(new_clang_update_py)
-    return ChangedDep(CLANG_UPDATE_SCRIPT_LOCAL_PATH, None, current_rev,
-                      new_rev)
-
-
 def GenerateCommitMessage(
         rev_update,
         current_commit_pos,
@@ -528,7 +536,6 @@ def GenerateCommitMessage(
         changed_deps_list,
         added_deps_paths=None,
         removed_deps_paths=None,
-        clang_change=None,
 ):
     current_cr_rev = rev_update.current_chromium_rev[0:10]
     new_cr_rev = rev_update.new_chromium_rev[0:10]
@@ -553,6 +560,9 @@ def GenerateCommitMessage(
             if isinstance(c, ChangedCipdPackage):
                 commit_msg.append('* %s: %s..%s' %
                                   (c.path, c.current_version, c.new_version))
+            elif isinstance(c, ChangedGcsPackage):
+                commit_msg.append('* %s: %s..%s' %
+                                  (c.path, c.current_version, c.new_version))
             elif isinstance(c, ChangedVersionEntry):
                 commit_msg.append('* %s_version: %s..%s' %
                                   (c.path, c.current_version, c.new_version))
@@ -574,15 +584,6 @@ def GenerateCommitMessage(
         commit_msg.append('DEPS diff: %s\n' % change_url)
     else:
         commit_msg.append('No dependencies changed.')
-
-    if clang_change and clang_change.current_rev != clang_change.new_rev:
-        commit_msg.append('Clang version changed %s:%s' %
-                          (clang_change.current_rev, clang_change.new_rev))
-        change_url = CHROMIUM_FILE_TEMPLATE % (rev_interval,
-                                               CLANG_UPDATE_SCRIPT_URL_PATH)
-        commit_msg.append('Details: %s\n' % change_url)
-    else:
-        commit_msg.append('No update to Clang.\n')
 
     commit_msg.append('BUG=None')
     return '\n'.join(commit_msg)
@@ -637,6 +638,8 @@ def UpdateDepsFile(deps_filename, rev_update, changed_deps, new_cr_content):
         if isinstance(dep, ChangedCipdPackage):
             package = dep.package.format()  # Eliminate double curly brackets
             update = '%s:%s@%s' % (dep.path, package, dep.new_version)
+        elif isinstance(dep, ChangedGcsPackage):
+            update = dep.setdep_arg
         else:
             update = '%s@%s' % (dep.path, dep.new_rev)
         _RunCommand(['gclient', 'setdep', '--revision', update],
@@ -830,15 +833,13 @@ def main():
                         'Remove them or add them to either '
                         'WEBRTC_ONLY_DEPS or DONT_AUTOROLL_THESE.' %
                         other_deps)
-    clang_change = CalculateChangedClang(rev_update.new_chromium_rev)
     commit_msg = GenerateCommitMessage(
         rev_update,
         current_commit_pos,
         new_commit_pos,
         changed_deps,
         added_deps_paths=new_generated_android_deps,
-        removed_deps_paths=removed_generated_android_deps,
-        clang_change=clang_change)
+        removed_deps_paths=removed_generated_android_deps)
     logging.debug('Commit message:\n%s', commit_msg)
 
     _CreateRollBranch(opts.dry_run)

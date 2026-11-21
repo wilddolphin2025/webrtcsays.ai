@@ -61,7 +61,7 @@ class RTC_EXPORT RTCStats {
   virtual std::unique_ptr<RTCStats> copy() const = 0;
 
   const std::string& id() const { return id_; }
-  // Time relative to the UNIX epoch (Jan 1, 1970, UTC), in microseconds.
+  // Timestamp based on the Environment clock()'s monotonic timeline.
   Timestamp timestamp() const { return timestamp_; }
   void set_timestamp(Timestamp timestamp) { timestamp_ = timestamp; }
 
@@ -76,7 +76,7 @@ class RTC_EXPORT RTCStats {
       if (!attribute.holds_alternative<T>()) {
         continue;
       }
-      if (absl::get<const std::optional<T>*>(attribute.as_variant()) == &stat) {
+      if (std::get<const std::optional<T>*>(attribute.as_variant()) == &stat) {
         return attribute;
       }
     }
@@ -183,7 +183,7 @@ class RTC_EXPORT RTCStats {
     std::vector<webrtc::Attribute> attributes = parent_class::AttributesImpl( \
         attribute_inits_size + additional_capacity);                          \
     for (size_t i = 0; i < attribute_inits_size; ++i) {                       \
-      attributes.push_back(absl::visit(                                       \
+      attributes.push_back(std::visit(                                        \
           [&](const auto* field) {                                            \
             return Attribute(attribute_inits[i].name, field);                 \
           },                                                                  \

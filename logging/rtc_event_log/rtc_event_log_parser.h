@@ -19,7 +19,6 @@
 #include <type_traits>
 #include <vector>
 
-#include "absl/base/attributes.h"
 #include "absl/strings/string_view.h"
 #include "api/candidate.h"
 #include "api/dtls_transport_interface.h"
@@ -36,13 +35,11 @@
 #include "logging/rtc_event_log/events/rtc_event_begin_log.h"
 #include "logging/rtc_event_log/events/rtc_event_bwe_update_delay_based.h"
 #include "logging/rtc_event_log/events/rtc_event_bwe_update_loss_based.h"
+#include "logging/rtc_event_log/events/rtc_event_bwe_update_scream.h"
 #include "logging/rtc_event_log/events/rtc_event_dtls_transport_state.h"
 #include "logging/rtc_event_log/events/rtc_event_dtls_writable_state.h"
 #include "logging/rtc_event_log/events/rtc_event_end_log.h"
 #include "logging/rtc_event_log/events/rtc_event_frame_decoded.h"
-#include "logging/rtc_event_log/events/rtc_event_generic_ack_received.h"
-#include "logging/rtc_event_log/events/rtc_event_generic_packet_received.h"
-#include "logging/rtc_event_log/events/rtc_event_generic_packet_sent.h"
 #include "logging/rtc_event_log/events/rtc_event_ice_candidate_pair.h"
 #include "logging/rtc_event_log/events/rtc_event_ice_candidate_pair_config.h"
 #include "logging/rtc_event_log/events/rtc_event_log_parse_status.h"
@@ -366,8 +363,10 @@ class ParsedRtcEventLog {
    public:
     LogSegment(int64_t start_time_us, int64_t stop_time_us)
         : start_time_us_(start_time_us), stop_time_us_(stop_time_us) {}
+    Timestamp start_time() const { return Timestamp::Micros(start_time_us_); }
     int64_t start_time_ms() const { return start_time_us_ / 1000; }
     int64_t start_time_us() const { return start_time_us_; }
+    Timestamp stop_time() const { return Timestamp::Micros(stop_time_us_); }
     int64_t stop_time_ms() const { return stop_time_us_ / 1000; }
     int64_t stop_time_us() const { return stop_time_us_; }
 
@@ -383,9 +382,12 @@ class ParsedRtcEventLog {
           UnconfiguredHeaderExtensions::kDontParse,
       bool allow_incomplete_log = false);
 
+  ParsedRtcEventLog(const ParsedRtcEventLog&) = delete;
+  ParsedRtcEventLog& operator=(const ParsedRtcEventLog&) = delete;
+
   ~ParsedRtcEventLog();
 
-  // Clears previously parsed events and resets the ParsedRtcEventLogNew to an
+  // Clears previously parsed events and resets the ParsedRtcEventLog to an
   // empty state.
   void Clear();
 
@@ -493,6 +495,10 @@ class ParsedRtcEventLog {
 
   const std::vector<LoggedBweLossBasedUpdate>& bwe_loss_updates() const {
     return bwe_loss_updates_;
+  }
+
+  const std::vector<LoggedBweScreamUpdate>& bwe_scream_updates() const {
+    return bwe_scream_updates_;
   }
 
   // DTLS
@@ -650,18 +656,6 @@ class ParsedRtcEventLog {
     }
   }
 
-  const std::vector<LoggedGenericPacketReceived>& generic_packets_received()
-      const {
-    return generic_packets_received_;
-  }
-  const std::vector<LoggedGenericPacketSent>& generic_packets_sent() const {
-    return generic_packets_sent_;
-  }
-
-  const std::vector<LoggedGenericAckReceived>& generic_acks_received() const {
-    return generic_acks_received_;
-  }
-
   // Media
   const std::map<uint32_t, std::vector<LoggedFrameDecoded>>& decoded_frames()
       const {
@@ -686,11 +680,10 @@ class ParsedRtcEventLog {
   std::vector<InferredRouteChangeEvent> GetRouteChanges() const;
 
  private:
-  ABSL_MUST_USE_RESULT ParseStatus ParseStreamInternal(absl::string_view s);
-  ABSL_MUST_USE_RESULT ParseStatus ParseStreamInternalV3(absl::string_view s);
+  [[nodiscard]] ParseStatus ParseStreamInternal(absl::string_view s);
+  [[nodiscard]] ParseStatus ParseStreamInternalV3(absl::string_view s);
 
-  ABSL_MUST_USE_RESULT ParseStatus
-  StoreParsedLegacyEvent(const rtclog::Event& event);
+  [[nodiscard]] ParseStatus StoreParsedLegacyEvent(const rtclog::Event& event);
 
   template <typename T>
   void StoreFirstAndLastTimestamp(const std::vector<T>& v);
@@ -763,6 +756,7 @@ class ParsedRtcEventLog {
       const rtclog2::DelayBasedBweUpdates& proto);
   ParseStatus StoreBweLossBasedUpdate(
       const rtclog2::LossBasedBweUpdates& proto);
+  ParseStatus StoreBweScreamUpdate(const rtclog2::ScreamBweUpdates& proto);
   ParseStatus StoreBweProbeClusterCreated(
       const rtclog2::BweProbeCluster& proto);
   ParseStatus StoreBweProbeFailureEvent(
@@ -774,12 +768,6 @@ class ParsedRtcEventLog {
   ParseStatus StoreDtlsWritableState(const rtclog2::DtlsWritableState& proto);
   ParsedRtcEventLog::ParseStatus StoreFrameDecodedEvents(
       const rtclog2::FrameDecodedEvents& proto);
-  ParseStatus StoreGenericAckReceivedEvent(
-      const rtclog2::GenericAckReceived& proto);
-  ParseStatus StoreGenericPacketReceivedEvent(
-      const rtclog2::GenericPacketReceived& proto);
-  ParseStatus StoreGenericPacketSentEvent(
-      const rtclog2::GenericPacketSent& proto);
   ParseStatus StoreIceCandidateEvent(
       const rtclog2::IceCandidatePairEvent& proto);
   ParseStatus StoreIceCandidatePairConfig(
@@ -902,6 +890,7 @@ class ParsedRtcEventLog {
 
   std::vector<LoggedBweDelayBasedUpdate> bwe_delay_updates_;
   std::vector<LoggedBweLossBasedUpdate> bwe_loss_updates_;
+  std::vector<LoggedBweScreamUpdate> bwe_scream_updates_;
 
   std::vector<LoggedDtlsTransportState> dtls_transport_states_;
   std::vector<LoggedDtlsWritableState> dtls_writable_states_;
@@ -915,10 +904,6 @@ class ParsedRtcEventLog {
   std::vector<LoggedAudioSendConfig> audio_send_configs_;
   std::vector<LoggedVideoRecvConfig> video_recv_configs_;
   std::vector<LoggedVideoSendConfig> video_send_configs_;
-
-  std::vector<LoggedGenericPacketReceived> generic_packets_received_;
-  std::vector<LoggedGenericPacketSent> generic_packets_sent_;
-  std::vector<LoggedGenericAckReceived> generic_acks_received_;
 
   std::vector<LoggedRouteChangeEvent> route_change_events_;
   std::vector<LoggedRemoteEstimateEvent> remote_estimate_events_;

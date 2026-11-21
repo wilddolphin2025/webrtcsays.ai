@@ -7,16 +7,19 @@
  *  in the file PATENTS.  All contributing project authors may
  *  be found in the AUTHORS file in the root of the source tree.
  */
+#include <cstddef>
+#include <optional>
+
 #include "net/dcsctp/packet/chunk/chunk.h"
 #include "net/dcsctp/packet/sctp_packet.h"
+#include "test/fuzzers/fuzz_data_helper.h"
 
 namespace webrtc {
 using dcsctp::SctpPacket;
 
-void FuzzOneInput(const uint8_t* data, size_t size) {
-  std::optional<SctpPacket> c =
-      SctpPacket::Parse(rtc::ArrayView<const uint8_t>(data, size),
-                        /*disable_checksum_verification=*/true);
+void FuzzOneInput(FuzzDataHelper fuzz_data) {
+  std::optional<SctpPacket> c = SctpPacket::Parse(
+      fuzz_data.ReadRemaining(), {.disable_checksum_verification = true});
 
   if (!c.has_value()) {
     return;

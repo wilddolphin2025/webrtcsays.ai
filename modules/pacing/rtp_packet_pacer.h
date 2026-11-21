@@ -12,10 +12,9 @@
 #define MODULES_PACING_RTP_PACKET_PACER_H_
 
 #include <optional>
-#include <vector>
+#include <span>
 
 #include "api/transport/network_types.h"
-#include "api/units/data_rate.h"
 #include "api/units/data_size.h"
 #include "api/units/time_delta.h"
 #include "api/units/timestamp.h"
@@ -27,7 +26,7 @@ class RtpPacketPacer {
   virtual ~RtpPacketPacer() = default;
 
   virtual void CreateProbeClusters(
-      std::vector<ProbeClusterConfig> probe_cluster_configs) = 0;
+      std::span<const ProbeClusterConfig> probe_cluster_configs) = 0;
 
   // Temporarily pause all sending.
   virtual void Pause() = 0;
@@ -38,7 +37,7 @@ class RtpPacketPacer {
   virtual void SetCongested(bool congested) = 0;
 
   // Sets the pacing rates. Must be called once before packets can be sent.
-  virtual void SetPacingRates(DataRate pacing_rate, DataRate padding_rate) = 0;
+  virtual void SetConfig(const PacerConfig& pacer_config) = 0;
 
   // Time since the oldest packet currently in the queue was added.
   virtual TimeDelta OldestPacketWaitTime() const = 0;

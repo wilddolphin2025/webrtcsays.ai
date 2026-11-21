@@ -7,14 +7,16 @@
  *  in the file PATENTS.  All contributing project authors may
  *  be found in the AUTHORS file in the root of the source tree.
  */
-#include "api/array_view.h"
+#include <cstddef>
+
 #include "modules/rtp_rtcp/source/rtp_video_header.h"
 #include "modules/rtp_rtcp/source/video_rtp_depacketizer_vp8.h"
+#include "test/fuzzers/fuzz_data_helper.h"
 
 namespace webrtc {
-void FuzzOneInput(const uint8_t* data, size_t size) {
+void FuzzOneInput(FuzzDataHelper fuzz_data) {
   RTPVideoHeader video_header;
-  VideoRtpDepacketizerVp8::ParseRtpPayload(rtc::MakeArrayView(data, size),
+  VideoRtpDepacketizerVp8::ParseRtpPayload(fuzz_data.ReadRemaining(),
                                            &video_header);
 }
 }  // namespace webrtc

@@ -13,8 +13,11 @@
 #include <atomic>
 #include <memory>
 #include <optional>
+#include <utility>
 
 #include "absl/functional/any_invocable.h"
+#include "absl/strings/string_view.h"
+#include "api/location.h"
 #include "api/task_queue/task_queue_base.h"
 #include "api/task_queue/test/mock_task_queue_base.h"
 #include "api/units/time_delta.h"
@@ -30,7 +33,6 @@
 namespace webrtc {
 namespace {
 using ::testing::AtLeast;
-using ::testing::Invoke;
 using ::testing::MockFunction;
 using ::testing::NiceMock;
 using ::testing::Return;
@@ -57,6 +59,7 @@ class FakeTaskQueue : public TaskQueueBase {
   explicit FakeTaskQueue(SimulatedClock* clock)
       : task_queue_setter_(this), clock_(clock) {}
 
+  absl::string_view queue_name() const override { return "Fake"; }
   void Delete() override {}
 
   void PostTaskImpl(absl::AnyInvocable<void() &&> task,
@@ -208,10 +211,10 @@ TEST(RepeatingTaskTest, CompensatesForShortRunTime) {
 }
 
 TEST(RepeatingTaskTest, CancelDelayedTaskBeforeItRuns) {
-  rtc::Event done;
+  Event done;
   MockClosure mock;
   EXPECT_CALL(mock, Call).Times(0);
-  EXPECT_CALL(mock, Delete).WillOnce(Invoke([&done] { done.Set(); }));
+  EXPECT_CALL(mock, Delete).WillOnce([&done] { done.Set(); });
   TaskQueueForTest task_queue("queue");
   auto handle = RepeatingTaskHandle::DelayedStart(
       task_queue.Get(), TimeDelta::Millis(100), MoveOnlyClosure(&mock));
@@ -221,10 +224,10 @@ TEST(RepeatingTaskTest, CancelDelayedTaskBeforeItRuns) {
 }
 
 TEST(RepeatingTaskTest, CancelTaskAfterItRuns) {
-  rtc::Event done;
+  Event done;
   MockClosure mock;
   EXPECT_CALL(mock, Call).WillOnce(Return(TimeDelta::Millis(100)));
-  EXPECT_CALL(mock, Delete).WillOnce(Invoke([&done] { done.Set(); }));
+  EXPECT_CALL(mock, Delete).WillOnce([&done] { done.Set(); });
   TaskQueueForTest task_queue("queue");
   auto handle =
       RepeatingTaskHandle::Start(task_queue.Get(), MoveOnlyClosure(&mock));
@@ -264,13 +267,13 @@ TEST(RepeatingTaskTest, TaskCanStopItselfByReturningInfinity) {
 
 TEST(RepeatingTaskTest, ZeroReturnValueRepostsTheTask) {
   NiceMock<MockClosure> closure;
-  rtc::Event done;
+  Event done;
   EXPECT_CALL(closure, Call())
       .WillOnce(Return(TimeDelta::Zero()))
-      .WillOnce(Invoke([&] {
+      .WillOnce([&] {
         done.Set();
         return TimeDelta::PlusInfinity();
-      }));
+      });
   TaskQueueForTest task_queue("queue");
   RepeatingTaskHandle::Start(task_queue.Get(), MoveOnlyClosure(&closure));
   EXPECT_TRUE(done.Wait(kTimeout));
@@ -278,14 +281,14 @@ TEST(RepeatingTaskTest, ZeroReturnValueRepostsTheTask) {
 
 TEST(RepeatingTaskTest, StartPeriodicTask) {
   MockFunction<TimeDelta()> closure;
-  rtc::Event done;
+  Event done;
   EXPECT_CALL(closure, Call())
       .WillOnce(Return(TimeDelta::Millis(20)))
       .WillOnce(Return(TimeDelta::Millis(20)))
-      .WillOnce(Invoke([&] {
+      .WillOnce([&] {
         done.Set();
         return TimeDelta::PlusInfinity();
-      }));
+      });
   TaskQueueForTest task_queue("queue");
   RepeatingTaskHandle::Start(task_queue.Get(), closure.AsStdFunction());
   EXPECT_TRUE(done.Wait(kTimeout));

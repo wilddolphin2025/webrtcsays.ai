@@ -8,10 +8,13 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <cstddef>
+
 #include "modules/video_coding/utility/vp9_uncompressed_header_parser.h"
+#include "test/fuzzers/fuzz_data_helper.h"
 
 namespace webrtc {
-void FuzzOneInput(const uint8_t* data, size_t size) {
-  ParseUncompressedVp9Header(rtc::MakeArrayView(data, size));
+void FuzzOneInput(FuzzDataHelper fuzz_data) {
+  ParseUncompressedVp9Header(fuzz_data.ReadRemaining());
 }
 }  // namespace webrtc

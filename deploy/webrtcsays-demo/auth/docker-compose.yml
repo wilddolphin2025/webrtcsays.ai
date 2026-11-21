@@ -1,0 +1,30 @@
+services:
+  demo-auth:
+    build: .
+    image: webrtcsays-demo-auth:stage1
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    pids_limit: 64
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8793:8793"
+    volumes:
+      - /etc/webrtcsays-demo:/conf:ro
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    environment:
+      DEMO_CONF_DIR: /conf
+      DEMO_BIND: 0.0.0.0
+      DEMO_PORT: "8793"
+      DEMO_TRUST_PROXY: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8793/healthz', timeout=2).read()"]
+      interval: 30s
+      timeout: 3s
+      retries: 3

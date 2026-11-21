@@ -10,9 +10,9 @@
 
 #include "rtc_base/crypto_random.h"
 
-#include <string.h>
-
+#include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -20,17 +20,12 @@
 #include "test/gmock.h"
 #include "test/gtest.h"
 
-namespace rtc {
+namespace webrtc {
 namespace {
 
 using ::testing::_;
-using ::testing::DoAll;
-using ::testing::Invoke;
 using ::testing::IsEmpty;
 using ::testing::Not;
-using ::testing::Return;
-using ::testing::WithArg;
-using ::testing::WithArgs;
 
 TEST(RandomTest, TestCreateRandomId) {
   CreateRandomId();
@@ -128,7 +123,6 @@ class MockRandomGenerator : public RandomGenerator {
   MOCK_METHOD(void, Die, ());
   ~MockRandomGenerator() override { Die(); }
 
-  MOCK_METHOD(bool, Init, (const void* seed, size_t len), (override));
   MOCK_METHOD(bool, Generate, (void* buf, size_t len), (override));
 };
 
@@ -138,26 +132,18 @@ TEST(RandomTest, TestSetRandomGenerator) {
   MockRandomGenerator* generator = will_move.get();
   SetRandomGenerator(std::move(will_move));
 
-  EXPECT_CALL(*generator, Init(_, sizeof(int))).WillOnce(Return(true));
-  EXPECT_TRUE(InitRandom(5));
-
-  std::string seed = "seed";
-  EXPECT_CALL(*generator, Init(seed.data(), seed.size()))
-      .WillOnce(Return(true));
-  EXPECT_TRUE(InitRandom(seed.data(), seed.size()));
-
   uint32_t id = 4658;
   EXPECT_CALL(*generator, Generate(_, sizeof(uint32_t)))
-      .WillOnce(DoAll(WithArg<0>(Invoke([&id](void* p) {
-                        std::memcpy(p, &id, sizeof(uint32_t));
-                      })),
-                      Return(true)));
+      .WillOnce([&id](void* p, size_t /*len*/) {
+        std::memcpy(p, &id, sizeof(uint32_t));
+        return true;
+      });
   EXPECT_EQ(CreateRandomId(), id);
 
-  EXPECT_CALL(*generator, Generate)
-      .WillOnce(DoAll(
-          WithArgs<0, 1>([](void* p, size_t len) { std::memset(p, 0, len); }),
-          Return(true)));
+  EXPECT_CALL(*generator, Generate).WillOnce([](void* p, size_t len) {
+    std::memset(p, 0, len);
+    return true;
+  });
   EXPECT_THAT(CreateRandomUuid(), Not(IsEmpty()));
 
   // Set the default random generator, and expect that mock generator is
@@ -169,4 +155,4 @@ TEST(RandomTest, TestSetRandomGenerator) {
 }
 
 }  // namespace
-}  // namespace rtc
+}  // namespace webrtc

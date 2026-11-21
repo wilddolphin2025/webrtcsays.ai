@@ -11,11 +11,9 @@
 #ifndef RTC_TOOLS_RTC_EVENT_LOG_TO_TEXT_CONVERTER_H_
 #define RTC_TOOLS_RTC_EVENT_LOG_TO_TEXT_CONVERTER_H_
 
-#include <stdio.h>
-
+#include <cstdio>
 #include <string>
 
-#include "absl/base/attributes.h"
 #include "logging/rtc_event_log/rtc_event_log_parser.h"
 
 namespace webrtc {
@@ -25,11 +23,10 @@ namespace webrtc {
 // `handle_unconfigured_extensions` controls the policy for parsing RTP
 // header extensions if the log doesn't contain a mapping between the
 // header extensions and numerical IDs.
-ABSL_MUST_USE_RESULT bool Convert(
-    std::string inputfile,
-    FILE* output,
-    ParsedRtcEventLog::UnconfiguredHeaderExtensions
-        handle_unconfigured_extensions);
+[[nodiscard]] bool Convert(std::string inputfile,
+                           FILE* output,
+                           ParsedRtcEventLog::UnconfiguredHeaderExtensions
+                               handle_unconfigured_extensions);
 
 }  // namespace webrtc
 

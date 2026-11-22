@@ -61,7 +61,9 @@ fi
 
 # WebRTC top-level directories that may appear at the gclient parent alongside
 # `src/` as stray checkouts. Remove only when nothing under them is tracked in
-# git (avoids deleting the real working tree or folders like models/).
+# git. A gitlink such as modules/third_party/whillats counts as tracked: deleting
+# modules/ makes the next outer `git checkout` abort with
+# "Could not access submodule 'modules/third_party/whillats'".
 WEBRTC_SPILL_DIRNAMES=(
   api audio base build build_overrides buildtools call common_audio common_video
   data docs examples experiments g3doc infra ios logging media modules mojo net
@@ -70,10 +72,15 @@ WEBRTC_SPILL_DIRNAMES=(
 )
 
 remove_webrtc_spill_at_root() {
-  local d
+  local d tracked
   for d in "${WEBRTC_SPILL_DIRNAMES[@]}"; do
     [ -d "$REPO_ROOT/$d" ] || continue
-    echo "Removing WebRTC spill directory at repo root (duplicate of src/): $d"
+    tracked=$(git -C "$REPO_ROOT" ls-files -- "$d" | head -n 1 || true)
+    if [ -n "$tracked" ]; then
+      echo "Keeping $REPO_ROOT/$d (tracked in the outer repo: $tracked)"
+      continue
+    fi
+    echo "Removing untracked WebRTC spill directory at repo root (duplicate of src/): $d"
     rm -rf "$REPO_ROOT/$d"
   done
 }
@@ -106,10 +113,23 @@ if [ -f ".gclient" ]; then
     rm -f .gclient
 fi
 
-# Ensure we're on the correct branch/commit
-echo "Switching to $CURRENT_BRANCH..."
-git fetch origin
-git checkout "$CURRENT_BRANCH"
+# The outer repo is the gclient parent. src/ is checked out later to SRC_GIT_REF.
+# Do not recurse into submodules: a previous spill cleanup may have removed
+# modules/third_party/whillats, and `git checkout` would then abort under set -e.
+echo "Updating outer repo..."
+git fetch origin || echo "WARNING: git fetch origin failed; continuing with the local outer checkout"
+OUTER_HEAD=$(git rev-parse HEAD)
+OUTER_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$OUTER_BRANCH" = "$CURRENT_BRANCH" ] || [ "$OUTER_HEAD" = "$CURRENT_BRANCH" ]; then
+  echo "Outer repo already at $CURRENT_BRANCH ($OUTER_HEAD); skipping checkout"
+else
+  echo "Switching outer repo to $CURRENT_BRANCH (no submodule recursion)..."
+  if ! git -c submodule.recurse=false checkout --no-recurse-submodules "$CURRENT_BRANCH"; then
+    echo "WARNING: outer checkout of $CURRENT_BRANCH failed."
+    echo "This is usually a missing modules/third_party/whillats gitlink."
+    echo "Continuing. The WebRTC tree is src/, checked out separately to $SRC_GIT_REF."
+  fi
+fi
 
 # Verify we're on the correct branch
 echo "Current commit: $(git rev-parse HEAD)"

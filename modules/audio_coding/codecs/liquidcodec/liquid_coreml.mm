@@ -194,23 +194,35 @@ MLMultiArray* MakeArray(const std::vector<int>& shape, MLMultiArrayDataType type
   return [[MLMultiArray alloc] initWithShape:dims dataType:type error:err];
 }
 
-void WriteFloats(MLMultiArray* arr, const float* src, int n) {
-  const int count = arr.count > 0 ? static_cast<int>(arr.count) : n;
-  const int use = count < n ? count : n;
+std::vector<int> StridesOf(MLMultiArray* arr);
+std::vector<int> ShapeOfArray(MLMultiArray* arr);
+int ElementBytes(MLMultiArrayDataType type);
+
+void WriteFloatAt(MLMultiArray* arr, int offset, float value) {
   if (arr.dataType == MLMultiArrayDataTypeFloat16) {
-    uint16_t* p = static_cast<uint16_t*>(arr.dataPointer);
-    for (int i = 0; i < use; ++i) p[i] = FloatToHalf(src[i]);
+    static_cast<uint16_t*>(arr.dataPointer)[offset] = FloatToHalf(value);
   } else if (arr.dataType == MLMultiArrayDataTypeFloat32) {
-    float* p = static_cast<float*>(arr.dataPointer);
-    std::memcpy(p, src, static_cast<size_t>(use) * sizeof(float));
+    static_cast<float*>(arr.dataPointer)[offset] = value;
   } else if (arr.dataType == MLMultiArrayDataTypeInt32) {
-    int32_t* p = static_cast<int32_t*>(arr.dataPointer);
-    for (int i = 0; i < use; ++i) p[i] = static_cast<int32_t>(std::lrintf(src[i]));
+    static_cast<int32_t*>(arr.dataPointer)[offset] = static_cast<int32_t>(std::lrintf(value));
+  } else if (arr.dataType == MLMultiArrayDataTypeDouble) {
+    static_cast<double*>(arr.dataPointer)[offset] = value;
   }
 }
 
-std::vector<int> StridesOf(MLMultiArray* arr);
-std::vector<int> ShapeOfArray(MLMultiArray* arr);
+void ZeroArray(MLMultiArray* arr) {
+  if (!arr || !arr.dataPointer) return;
+  const std::vector<int> shape = ShapeOfArray(arr);
+  const std::vector<int> strides = StridesOf(arr);
+  const int count = static_cast<int>(arr.count);
+  int n = count;
+  if (!shape.empty() && strides.size() == shape.size()) {
+    n = StridedElementCount(shape.data(), strides.data(), static_cast<int>(shape.size()), count);
+  }
+  if (n > 0) {
+    std::memset(arr.dataPointer, 0, static_cast<size_t>(n) * ElementBytes(arr.dataType));
+  }
+}
 
 std::vector<float> ReadFloats(MLMultiArray* arr) {
   const std::vector<int> shape = ShapeOfArray(arr);
@@ -266,12 +278,17 @@ bool WriteTimeMajor(MLMultiArray* arr, const float* src, int n, std::string* err
       return false;
     }
   }
-  WriteFloats(arr, src, n);
+  // MakeArray can pad the last stride. A dense memcpy then leaves the samples
+  // the model reads (via strides) as zeros.
+  const std::vector<int> strides = StridesOf(arr);
+  const int step = strides.empty() ? 1 : std::max(1, strides.back());
+  for (int i = 0; i < n; ++i) WriteFloatAt(arr, i * step, src[i]);
   return true;
 }
 
-bool ReadCodes(MLMultiArray* arr, int codebooks, int new_frames, int ctx_frames,
-               const std::string& layout, int32_t* dst, std::string* error) {
+bool ReadCodes(MLMultiArray* arr, int codebooks, int codebook_size, int new_frames,
+               int ctx_frames, const std::string& layout, int frame_index, int32_t* dst,
+               std::string* error) {
   const std::vector<int> shape = ShapeOfArray(arr);
   const std::vector<float> raw = ReadFloats(arr);
   int codebook_axis = -1;
@@ -317,7 +334,25 @@ bool ReadCodes(MLMultiArray* arr, int codebooks, int new_frames, int ctx_frames,
       for (size_t d = 0; d < idx.size(); ++d) {
         offset += idx[d] * strides[d];
       }
-      dst[f * codebooks + q] = static_cast<int32_t>(std::lrintf(raw[static_cast<size_t>(offset)]));
+      const float sample = raw[static_cast<size_t>(offset)];
+      int32_t code = 0;
+      bool clamped = false;
+      if (!QuantizeCode(sample, codebook_size, &code, &clamped)) {
+        if (error) {
+          *error = "encoder code outside the codebook frame=" + std::to_string(frame_index) +
+                   " codebook=" +
+                   std::to_string(q) + " raw=" + std::to_string(sample) +
+                   " rounded=" + std::to_string(static_cast<int>(std::lrintf(sample))) +
+                   " limit=" + std::to_string(codebook_size);
+        }
+        return false;
+      }
+      if (clamped) {
+        fprintf(stderr,
+                "LiquidCodec encoder: clamped int8/fp16 code frame=%d codebook=%d raw=%.4f -> %d\n",
+                frame_index, q, sample, code);
+      }
+      dst[f * codebooks + q] = code;
     }
   }
   return true;
@@ -533,10 +568,19 @@ class CoreMlBackend final : public LiquidBackend {
     }
     MLMultiArray* codes = [out featureValueForName:[NSString stringWithUTF8String:enc_out_.c_str()]]
                               .multiArrayValue;
-    if (!codes || !ReadCodes(codes, chunk.codebooks, frames_out, stateful ? 0 : chunk.ctx_frames,
-                             paths_.encoder_codes_layout, codes_out, error)) {
+    if (!codes || !ReadCodes(codes, chunk.codebooks, chunk.codebook_size, frames_out,
+                             stateful ? 0 : chunk.ctx_frames, paths_.encoder_codes_layout,
+                             frames_encoded_, codes_out, error)) {
+      ++bad_codes_;
+      fprintf(stderr, "LiquidCodec %s (count=%d). State reset to zero.\n",
+              error && !error->empty() ? error->c_str() : "encoder code unreadable", bad_codes_);
+      for (const KeptState& cleared : states_) {
+        ZeroArray((MLMultiArray*)ToId(cleared.array));
+      }
+      ++frames_encoded_;
       return false;
     }
+    ++frames_encoded_;
     for (const KeptState& state : states_) {
       MLMultiArray* updated =
           [out featureValueForName:[NSString stringWithUTF8String:state.out_name.c_str()]]
@@ -554,10 +598,12 @@ class CoreMlBackend final : public LiquidBackend {
       // tick and the callee sends nothing more.
       // Names are not `shape`/`strides`: this function already has `shape`
       // for the audio input, and -Wshadow is an error on Apple clang.
+      const std::vector<int> dest_strides = StridesOf(dest);
       if (state_shape.empty() || state_strides.size() != state_shape.size() ||
-          !GatherStrided(updated.dataPointer, state_shape.data(), state_strides.data(),
-                         static_cast<int>(state_shape.size()), ElementBytes(updated.dataType),
-                         dest.dataPointer, static_cast<int>(dest.count))) {
+          dest_strides.size() != state_shape.size() ||
+          !CopyStrided(updated.dataPointer, state_shape.data(), state_strides.data(),
+                       dest.dataPointer, dest_strides.data(),
+                       static_cast<int>(state_shape.size()), ElementBytes(updated.dataType))) {
         if (error) *error = "encoder state \"" + state.out_name + "\" could not be copied";
         return false;
       }
@@ -571,11 +617,8 @@ class CoreMlBackend final : public LiquidBackend {
                   "State reset to zero; the call stays up.\n",
                   bad_codes_);
         }
-        for (const KeptState& state : states_) {
-          MLMultiArray* dest = (MLMultiArray*)ToId(state.array);
-          if (!dest) continue;
-          std::memset(dest.dataPointer, 0,
-                      static_cast<size_t>(dest.count) * ElementBytes(dest.dataType));
+        for (const KeptState& cleared : states_) {
+          ZeroArray((MLMultiArray*)ToId(cleared.array));
         }
         if (error) *error = "encoder produced a code outside the codebook";
         return false;
@@ -695,11 +738,8 @@ class CoreMlBackend final : public LiquidBackend {
     std::lock_guard<std::mutex> lock(mu_);
     tail_.Reset();
     fifo_.clear();
-    for (const KeptState& state : states_) {
-      MLMultiArray* dest = (MLMultiArray*)ToId(state.array);
-      if (!dest) continue;
-      std::memset(dest.dataPointer, 0,
-                  static_cast<size_t>(dest.count) * ElementBytes(dest.dataType));
+    for (const KeptState& cleared : states_) {
+      ZeroArray((MLMultiArray*)ToId(cleared.array));
     }
   }
 
@@ -725,13 +765,41 @@ class CoreMlBackend final : public LiquidBackend {
       if (error) *error = NsError(err);
       return false;
     }
-    WriteFloats(arr, src.data(), static_cast<int>(src.size()));
+    const std::vector<int> in_shape = ShapeOfArray(arr);
+    const std::vector<int> in_strides = StridesOf(arr);
+    const int in_n = static_cast<int>(src.size());
+    bool contiguous = in_strides.size() == in_shape.size() && !in_shape.empty();
+    int packed = 1;
+    for (int d = static_cast<int>(in_shape.size()) - 1; d >= 0 && contiguous; --d) {
+      if (in_strides[static_cast<size_t>(d)] != packed) contiguous = false;
+      packed *= in_shape[static_cast<size_t>(d)];
+    }
+    if (contiguous || in_strides.empty()) {
+      for (int i = 0; i < in_n; ++i) WriteFloatAt(arr, i, src[static_cast<size_t>(i)]);
+    } else {
+      std::vector<int> index(in_shape.size(), 0);
+      for (int written = 0; written < in_n; ++written) {
+        int offset = 0;
+        for (size_t d = 0; d < in_shape.size(); ++d) {
+          offset += index[d] * in_strides[d];
+        }
+        WriteFloatAt(arr, offset, src[static_cast<size_t>(written)]);
+        int dim = static_cast<int>(in_shape.size()) - 1;
+        while (dim >= 0) {
+          ++index[static_cast<size_t>(dim)];
+          if (index[static_cast<size_t>(dim)] < in_shape[static_cast<size_t>(dim)]) break;
+          index[static_cast<size_t>(dim)] = 0;
+          --dim;
+        }
+      }
+    }
     inputs[key] = [MLFeatureValue featureValueWithMultiArray:arr];
     return true;
   }
 
   std::mutex mu_;
   int bad_codes_ = 0;
+  int frames_encoded_ = 0;
   ModelPaths paths_;
   ChunkConfig chunk_;
   void* encoder_ = nullptr;

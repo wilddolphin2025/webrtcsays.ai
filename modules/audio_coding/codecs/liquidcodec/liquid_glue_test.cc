@@ -237,6 +237,23 @@ void TestManifest() {
   Expect(pack == webrtc::liquid::WirePack::kTight && fpp == 2,
          "negotiated pack and fpp replace the local flags");
   Expect(mismatch.find("using negotiated") != std::string::npos, "mismatch is logged");
+  int32_t code = -1;
+  bool clamped = false;
+  Expect(webrtc::liquid::QuantizeCode(2015.6f, 2016, &code, &clamped) && clamped && code == 2015,
+         "int8 2015.6 clamps to 2015");
+  Expect(webrtc::liquid::QuantizeCode(2016.0f, 2016, &code, &clamped) && clamped && code == 2015,
+         "int8 2016.0 clamps to the last index");
+  Expect(!webrtc::liquid::QuantizeCode(2018.f, 2016, &code, &clamped),
+         "a code far outside the codebook is rejected");
+  Expect(webrtc::liquid::QuantizeCode(10.2f, 2016, &code, &clamped) && !clamped && code == 10,
+         "an in-range code is not clamped");
+  Expect(webrtc::liquid::EncoderModelForPrecision("stream/lc_enc_step_int8.mlmodelc", "fp16") ==
+             "stream/lc_enc_step_fp16.mlmodelc",
+         "fp16 swaps the int8 encoder name");
+  Expect(std::fabs(webrtc::liquid::OnWireKbps(28, 12, 1, 0.08, false, false) - 6.8) < 0.01,
+         "one u16 frame is 6.8 kbps IPv4/UDP/RTP");
+  Expect(webrtc::liquid::RtpHeaderBytesForOnWire(28, 1) == 12,
+         "a header equal to the payload is not an RTP header");
 }
 
 void TestPaddedStrides() {

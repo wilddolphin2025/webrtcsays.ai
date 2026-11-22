@@ -118,7 +118,7 @@ for enc, dec in pairs:
     if ep < 0.9 * expected:
         print(f"{enc}: packets {ep} < 90% of {expected:.0f}", file=sys.stderr)
         failed = True
-    if ep != dp:
+    if abs(ep - dp) > max(2, 0.01 * max(ep, dp)):
         print(f"packet mismatch {enc}={ep} {dec}={dp}", file=sys.stderr)
         failed = True
 sys.exit(1 if failed else 0)

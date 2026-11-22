@@ -175,6 +175,22 @@ bool ApplyNegotiatedPack(const std::string& pack, const std::string& fpp,
                          WirePack* wire_pack, int* frames_per_packet,
                          std::string* mismatch);
 
+// Nearest index in [0, codebook_size). Values within 1.0 outside that range
+// are int8/fp16 rounding and are clamped. Farther values are rejected.
+// `clamped` is set when the raw float was outside the legal integers.
+bool QuantizeCode(float raw, int codebook_size, int32_t* quantized, bool* clamped);
+
+// Swap an _int8 / _fp16 token in an encoder path. Other names are unchanged.
+std::string EncoderModelForPrecision(const std::string& model, const std::string& precision);
+
+// getStats headerBytes is the RTP header only, and some builds report a value
+// equal to the payload. Use it when it is 8..20 bytes/packet, otherwise 12.
+// Transport is packets * (20 IPv4 + 8 UDP), plus 16 when SRTP is on, plus 20
+// when the IP header is IPv6. Result is kbps over `seconds`.
+uint64_t RtpHeaderBytesForOnWire(uint64_t reported_header_bytes, uint64_t packets);
+double OnWireKbps(uint64_t payload_bytes, uint64_t reported_header_bytes, uint64_t packets,
+                  double seconds, bool encrypted, bool ipv6);
+
 // Elements a strided tensor occupies. `count` is the dense product of the
 // shape. ANE MLMultiArray strides are often padded, so the last index is
 // past `count`. extent = 1 + sum((shape[d] - 1) * strides[d]), and the
@@ -185,6 +201,9 @@ int StridedElementCount(const int* shape, const int* strides, int rank, int coun
 // is not `dense_count`.
 bool GatherStrided(const void* src, const int* shape, const int* strides, int rank,
                    int elem_bytes, void* dense, int dense_count);
+// Copy one logical tensor between two strided buffers of the same shape.
+bool CopyStrided(const void* src, const int* shape, const int* src_strides, void* dst,
+                 const int* dst_strides, int rank, int elem_bytes);
 
 bool PackFrame(const int32_t* codes12, uint16_t seq, int codebook_size,
                uint8_t* dst, size_t cap, size_t* out_len);

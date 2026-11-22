@@ -389,6 +389,8 @@ bool DirectApplication::CreatePeerConnection() {
                 "(published decoder geometry) until the fork ships liquidcodec.json\n",
                 manifest.c_str());
       }
+      liquid.paths.encoder_model = webrtc::liquid::EncoderModelForPrecision(
+          liquid.paths.encoder_model, opts_.liquid_encoder);
       if (opts_.liquid_ctx > 0) liquid.chunk.ctx_frames = opts_.liquid_ctx;
       if (opts_.liquid_new > 0) liquid.chunk.new_frames = opts_.liquid_new;
       liquid.pack = opts_.liquid_pack == "tight" ? webrtc::liquid::WirePack::kTight

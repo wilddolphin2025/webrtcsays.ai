@@ -355,6 +355,52 @@ bool FileExists(const std::string& path) {
   return stat(path.c_str(), &st) == 0;
 }
 
+bool QuantizeCode(float raw, int codebook_size, int32_t* quantized, bool* clamped) {
+  if (!quantized || codebook_size <= 1) return false;
+  if (clamped) *clamped = false;
+  const float lo = -1.f;
+  // int8 rounding can land on codebook_size itself (2016.0). Allow one
+  // extra unit and clamp it back to the last legal index.
+  const float hi = static_cast<float>(codebook_size) + 1.f;
+  if (!(raw >= lo && raw < hi)) return false;
+  int value = static_cast<int>(std::lrintf(raw));
+  if (value < 0 || value >= codebook_size) {
+    if (clamped) *clamped = true;
+    if (value < 0) value = 0;
+    if (value >= codebook_size) value = codebook_size - 1;
+  }
+  *quantized = value;
+  return true;
+}
+
+std::string EncoderModelForPrecision(const std::string& model, const std::string& precision) {
+  std::string out = model;
+  const std::string from = precision == "fp16" ? "_int8" : "_fp16";
+  const std::string to = precision == "fp16" ? "_fp16" : "_int8";
+  const size_t pos = out.find(from);
+  if (pos != std::string::npos) out.replace(pos, from.size(), to);
+  return out;
+}
+
+uint64_t RtpHeaderBytesForOnWire(uint64_t reported_header_bytes, uint64_t packets) {
+  if (packets == 0) return reported_header_bytes;
+  const double per = static_cast<double>(reported_header_bytes) / static_cast<double>(packets);
+  if (per >= 8.0 && per <= 20.0) return reported_header_bytes;
+  return packets * 12;
+}
+
+double OnWireKbps(uint64_t payload_bytes, uint64_t reported_header_bytes, uint64_t packets,
+                  double seconds, bool encrypted, bool ipv6) {
+  if (seconds <= 0) return 0;
+  uint64_t per_packet = 28;
+  if (encrypted) per_packet += 16;
+  if (ipv6) per_packet += 20;
+  const uint64_t total = payload_bytes +
+                         RtpHeaderBytesForOnWire(reported_header_bytes, packets) +
+                         packets * per_packet;
+  return static_cast<double>(total) * 8.0 / seconds / 1000.0;
+}
+
 bool ApplyNegotiatedPack(const std::string& pack, const std::string& fpp,
                          WirePack* wire_pack, int* frames_per_packet,
                          std::string* mismatch) {
@@ -443,6 +489,54 @@ bool GatherStrided(const void* src, const int* shape, const int* strides, int ra
       ++idx[static_cast<size_t>(dim)];
       if (idx[static_cast<size_t>(dim)] < shape[dim]) break;
       idx[static_cast<size_t>(dim)] = 0;
+      --dim;
+    }
+  }
+  return true;
+}
+
+bool CopyStrided(const void* src, const int* shape, const int* src_strides, void* dst,
+                 const int* dst_strides, int rank, int elem_bytes) {
+  if (!src || !dst || !shape || !src_strides || !dst_strides || elem_bytes <= 0 || rank <= 0) {
+    return false;
+  }
+  int count = 1;
+  for (int d = 0; d < rank; ++d) {
+    if (shape[d] <= 0) return false;
+    count *= shape[d];
+  }
+  bool src_contig = true;
+  bool dst_contig = true;
+  bool same = true;
+  int packed = 1;
+  for (int d = rank - 1; d >= 0; --d) {
+    if (src_strides[d] != packed) src_contig = false;
+    if (dst_strides[d] != packed) dst_contig = false;
+    if (src_strides[d] != dst_strides[d]) same = false;
+    packed *= shape[d];
+  }
+  if (same && src_contig && dst_contig) {
+    std::memcpy(dst, src, static_cast<size_t>(count) * static_cast<size_t>(elem_bytes));
+    return true;
+  }
+  const auto* in = static_cast<const uint8_t*>(src);
+  auto* out = static_cast<uint8_t*>(dst);
+  std::vector<int> index(static_cast<size_t>(rank), 0);
+  for (int written = 0; written < count; ++written) {
+    int src_off = 0;
+    int dst_off = 0;
+    for (int d = 0; d < rank; ++d) {
+      src_off += index[static_cast<size_t>(d)] * src_strides[d];
+      dst_off += index[static_cast<size_t>(d)] * dst_strides[d];
+    }
+    std::memcpy(out + static_cast<size_t>(dst_off) * static_cast<size_t>(elem_bytes),
+                in + static_cast<size_t>(src_off) * static_cast<size_t>(elem_bytes),
+                static_cast<size_t>(elem_bytes));
+    int dim = rank - 1;
+    while (dim >= 0) {
+      ++index[static_cast<size_t>(dim)];
+      if (index[static_cast<size_t>(dim)] < shape[dim]) break;
+      index[static_cast<size_t>(dim)] = 0;
       --dim;
     }
   }

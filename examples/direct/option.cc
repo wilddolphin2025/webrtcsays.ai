@@ -423,6 +423,7 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --liquid-pack=u16|tight           u16 is 28 bytes/frame; tight is 17 bytes, no header\n"
       "  --liquid-frames-per-packet=<n>    1, 2, or 4 codec frames in each RTP packet\n"
       "  --aec=on|off                      AEC3, NS, and AGC (default on)\n"
+      "  --liquid-encoder=int8|fp16        Core ML encoder package (default int8)\n"
       "  --stats=<seconds>                  Log a GetStats JSON line on this interval\n"
       "  --duration=<seconds>               Hang up and exit after this many seconds\n"
       "  --help                             Show this help message\n\n"
@@ -455,7 +456,7 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--liquid-ctx", "--liquid_ctx", "--liquid-new", "--liquid_new",
     "--liquid-decode", "--liquid_decode",
     "--liquid-pack", "--liquid_pack", "--liquid-frames-per-packet", "--liquid_frames_per_packet",
-    "--aec",
+    "--aec", "--liquid-encoder", "--liquid_encoder",
     "--opus-ptime", "--opus_ptime", "--opus-dtx", "--no-opus-dtx",
     "--help"
   };
@@ -895,6 +896,8 @@ Options parseOptions(const std::vector<std::string>& args) {
     } else if (arg.find("--liquid-decode=") == 0 || arg.find("--liquid_decode=") == 0) {
         const auto eq = arg.find('=');
         opts.liquid_decode = arg.substr(eq + 1);
+    } else if (arg.find("--liquid-encoder=") == 0 || arg.find("--liquid_encoder=") == 0) {
+        opts.liquid_encoder = arg.substr(eq + 1);
     } else if (arg.find("--aec=") == 0) {
         const std::string value = arg.substr(6);
         if (value == "on" || value == "1" || value == "true") opts.aec = true;
@@ -1115,6 +1118,12 @@ Options parseOptions(const std::vector<std::string>& args) {
   }
   for (char& c : opts.liquid_decode) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  for (char& c : opts.liquid_encoder) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  if (opts.liquid_encoder != "int8" && opts.liquid_encoder != "fp16") {
+    opts.parse_error = "liquid-encoder must be int8 or fp16";
   }
   if (opts.liquid_decode != "ane" && opts.liquid_decode != "cpu" &&
       opts.liquid_decode != "all") {

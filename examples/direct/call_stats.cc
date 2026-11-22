@@ -6,6 +6,7 @@
 #include "call_stats.h"
 
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -31,6 +32,24 @@ int64_t ElapsedMs(std::chrono::steady_clock::time_point origin,
     return -1;
   }
   return std::chrono::duration_cast<std::chrono::milliseconds>(when - origin).count();
+}
+
+uint64_t RtpHeaderForOnWire(uint64_t reported, uint64_t packets) {
+  if (packets == 0) return reported;
+  const double per = static_cast<double>(reported) / static_cast<double>(packets);
+  if (per >= 8.0 && per <= 20.0) return reported;
+  return packets * 12;
+}
+
+// payload + RTP header + packets * (20 IPv4 + 8 UDP [+ 16 SRTP] [+ 20 IPv6]).
+double OnWireKbps(uint64_t payload, uint64_t header, uint64_t packets, double seconds,
+                  bool encrypted, bool ipv6) {
+  if (seconds <= 0) return 0;
+  uint64_t extra = 28;
+  if (encrypted) extra += 16;
+  if (ipv6) extra += 20;
+  const uint64_t total = payload + RtpHeaderForOnWire(header, packets) + packets * extra;
+  return static_cast<double>(total) * 8.0 / seconds / 1000.0;
 }
 
 std::string ProfileLevelId(const std::string& fmtp) {
@@ -270,8 +289,10 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         const auto* codec = CodecFor<webrtc::RTCCodecStats>(*report, in->codec_id);
         const uint64_t recv_bytes = in->bytes_received.value_or(0);
         const uint64_t recv_header = in->header_bytes_received.value_or(0);
-        const double recv_onwire_bps = Bitrate(audio_in_total_, recv_bytes + recv_header, dt);
-        const std::string mime = codec && codec->mime_type ? *codec->mime_type : "";
+        const double recv_onwire_kbps_now =
+            OnWireKbps(recv_bytes, recv_header, in->packets_received.value_or(0), dt, false, false);
+        std::string mime = codec && codec->mime_type ? *codec->mime_type : audio_codec_;
+        for (char& ch : mime) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
         const int codec_algo_ms = mime.find("liquid") != std::string::npos ? 120 : 20;
         const double half_rtt = rtt_ms >= 0 ? rtt_ms / 2.0 : 0;
         const double jb = jitter_buffer_ms >= 0 ? jitter_buffer_ms : 0;
@@ -279,10 +300,10 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         audio_out.str("codec", mime);
         audio_out.number("recv_bitrate_bps", bps, 0);
         audio_out.number("recv_payload_kbps", bps / 1000.0, 3);
-        audio_out.number("recv_onwire_kbps", recv_onwire_bps / 1000.0, 3);
+        audio_out.number("recv_onwire_ipv4_udp_rtp_kbps", recv_onwire_kbps_now, 3);
         audio_out.integer("algorithmic_latency_ms", codec_algo_ms);
         audio_out.number("mouth_to_ear_est_ms", m2e, 1);
-        recv_onwire_kbps = recv_onwire_bps / 1000.0;
+        recv_onwire_kbps = recv_onwire_kbps_now;
         recv_payload_kbps = bps / 1000.0;
         recv_packets = static_cast<long long>(in->packets_received.value_or(0));
         packets_lost = in->packets_lost.value_or(0);
@@ -363,11 +384,12 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         const uint64_t send_bytes = outb->bytes_sent.value_or(0);
         const uint64_t send_header = outb->header_bytes_sent.value_or(0);
         const double send_payload_bps = bps;
-        const double send_onwire_bps = Bitrate(audio_out_total_, send_bytes + send_header, dt);
+        const double send_onwire_kbps_now =
+            OnWireKbps(send_bytes, send_header, outb->packets_sent.value_or(0), dt, false, false);
         audio_out.number("send_bitrate_bps", send_payload_bps, 0);
         audio_out.number("send_payload_kbps", send_payload_bps / 1000.0, 3);
-        audio_out.number("send_onwire_kbps", send_onwire_bps / 1000.0, 3);
-        send_onwire_kbps = send_onwire_bps / 1000.0;
+        audio_out.number("send_onwire_ipv4_udp_rtp_kbps", send_onwire_kbps_now, 3);
+        send_onwire_kbps = send_onwire_kbps_now;
         send_payload_kbps = send_payload_bps / 1000.0;
         send_packets = static_cast<long long>(outb->packets_sent.value_or(0));
         audio_out.integer("send_bytes", static_cast<long long>(send_bytes));
@@ -444,7 +466,8 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     if (have_audio) {
       char line[512];
       std::snprintf(line, sizeof(line),
-                    "audio send_onwire_kbps=%.3f send_payload_kbps=%.3f recv_onwire_kbps=%.3f "
+                    "audio send_onwire_ipv4_udp_rtp_kbps=%.3f send_payload_kbps=%.3f "
+                    "recv_onwire_ipv4_udp_rtp_kbps=%.3f "
                     "recv_payload_kbps=%.3f send_packets=%lld recv_packets=%lld lost=%lld "
                     "jitter_ms=%.2f jitter_buffer_ms=%.2f rtt_ms=%.1f algo_ms=%d "
                     "mouth_to_ear_est_ms=%.1f\n",

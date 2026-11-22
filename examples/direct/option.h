@@ -141,6 +141,7 @@ struct Options {
     int liquid_ctx = 0;                 // 0 = manifest default
     int liquid_new = 0;                 // 0 = manifest default
     std::string liquid_decode{"ane"};   // ane, cpu, all
+    std::string liquid_encoder{"int8"};  // int8 or fp16 Core ML encoder package
     std::string liquid_pack{"u16"};     // u16 (28 bytes/frame) or tight (17 bytes/frame)
     int liquid_frames_per_packet = 1;   // 1, 2, or 4
     bool aec = true;                    // AEC3, NS, and AGC in the platform ADM

@@ -769,9 +769,12 @@ if [ "$IOS_BUILD" = "true" ]; then
     else
         IOS_DEBUG_FLAG="false"
     fi
+    # use_custom_libcxx=false: the app links Xcode libc++ (std::__1); Chromium libc++
+    # (std::__Cr) breaks webrtc::Options across parseOptions, so DirectCaller refuses to init.
+    # treat_warnings_as_errors=false: system libc++ trips -Wunsafe-buffer-usage in aec3/agc2/opus.
     # ios_enable_code_signing=false: a Mac with two signing identities makes gn fail
     # with "could not find exactly one codesigning identity".
-    IOS_ARGS="target_environment=\"device\" target_os=\"ios\" target_cpu=\"arm64\" ios_deployment_target=\"16.4.0\" ios_enable_code_signing=false is_debug=$IOS_DEBUG_FLAG rtc_include_opus=true rtc_build_examples=true rtc_enable_symbol_export=true mac_deployment_target=\"15.0\" mac_min_system_version=\"15.0\""
+    IOS_ARGS="target_environment=\"device\" target_os=\"ios\" target_cpu=\"arm64\" ios_deployment_target=\"16.4.0\" ios_enable_code_signing=false use_custom_libcxx=false treat_warnings_as_errors=false is_debug=$IOS_DEBUG_FLAG rtc_include_opus=true rtc_build_examples=true rtc_enable_symbol_export=true mac_deployment_target=\"15.0\" mac_min_system_version=\"15.0\""
     if [ "$ENABLE_WHILLATS" = "true" ]; then
         IOS_ARGS="$IOS_ARGS rtc_use_speech_audio_devices=true"
     else

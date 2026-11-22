@@ -539,7 +539,7 @@ fi
 # Parse script parameters
 BUILD_TYPE="debug"
 ENABLE_WHILLATS="false"
-ENABLE_LIQUIDCODEC="false"
+ENABLE_LIQUIDCALL="false"
 IOS_BUILD="false"
 if [ $# -ge 1 ]; then
     if [[ "$1" == "debug" || "$1" == "release" ]]; then
@@ -567,7 +567,7 @@ if [ $# -ge 1 ]; then
         echo ""
         echo "Options:"
         echo "  whillats    Enable whillats speech/AI features"
-        echo "  liquidcodec macOS only: LiquidCodec Core ML in directcall (off on Linux)"
+        echo "  liquidcall macOS only: LiquidCall Core ML in directcall (off on Linux)"
         echo ""
         echo "iOS-specific usage:"
         echo "  $0 [-b REF] ios [debug|release] [whillats]"
@@ -612,17 +612,18 @@ if [ $# -ge 3 ]; then
     fi
 fi
 for arg in "$@"; do
-    if [[ "$arg" == "liquidcodec" ]]; then
-        ENABLE_LIQUIDCODEC="true"
+    # "liquidcodec" is the pre-rename spelling, kept as an alias.
+    if [[ "$arg" == "liquidcall" || "$arg" == "liquidcodec" ]]; then
+        ENABLE_LIQUIDCALL="true"
     fi
 done
-if [[ "$ENABLE_LIQUIDCODEC" == "true" ]]; then
+if [[ "$ENABLE_LIQUIDCALL" == "true" ]]; then
     if [[ "$OSTYPE" != darwin* ]]; then
-        echo "ERROR: liquidcodec is Apple-only. Linux builds leave it off."
+        echo "ERROR: liquidcall is Apple-only. Linux builds leave it off."
         exit 1
     fi
-    EXTRA_ARGS="$EXTRA_ARGS rtc_use_liquidcodec=true"
-    echo "LiquidCodec Core ML will be compiled into directcall (rtc_use_liquidcodec=true)."
+    EXTRA_ARGS="$EXTRA_ARGS rtc_use_liquidcall=true"
+    echo "LiquidCall Core ML will be compiled into directcall (rtc_use_liquidcall=true)."
 fi
 
 # Handle whillats building
@@ -780,8 +781,8 @@ if [ "$IOS_BUILD" = "true" ]; then
     else
         IOS_ARGS="$IOS_ARGS rtc_use_speech_audio_devices=false"
     fi
-    if [ "$ENABLE_LIQUIDCODEC" = "true" ]; then
-        IOS_ARGS="$IOS_ARGS rtc_use_liquidcodec=true"
+    if [ "$ENABLE_LIQUIDCALL" = "true" ]; then
+        IOS_ARGS="$IOS_ARGS rtc_use_liquidcall=true"
     fi
     
     # Clean iOS build directory
@@ -873,16 +874,16 @@ if [ "$IOS_BUILD" = "true" ]; then
             echo "WARNING: whillats was requested but $WHILLATS_FW is missing"
         fi
     else
-        echo "whillats.framework is not part of 'ios release liquidcodec'."
+        echo "whillats.framework is not part of 'ios release liquidcall'."
         echo "RobotPhone already vendors that prebuilt. Add the whillats argument to build one here."
     fi
-    if [ "$ENABLE_LIQUIDCODEC" = "true" ]; then
-        FETCH="$REPO_ROOT/src/scripts/liquidcodec/fetch_models.sh"
-        [ -f "$FETCH" ] || FETCH="$REPO_ROOT/scripts/liquidcodec/fetch_models.sh"
-        echo "LiquidCodec: fetch and compile .mlmodelc"
-        "$FETCH" --dest "$REPO_ROOT/scripts/liquidcodec/models"
+    if [ "$ENABLE_LIQUIDCALL" = "true" ]; then
+        FETCH="$REPO_ROOT/src/scripts/liquidcall/fetch_models.sh"
+        [ -f "$FETCH" ] || FETCH="$REPO_ROOT/scripts/liquidcall/fetch_models.sh"
+        echo "LiquidCall: fetch and compile .mlmodelc"
+        "$FETCH" --dest "$REPO_ROOT/scripts/liquidcall/models"
         mkdir -p "$IOS_DROP/models"
-        cp -R "$REPO_ROOT/scripts/liquidcodec/models/." "$IOS_DROP/models/"
+        cp -R "$REPO_ROOT/scripts/liquidcall/models/." "$IOS_DROP/models/"
         echo "direct.framework exports Options: audio_codec, liquid_model_dir, liquid_pack,"
         echo "  liquid_frames_per_packet, aec, stats_interval_sec, liquid_decode, liquid_encoder."
     fi
@@ -907,24 +908,24 @@ if [ "$IOS_BUILD" = "true" ]; then
         echo "❌ WebRTC.framework not found at expected location"
     fi
 else
-    if [ "$ENABLE_LIQUIDCODEC" = "true" ]; then
-        FETCH="$REPO_ROOT/src/scripts/liquidcodec/fetch_models.sh"
-        RUNNER="$REPO_ROOT/src/scripts/liquidcodec/run_local_call.sh"
-        TONE_PY="$REPO_ROOT/src/scripts/liquidcodec/tone_wav.py"
+    if [ "$ENABLE_LIQUIDCALL" = "true" ]; then
+        FETCH="$REPO_ROOT/src/scripts/liquidcall/fetch_models.sh"
+        RUNNER="$REPO_ROOT/src/scripts/liquidcall/run_local_call.sh"
+        TONE_PY="$REPO_ROOT/src/scripts/liquidcall/tone_wav.py"
         if [ ! -f "$FETCH" ]; then
-            FETCH="$REPO_ROOT/scripts/liquidcodec/fetch_models.sh"
-            RUNNER="$REPO_ROOT/scripts/liquidcodec/run_local_call.sh"
-            TONE_PY="$REPO_ROOT/scripts/liquidcodec/tone_wav.py"
+            FETCH="$REPO_ROOT/scripts/liquidcall/fetch_models.sh"
+            RUNNER="$REPO_ROOT/scripts/liquidcall/run_local_call.sh"
+            TONE_PY="$REPO_ROOT/scripts/liquidcall/tone_wav.py"
         fi
-        echo "LiquidCodec: fetch models if needed, compile every .mlpackage, point liquidcodec.json at .mlmodelc"
-        "$FETCH" --dest "$REPO_ROOT/scripts/liquidcodec/models"
-        LIQUID_MODELS="$REPO_ROOT/scripts/liquidcodec/models"
-        if [ ! -f "$LIQUID_MODELS/liquidcodec.json" ]; then
-            echo "ERROR: fetch did not write $LIQUID_MODELS/liquidcodec.json" >&2
+        echo "LiquidCall: fetch models if needed, compile every .mlpackage, point liquidcall.json at .mlmodelc"
+        "$FETCH" --dest "$REPO_ROOT/scripts/liquidcall/models"
+        LIQUID_MODELS="$REPO_ROOT/scripts/liquidcall/models"
+        if [ ! -f "$LIQUID_MODELS/liquidcall.json" ]; then
+            echo "ERROR: fetch did not write $LIQUID_MODELS/liquidcall.json" >&2
             exit 1
         fi
-        if grep -q '\.mlpackage' "$LIQUID_MODELS/liquidcodec.json"; then
-            echo "ERROR: $LIQUID_MODELS/liquidcodec.json still names a .mlpackage." >&2
+        if grep -q '\.mlpackage' "$LIQUID_MODELS/liquidcall.json"; then
+            echo "ERROR: $LIQUID_MODELS/liquidcall.json still names a .mlpackage." >&2
             echo "xcrun coremlcompiler did not compile the packages. Install the Xcode command line tools and rerun." >&2
             exit 1
         fi
@@ -934,12 +935,12 @@ else
         python3 "$TONE_PY" "$TONE" 3
         LIQUID_BIN="$REPO_ROOT/src/out/$BUILD_TYPE/directcall"
         echo ""
-        echo "LiquidCodec is ready. One local call, no extra setup:"
+        echo "LiquidCall is ready. One local call, no extra setup:"
         echo "  $RUNNER"
         echo ""
         echo "The same callee, then caller:"
-        echo "  $LIQUID_BIN --mode=callee --user_name=alice --room_name=liquid --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama --audio-codec=liquidcodec --liquid-decode=ane --liquid-model-dir=$LIQUID_MODELS --record-dir=$CALL_OUT/callee 127.0.0.1:3456"
-        echo "  $LIQUID_BIN --mode=caller --user_name=bob --target_name=alice --room_name=liquid --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama --audio-codec=liquidcodec --liquid-decode=ane --liquid-model-dir=$LIQUID_MODELS --inject-wav=$TONE --record-dir=$CALL_OUT/caller --duration=8 127.0.0.1:3456"
+        echo "  $LIQUID_BIN --mode=callee --user_name=alice --room_name=liquid --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama --audio-codec=liquidcall --liquid-decode=ane --liquid-model-dir=$LIQUID_MODELS --record-dir=$CALL_OUT/callee 127.0.0.1:3456"
+        echo "  $LIQUID_BIN --mode=caller --user_name=bob --target_name=alice --room_name=liquid --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama --audio-codec=liquidcall --liquid-decode=ane --liquid-model-dir=$LIQUID_MODELS --inject-wav=$TONE --record-dir=$CALL_OUT/caller --duration=8 127.0.0.1:3456"
         echo ""
     fi
     # Regular macOS/Linux binary execution

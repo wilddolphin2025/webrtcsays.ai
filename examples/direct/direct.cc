@@ -40,8 +40,8 @@
 #include "option.h"
 #include "audio_tap.h"
 #include "impair.h"
-#if defined(WEBRTC_USE_LIQUIDCODEC)
-#include "modules/audio_coding/codecs/liquidcodec/liquid_factory.h"
+#if defined(WEBRTC_USE_LIQUIDCALL)
+#include "modules/audio_coding/codecs/liquidcall/liquid_factory.h"
 #endif
 #include "video.h"
 #include "status.h"
@@ -380,7 +380,7 @@ bool DirectApplication::CreatePeerConnection() {
     deps.socket_factory = pss();
     deps.network_manager = std::move(network_manager);
     {
-      const bool liquid_jb = opts_.audio_codec == "liquidcodec";
+      const bool liquid_jb = opts_.audio_codec == "liquidcall";
       const int jitter_max = opts_.jitter_max_ms < 0 ? (liquid_jb ? kLiquidJitterMaxMs : 0)
                                                      : opts_.jitter_max_ms;
       const bool fast_accelerate = opts_.jitter_fast_accelerate < 0
@@ -405,18 +405,18 @@ bool DirectApplication::CreatePeerConnection() {
         webrtc::CreateBuiltinAudioEncoderFactory();
     webrtc::scoped_refptr<webrtc::AudioDecoderFactory> audio_decoder_factory =
         webrtc::CreateBuiltinAudioDecoderFactory();
-    if (opts_.audio_codec == "liquidcodec") {
-#if defined(WEBRTC_USE_LIQUIDCODEC)
+    if (opts_.audio_codec == "liquidcall") {
+#if defined(WEBRTC_USE_LIQUIDCALL)
       webrtc::liquid::RuntimeConfig liquid;
       std::string model_dir = opts_.liquid_model_dir;
       if (model_dir.empty()) {
         const char* candidates[] = {
-            "scripts/liquidcodec/models",
-            "../scripts/liquidcodec/models",
+            "scripts/liquidcall/models",
+            "../scripts/liquidcall/models",
         };
         model_dir = candidates[0];
         for (const char* candidate : candidates) {
-          if (webrtc::liquid::FileExists(std::string(candidate) + "/liquidcodec.json")) {
+          if (webrtc::liquid::FileExists(webrtc::liquid::ManifestPath(candidate))) {
             model_dir = candidate;
             break;
           }
@@ -427,20 +427,19 @@ bool DirectApplication::CreatePeerConnection() {
       liquid.record_dir = opts_.record_dir;
       liquid.inject_wav = opts_.inject_wav;
       const std::string manifest = opts_.liquid_manifest.empty()
-                                       ? webrtc::liquid::JoinPath(liquid.paths.model_dir,
-                                                                  "liquidcodec.json")
+                                       ? webrtc::liquid::ManifestPath(liquid.paths.model_dir)
                                        : opts_.liquid_manifest;
       std::string manifest_error;
       if (webrtc::liquid::FileExists(manifest)) {
         if (!webrtc::liquid::LoadManifestFile(manifest, &liquid.paths, &liquid.chunk,
                                               &manifest_error)) {
-          fprintf(stderr, "LiquidCodec manifest: %s\n", manifest_error.c_str());
+          fprintf(stderr, "LiquidCall manifest: %s\n", manifest_error.c_str());
           return false;
         }
       } else {
         fprintf(stderr,
-                "LiquidCodec manifest %s not found; assuming ctx=20 new=20 "
-                "(published decoder geometry) until the fork ships liquidcodec.json\n",
+                "LiquidCall manifest %s not found; assuming ctx=20 new=20 "
+                "(published decoder geometry) until the fork ships liquidcall.json\n",
                 manifest.c_str());
       }
       liquid.paths.encoder_model = webrtc::liquid::EncoderModelForPrecision(
@@ -452,7 +451,7 @@ bool DirectApplication::CreatePeerConnection() {
       liquid.frames_per_packet = opts_.liquid_frames_per_packet;
       liquid.dtx = opts_.liquid_dtx;
       // Expected SRTP tag for the startup on-wire estimate (SHA1_32 is
-      // offered for liquidcodec unless --no-srtp-tag32).
+      // offered for liquidcall unless --no-srtp-tag32).
       liquid.srtp_tag_bytes = !opts_.encryption ? 0 : (opts_.srtp_tag32 != 0 ? 4 : 10);
       liquid.paths.model_dir = model_dir;
       std::string liquid_error;
@@ -464,8 +463,8 @@ bool DirectApplication::CreatePeerConnection() {
       audio_decoder_factory = webrtc::CreateLiquidAudioDecoderFactory();
 #else
       fprintf(stderr,
-              "LiquidCodec is not in this build. On Apple Silicon run "
-              "./build.sh release liquidcodec\n");
+              "LiquidCall is not in this build. On Apple Silicon run "
+              "./build.sh release liquidcall\n");
       return false;
 #endif
     }
@@ -520,11 +519,11 @@ bool DirectApplication::CreatePeerConnection() {
     peer_connection_factory_->SetOptions(options);
   }
 
-  // Low-bitrate transport for LiquidCodec (none of these add latency):
+  // Low-bitrate transport for LiquidCall (none of these add latency):
   // the 4-byte SRTP tag (used only when both peers allow it; otherwise
   // SHA1_80's 10 bytes) and a slower audio RTCP report interval.
   {
-    const bool liquid = opts_.audio_codec == "liquidcodec";
+    const bool liquid = opts_.audio_codec == "liquidcall";
     const bool tag32 = opts_.srtp_tag32 < 0 ? liquid : opts_.srtp_tag32 != 0;
     if (opts_.encryption && tag32) {
       webrtc::CryptoOptions crypto;
@@ -986,7 +985,7 @@ void DirectApplication::ConfigureOutgoingVideo() {
 
 void DirectApplication::ConfigureOutgoingAudio() {
   if (!peer_connection_ || !peer_connection_factory_) return;
-  const bool liquid = opts_.audio_codec == "liquidcodec";
+  const bool liquid = opts_.audio_codec == "liquidcall";
   const bool opus = opts_.audio_codec == "opus" || opts_.opus_bitrate_bps > 0;
   if (!liquid && !opus) return;
   const auto caps =
@@ -996,7 +995,7 @@ void DirectApplication::ConfigureOutgoingAudio() {
     std::string name = codec.name;
     for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (liquid) {
-      if (name == "liquidcodec") {
+      if (name == "liquidcall") {
         // pack and fpp are already on the factory's SdpAudioFormat, so they
         // are part of this capability. Adding them again is a different
         // codec and SetCodecPreferences returns INVALID_MODIFICATION.
@@ -1008,7 +1007,7 @@ void DirectApplication::ConfigureOutgoingAudio() {
   }
   if (preferred.empty()) {
     fprintf(stderr, "audio codec %s is not available in this build\n",
-            liquid ? "liquidcodec" : "opus");
+            liquid ? "liquidcall" : "opus");
     RTC_LOG(LS_ERROR) << "Requested audio codec is not available";
     return;
   }

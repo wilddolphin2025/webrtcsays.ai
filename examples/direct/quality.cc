@@ -32,11 +32,11 @@
 #include "rtc_base/buffer.h"
 #include "system_wrappers/include/clock.h"
 
-#if defined(WEBRTC_USE_LIQUIDCODEC)
-#include "modules/audio_coding/codecs/liquidcodec/liquid_backend.h"
-#include "modules/audio_coding/codecs/liquidcodec/liquid_codec.h"
-#include "modules/audio_coding/codecs/liquidcodec/liquid_factory.h"
-#include "modules/audio_coding/codecs/liquidcodec/liquid_stream.h"
+#if defined(WEBRTC_USE_LIQUIDCALL)
+#include "modules/audio_coding/codecs/liquidcall/liquid_backend.h"
+#include "modules/audio_coding/codecs/liquidcall/liquid_codec.h"
+#include "modules/audio_coding/codecs/liquidcall/liquid_factory.h"
+#include "modules/audio_coding/codecs/liquidcall/liquid_stream.h"
 #endif
 
 namespace {
@@ -258,7 +258,7 @@ double OnWire(int64_t payload, int packets, double seconds) {
   return bytes * 8.0 / seconds / 1000.0;
 }
 
-#if defined(WEBRTC_USE_LIQUIDCODEC)
+#if defined(WEBRTC_USE_LIQUIDCALL)
 int RunOffline(const Pcm& in, const char* wav_out, const char* model_dir, const char* compute,
                const char* precision, Stats* stats) {
   webrtc::liquid::ConsumeOutOfCodebook();
@@ -269,7 +269,7 @@ int RunOffline(const Pcm& in, const char* wav_out, const char* model_dir, const 
   cfg.paths.model_dir = model_dir ? model_dir : "";
   cfg.paths.compute = compute && compute[0] ? compute : "cpu";
   const std::string manifest =
-      webrtc::liquid::JoinPath(cfg.paths.model_dir, "liquidcodec.json");
+      webrtc::liquid::ManifestPath(cfg.paths.model_dir);
   std::string error;
   if (!webrtc::liquid::LoadManifestFile(manifest, &cfg.paths, &cfg.chunk, &error)) {
     stats->detail = error.empty() ? "manifest" : error;
@@ -357,10 +357,10 @@ struct Scheduled {
 int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char* model_dir,
                const char* compute, const char* precision, int opus_bps, int loss_pct,
                int jitter_ms, Stats* stats) {
-  const bool liquid = std::strcmp(codec, "liquidcodec") == 0;
-#if !defined(WEBRTC_USE_LIQUIDCODEC)
+  const bool liquid = std::strcmp(codec, "liquidcall") == 0;
+#if !defined(WEBRTC_USE_LIQUIDCALL)
   if (liquid) {
-    stats->detail = "this build has no LiquidCodec";
+    stats->detail = "this build has no LiquidCall";
     return 2;
   }
 #else
@@ -372,7 +372,7 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
     cfg.paths.compute = compute && compute[0] ? compute : "cpu";
     std::string error;
     const std::string manifest =
-        webrtc::liquid::JoinPath(cfg.paths.model_dir, "liquidcodec.json");
+        webrtc::liquid::ManifestPath(cfg.paths.model_dir);
     if (!webrtc::liquid::LoadManifestFile(manifest, &cfg.paths, &cfg.chunk, &error)) {
       stats->detail = error.empty() ? "manifest" : error;
       return 1;
@@ -404,14 +404,14 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
   webrtc::SdpAudioFormat format("opus", 48000, 1);
   int channels = 1;
   if (liquid) {
-#if defined(WEBRTC_USE_LIQUIDCODEC)
+#if defined(WEBRTC_USE_LIQUIDCALL)
     enc_factory = webrtc::CreateLiquidAudioEncoderFactory();
     dec_factory = webrtc::CreateLiquidAudioDecoderFactory();
     format = webrtc::SdpAudioFormat(webrtc::liquid::kPayloadName, webrtc::liquid::kWebRtcClockHz, 1);
     format.parameters["pack"] = "u16";
     format.parameters["fpp"] = "1";
 #else
-    stats->detail = "this build has no LiquidCodec";
+    stats->detail = "this build has no LiquidCall";
     return 2;
 #endif
   } else {
@@ -548,7 +548,7 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
   // Q14 rates over the whole run's output.
   stats->expand_pct = net.expand_rate * 100.0 / 16384.0;
   stats->accelerate_pct = net.accelerate_rate * 100.0 / 16384.0;
-#if defined(WEBRTC_USE_LIQUIDCODEC)
+#if defined(WEBRTC_USE_LIQUIDCALL)
   if (liquid) {
     stats->out_of_codebook = webrtc::liquid::ConsumeOutOfCodebook();
     stats->clamped = webrtc::liquid::ConsumeClampedCodes();
@@ -601,21 +601,21 @@ extern "C" int DirectQualityRun(const char* stage, const char* wav_in, const cha
     stats.detail = "could not read wav";
     return finish(1);
   }
-  const bool liquid = !codec || std::strcmp(codec, "liquidcodec") == 0 || std::strcmp(codec, "") == 0;
+  const bool liquid = !codec || std::strcmp(codec, "liquidcall") == 0 || std::strcmp(codec, "") == 0;
   if (!liquid && std::strcmp(codec, "opus") != 0) {
-    stats.detail = "codec must be liquidcodec or opus";
+    stats.detail = "codec must be liquidcall or opus";
     return finish(1);
   }
-  stats.codec = liquid ? "liquidcodec" : "opus";
+  stats.codec = liquid ? "liquidcall" : "opus";
   if (std::strcmp(stage, "offline") == 0) {
     if (!liquid) {
-      stats.detail = "offline round-trip is LiquidCodec only; opus starts at stage 3";
+      stats.detail = "offline round-trip is LiquidCall only; opus starts at stage 3";
       return finish(3);
     }
-#if defined(WEBRTC_USE_LIQUIDCODEC)
+#if defined(WEBRTC_USE_LIQUIDCALL)
     return finish(RunOffline(in, wav_out, model_dir, compute, encoder_precision, &stats));
 #else
-    stats.detail = "offline LiquidCodec needs the Apple liquidcodec build";
+    stats.detail = "offline LiquidCall needs the Apple liquidcall build";
     return finish(2);
 #endif
   }

@@ -82,7 +82,7 @@ rust-project.json
 .env
 .env.*
 
-# LiquidCodec weights (LFM Open License). Fetched by scripts/liquidcodec/fetch_models.sh.
-/scripts/liquidcodec/models/
-/scripts/liquidcodec/out/
-/scripts/liquidcodec/.venv/
+# LiquidCall weights (LFM Open License). Fetched by scripts/liquidcall/fetch_models.sh.
+/scripts/liquidcall/models/
+/scripts/liquidcall/out/
+/scripts/liquidcall/.venv/

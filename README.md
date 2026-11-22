@@ -235,15 +235,15 @@ Adjust these fields as needed for your deployment and use case.
 
 ---
 
-## LiquidCodec on Apple Silicon
+## LiquidCall on Apple Silicon
 
-This is a quality-test path, not the default call. Opus stays the default. LiquidCodec is compiled only when you pass `liquidcodec` to `build.sh` on macOS. Linux and the arm64 Frame build do not include it.
+This is a quality-test path, not the default call. Opus stays the default. LiquidCall is compiled only when you pass `liquidcall` to `build.sh` on macOS. Linux and the arm64 Frame build do not include it.
 
-The Core ML packages are fetched from `wilddolphin2025/liquidcodec-ane`. The default ref is `cursor/liquidcodec-stream-51d0` (draft PR 1) until that branch merges. Override with `LIQUIDCODEC_REPO` and `LIQUIDCODEC_REF`. This branch does not convert either model. Weights stay out of git. They are Liquid AI's Liquid-Codec under the LFM Open License v1.0 (commercial use only below USD 10M annual revenue). See `scripts/liquidcodec/NOTICE`.
+The Core ML packages are fetched from `wilddolphin2025/liquidcodec-ane`. The default ref is `cursor/liquidcodec-stream-51d0` (draft PR 1) until that branch merges. Override with `LIQUIDCALL_REPO` and `LIQUIDCALL_REF`. This branch does not convert either model. Weights stay out of git. They are Liquid AI's Liquid-Codec under the LFM Open License v1.0 (commercial use only below USD 10M annual revenue). See `scripts/liquidcall/NOTICE`.
 
-`models/liquidcodec.json` from that branch is the manifest. The decoder half is a stateless window: `ctx_frames` 20 and `new_frames` 1, 2, or 4, inputs `lat` and `valid`, output `hidden`, plus `lc_tail_f32.bin`. The encoder half is a one-frame step (`encoder_kind` `stateful_io`). Each call takes 2400 samples, the 80 ms frame plus 480 samples of real lookahead, and five state tensors (`hist`, `k_cache`, `v_cache`, `conv_state`, `pos`) that come back updated. The model applies the first-call left pad itself when those tensors are zero. The glue waits for the 480 real samples and does not reflect-pad them. A manifest without `encoder_kind` still uses the older stateless window (`ctx+new`, or `new` with no lookahead). `--liquid-ctx` and `--liquid-new` override the manifest and must match the decoder package.
+`models/liquidcodec.json` from that branch is the manifest (upstream name; `fetch_models.sh` renames it to `liquidcall.json` and leaves a `liquidcodec.json` symlink). The decoder half is a stateless window: `ctx_frames` 20 and `new_frames` 1, 2, or 4, inputs `lat` and `valid`, output `hidden`, plus `lc_tail_f32.bin`. The encoder half is a one-frame step (`encoder_kind` `stateful_io`). Each call takes 2400 samples, the 80 ms frame plus 480 samples of real lookahead, and five state tensors (`hist`, `k_cache`, `v_cache`, `conv_state`, `pos`) that come back updated. The model applies the first-call left pad itself when those tensors are zero. The glue waits for the 480 real samples and does not reflect-pad them. A manifest without `encoder_kind` still uses the older stateless window (`ctx+new`, or `new` with no lookahead). `--liquid-ctx` and `--liquid-new` override the manifest and must match the decoder package.
 
-Calculated latency, not a measurement. For the streaming encoder, the first packet waits 80 ms plus the 20 ms lookahead, the receiver then waits `(new_frames - 1) * 80` ms, and the CPU STFT tail holds 20 ms. At `new_frames=1` that is **120 ms**. At `new_frames=4` it is 360 ms. The older stateless 20-frame window, with no lookahead, is still 3140 ms. Left context is lookback. NetEq's jitter buffer and the Core ML runtime are not in these numbers. `decoder_stats.json` records `prediction_ms_mean` only after a call on a Mac. Payload is 28 bytes per 80 ms frame (2800 bps on the wire). The information rate is about 1646 bps. SDP name is `LIQUIDCODEC` at a 48 kHz clock, because NetEq does not accept 24 kHz; the codec itself is 24 kHz mono.
+Calculated latency, not a measurement. For the streaming encoder, the first packet waits 80 ms plus the 20 ms lookahead, the receiver then waits `(new_frames - 1) * 80` ms, and the CPU STFT tail holds 20 ms. At `new_frames=1` that is **120 ms**. At `new_frames=4` it is 360 ms. The older stateless 20-frame window, with no lookahead, is still 3140 ms. Left context is lookback. NetEq's jitter buffer and the Core ML runtime are not in these numbers. `decoder_stats.json` records `prediction_ms_mean` only after a call on a Mac. Payload is 28 bytes per 80 ms frame (2800 bps on the wire). The information rate is about 1646 bps. SDP name is `LIQUIDCALL` at a 48 kHz clock, because NetEq does not accept 24 kHz; the codec itself is 24 kHz mono.
 
 From a checkout such as `~/Public/webrtcsays-m156` or `~/Dev/webrtcsays.ai`:
 
@@ -254,64 +254,64 @@ git checkout liquidcodec-ane
 
 # One command from the gclient parent. It syncs, runs the pinned depot_tools gn,
 # builds directcall, fetches models (skipped when they are already compiled),
-# runs xcrun coremlcompiler on every .mlpackage, and rewrites liquidcodec.json
+# runs xcrun coremlcompiler on every .mlpackage, and rewrites liquidcall.json
 # to those .mlmodelc paths. It then prints the callee and caller lines.
-./build.sh release liquidcodec
-# ./build.sh -b liquidcodec-ane release liquidcodec
+./build.sh release liquidcall
+# ./build.sh -b liquidcodec-ane release liquidcall
 
 # Same call the build prints. Both sides inject the tone. It runs N seconds,
 # then fails the shell if a log shows Check failed, a bad code, or a session
 # restart, or if either direction sent fewer than 90% of duration/80ms packets.
 # It does not use GNU timeout. Default directcall AEC is on; this script passes
 # --aec=off so the injected clip is not altered. Use --aec=on for a mic loop.
-src/scripts/liquidcodec/run_local_call.sh
+src/scripts/liquidcall/run_local_call.sh
 
 # iOS frameworks for the RobotPhone app (a separate repo). Unsigned.
 # Writes <gclient>/out/ios-arm64/WebRTC.framework, direct.framework, and models/.
-# ./build.sh -b liquidcodec-ane ios release liquidcodec
+# ./build.sh -b liquidcodec-ane ios release liquidcall
 
 # Quality ladder. One command prepares clips, models, and the binary, then
-# writes scripts/liquidcodec/out/quality/<timestamp>/quality.csv and quality.md.
+# writes scripts/liquidcall/out/quality/<timestamp>/quality.csv and quality.md.
 # --stages 1 is the offline codec. --stages 2 is packing and runs on Linux.
 # --quick is the short matrix. Stage 5 injects loss and jitter in-process.
-src/scripts/liquidcodec/quality_ladder.sh --quick
-# src/scripts/liquidcodec/quality_ladder.sh --stages 1-6
+src/scripts/liquidcall/quality_ladder.sh --quick
+# src/scripts/liquidcall/quality_ladder.sh --stages 1-6
 
 # A hand-supplied clip still works. 24 kHz mono is the codec rate.
 # afconvert -f WAVE -d LEI16@24000 input.flac "$HOME/liquid-clip.wav"
-# src/scripts/liquidcodec/run_local_call.sh --inject-wav "$HOME/liquid-clip.wav" --duration 20
+# src/scripts/liquidcall/run_local_call.sh --inject-wav "$HOME/liquid-clip.wav" --duration 20
 
 # A live mic uses AEC3, NS, and AGC unless you pass --aec=off. The script above
 # passes --aec=off. Headphones, so the mic does not hear the speaker.
 BIN=src/out/release/directcall
-MODELS=scripts/liquidcodec/models
-mkdir -p "$HOME/liquidcodec-record/callee" "$HOME/liquidcodec-record/caller"
+MODELS=scripts/liquidcall/models
+mkdir -p "$HOME/liquidcall-record/callee" "$HOME/liquidcall-record/caller"
 
 "$BIN" --mode=callee --user_name=alice --room_name=liquid \
   --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama \
-  --audio-codec=liquidcodec \
+  --audio-codec=liquidcall \
   --liquid-decode=ane \
   --liquid-model-dir="$MODELS" \
-  --record-dir="$HOME/liquidcodec-record/callee" \
+  --record-dir="$HOME/liquidcall-record/callee" \
   127.0.0.1:3456
 
 "$BIN" --mode=caller --user_name=bob --target_name=alice --room_name=liquid \
   --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama \
-  --audio-codec=liquidcodec \
+  --audio-codec=liquidcall \
   --liquid-decode=ane \
   --liquid-model-dir="$MODELS" \
   --inject-wav="$HOME/liquid-clip.wav" \
-  --record-dir="$HOME/liquidcodec-record/caller" \
+  --record-dir="$HOME/liquidcall-record/caller" \
   --duration=20 \
   127.0.0.1:3456
 ```
 
-Two Macs on a LAN: run the callee the same way with that Mac's LAN address instead of `127.0.0.1`, and point the caller at the same `192.168.x.x:3456`. Both machines need the fetched models and a `liquidcodec` build.
+Two Macs on a LAN: run the callee the same way with that Mac's LAN address instead of `127.0.0.1`, and point the caller at the same `192.168.x.x:3456`. Both machines need the fetched models and a `liquidcall` build.
 
 Listen and compare:
 
-- `~/liquidcodec-record/caller/codec_in_24k.wav` is the 24 kHz audio LiquidCodec encoded.
-- `~/liquidcodec-record/callee/codec_out_24k.wav` is the 24 kHz audio after the Core ML decoder and CPU tail, without the priming silence.
+- `~/liquidcall-record/caller/codec_in_24k.wav` is the 24 kHz audio LiquidCall encoded.
+- `~/liquidcall-record/callee/codec_out_24k.wav` is the 24 kHz audio after the Core ML decoder and CPU tail, without the priming silence.
 - `caller/input_48k.wav` and `callee/output_48k.wav` are what WebRTC sent and played, including the wait before the first chunk.
 - `caller/encoder_stats.json` and `callee/decoder_stats.json` have payload bitrate, packet size, chunk size, the calculated latency, and `prediction_ms_mean` for the Core ML call.
 - `tap_stats.json` is the same payload accounting for an Opus run.
@@ -321,18 +321,18 @@ Repeat the caller and callee with `--liquid-decode=cpu` to compare that predicti
 Opus A/B, same clip, same record dirs (use a different folder so the WAVs are not overwritten):
 
 ```bash
-# Comparable: Opus floor is 6000 bps. LiquidCodec's information rate is about 1646 bps.
+# Comparable: Opus floor is 6000 bps. LiquidCall's information rate is about 1646 bps.
 "$BIN" --mode=callee --user_name=alice --room_name=liquid \
   --no-encryption --no-websocket_signaling --no-video \
   --audio-codec=opus --opus-bitrate=6000 \
-  --record-dir="$HOME/liquidcodec-record/opus6k-callee" \
+  --record-dir="$HOME/liquidcall-record/opus6k-callee" \
   127.0.0.1:3456
 
 "$BIN" --mode=caller --user_name=bob --target_name=alice --room_name=liquid \
   --no-encryption --no-websocket_signaling --no-video \
   --audio-codec=opus --opus-bitrate=6000 \
   --inject-wav="$HOME/liquid-clip.wav" \
-  --record-dir="$HOME/liquidcodec-record/opus6k-caller" \
+  --record-dir="$HOME/liquidcall-record/opus6k-caller" \
   --duration=20 \
   127.0.0.1:3456
 
@@ -340,11 +340,11 @@ Opus A/B, same clip, same record dirs (use a different folder so the WAVs are no
 # same commands with --opus-bitrate=32000 and record dirs opus32k-callee / opus32k-caller
 ```
 
-`--audio-codec` omitted is the existing Opus path with no extra flags. The manifest contract is `scripts/liquidcodec/liquidcodec.example.json`.
+`--audio-codec` omitted is the existing Opus path with no extra flags. The manifest contract is `scripts/liquidcall/liquidcall.example.json`.
 
 ### Latency: low-latency jitter buffer
 
-For `--audio-codec=liquidcodec` the receive jitter buffer (NetEq) runs in a low-latency mode by default: `--jitter-max-ms=80` caps NetEq's target delay, and the same cap (plus NetEq's 20 ms window) bounds the playout delay NetEq accelerates down to, with fast accelerate on. Below the cap NetEq still adapts to measured jitter. `--jitter-max-ms=160` is a balanced setting, `--jitter-max-ms=0` is stock NetEq with no cap (the old behavior), and `--no-jitter-fast-accelerate` turns fast accelerate off. The startup line `Jitter buffer: ...` shows what is in effect. Opus calls keep stock NetEq unless the flag is given.
+For `--audio-codec=liquidcall` the receive jitter buffer (NetEq) runs in a low-latency mode by default: `--jitter-max-ms=80` caps NetEq's target delay, and the same cap (plus NetEq's 20 ms window) bounds the playout delay NetEq accelerates down to, with fast accelerate on. Below the cap NetEq still adapts to measured jitter. `--jitter-max-ms=160` is a balanced setting, `--jitter-max-ms=0` is stock NetEq with no cap (the old behavior), and `--no-jitter-fast-accelerate` turns fast accelerate off. The startup line `Jitter buffer: ...` shows what is in effect. Opus calls keep stock NetEq unless the flag is given.
 
 The stats line reports `jitter_buffer_ms` for the last interval (it was the whole-call average, which lagged changes by tens of seconds), `jitter_buffer_avg_ms` for the call, and `jitter_buffer_target_ms`, NetEq's target. `mouth_to_ear_est_ms` uses the interval value. Once DTLS has picked the SRTP cipher, an `On-wire (negotiated): ...` line prints the per-packet bytes with the real tag (4 bytes for SHA1_32).
 
@@ -360,14 +360,14 @@ Measured in that simulation (speech, 18 s, Core ML ANE): with no stalls the mean
 Build the Mac binary into its own directory, so a callee running from `out/release` or another directory is not relinked under it:
 
 ```bash
-src/scripts/liquidcodec/build_mac_directcall.sh lowlat   # -> src/out/lowlat/directcall
+src/scripts/liquidcall/build_mac_directcall.sh lowlat   # -> src/out/lowlat/directcall
 ```
 
 ### Bandwidth: tight packing and Opus
 
 Each code is in `[0, 2016)`, so it fits in 11 bits. Twelve codes are 132 bits. `--liquid-pack=tight` stores that in **17 bytes** and adds no payload header: the RTP sequence number and timestamp already identify the packet, and SDP `pack=tight` with `fpp` fixes how many frames are inside. The length is unique too (17, 33, or 66 bytes). `--liquid-pack=u16` keeps the current header plus 12 little-endian codes: 28, 52, or 100 bytes for 1, 2, or 4 frames. `--liquid-frames-per-packet` is 1, 2, or 4. A packet of several frames is parsed into 80 ms frames so NetEq's 120 ms limit still holds.
 
-Calculated on-wire rate, IPv4 20 + UDP 8 + RTP 12, no header extensions. The SRTP column adds a 16-byte (GCM) tag; LiquidCodec calls offer SHA1_32, a 4-byte tag, so a u16 one-frame call is 7.2 kbps on the wire. The quality calls use `--no-encryption`, so the plain column is the one getStats should approach.
+Calculated on-wire rate, IPv4 20 + UDP 8 + RTP 12, no header extensions. The SRTP column adds a 16-byte (GCM) tag; LiquidCall calls offer SHA1_32, a 4-byte tag, so a u16 one-frame call is 7.2 kbps on the wire. The quality calls use `--no-encryption`, so the plain column is the one getStats should approach.
 
 | pack | frames/packet | payload | payload kbps | IPv4/UDP/RTP kbps | plus SRTP tag |
 |---|---:|---:|---:|---:|---:|
@@ -376,24 +376,24 @@ Calculated on-wire rate, IPv4 20 + UDP 8 + RTP 12, no header extensions. The SRT
 | tight | 2 | 33 | 1.650 | 3.650 | 4.450 |
 | tight | 4 | 66 | 1.650 | 2.650 | 3.050 |
 
-`scripts/liquidcodec/bench_bandwidth.sh --theoretical` prints the full matrix, including Opus at 6, 8, 12, 16, 24, and 32 kbps, ptime 20/40/60, and DTX on or off. Opus sizes in that table are the nominal target. DTX is smaller only while the signal is quiet, which a real call measures and the table does not invent.
+`scripts/liquidcall/bench_bandwidth.sh --theoretical` prints the full matrix, including Opus at 6, 8, 12, 16, 24, and 32 kbps, ptime 20/40/60, and DTX on or off. Opus sizes in that table are the nominal target. DTX is smaller only while the signal is quiet, which a real call measures and the table does not invent.
 
-On the Mac, after `./build.sh release liquidcodec`. The bench uses that binary and `scripts/liquidcodec/models`. With no `--samples` it generates a tone, so it does not need a separate download.
+On the Mac, after `./build.sh release liquidcall`. The bench uses that binary and `scripts/liquidcall/models`. With no `--samples` it generates a tone, so it does not need a separate download.
 
 ```bash
-src/scripts/liquidcodec/bench_bandwidth.sh --theoretical
-src/scripts/liquidcodec/bench_bandwidth.sh --quick
+src/scripts/liquidcall/bench_bandwidth.sh --theoretical
+src/scripts/liquidcall/bench_bandwidth.sh --quick
 
 # Speech clips, when you want WER rather than the generated tone:
-src/scripts/liquidcodec/bench_bandwidth.sh \
+src/scripts/liquidcall/bench_bandwidth.sh \
   --samples "$HOME/liquidcodec-ane/samples" \
   --conversation "$HOME/speech/conversation.wav"
 
 # These print sudo commands and do not run them.
-scripts/liquidcodec/bench_bandwidth.sh --pcap --impair --theoretical
+scripts/liquidcall/bench_bandwidth.sh --pcap --impair --theoretical
 ```
 
-Each measured run writes `scripts/liquidcodec/out/bandwidth/<config>/caller.log` (getStats `send_bytes`, `send_packets`, `send_header_bytes`) and a WAV under `callee/`. The analyzer writes `bandwidth.csv` and, when a score exists, `bandwidth.svg` (quality vs on-wire kbps) and `bandwidth_wer.svg`. Mouth-to-ear in the CSV is an estimate: calculated codec latency + jitter buffer + half the RTT + mean Core ML prediction time. It is not an acoustic measurement.
+Each measured run writes `scripts/liquidcall/out/bandwidth/<config>/caller.log` (getStats `send_bytes`, `send_packets`, `send_header_bytes`) and a WAV under `callee/`. The analyzer writes `bandwidth.csv` and, when a score exists, `bandwidth.svg` (quality vs on-wire kbps) and `bandwidth_wer.svg`. Mouth-to-ear in the CSV is an estimate: calculated codec latency + jitter buffer + half the RTT + mean Core ML prediction time. It is not an acoustic measurement.
 
 Quality tools are optional and were not run here:
 
@@ -401,12 +401,12 @@ Quality tools are optional and were not run here:
 python3 -m pip install numpy soundfile pesq pystoi
 # ViSQOL speech mode, if the package builds: python3 -m pip install visqol
 # Whisper WER: python3 -m pip install openai-whisper
-#   LIQUID_BENCH_WHISPER=1 python3 scripts/liquidcodec/bandwidth.py --analyze scripts/liquidcodec/out/bandwidth
+#   LIQUID_BENCH_WHISPER=1 python3 scripts/liquidcall/bandwidth.py --analyze scripts/liquidcall/out/bandwidth
 # A .txt transcript with the same basename as the clip is the WER reference.
 # Without one, Whisper transcribes the original and the decode and compares those texts.
 ```
 
-ANE and CPU decode time per frame are `prediction_ms_mean` in `callee/decoder_stats.json`. The bench runs each LiquidCodec packing twice, `--liquid-decode=ane` and `--liquid-decode=cpu`. Nothing in this checkout has executed those calls.
+ANE and CPU decode time per frame are `prediction_ms_mean` in `callee/decoder_stats.json`. The bench runs each LiquidCall packing twice, `--liquid-decode=ane` and `--liquid-decode=cpu`. Nothing in this checkout has executed those calls.
 
 ## Troubleshooting
 - If you encounter missing dependencies, ensure all prerequisites are installed.

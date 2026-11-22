@@ -469,11 +469,11 @@ bool DirectApplication::CreatePeerConnection() {
       return false;
 #endif
     }
-    if (!opts_.record_dir.empty() || !opts_.inject_wav.empty()) {
+    if (!opts_.record_dir.empty() || !opts_.inject_wav.empty() || opts_.voice_swap_udp > 0) {
       audio_encoder_factory = webrtc::CreateTappingAudioEncoderFactory(
           audio_encoder_factory, opts_.record_dir, opts_.inject_wav);
       audio_decoder_factory = webrtc::CreateTappingAudioDecoderFactory(
-          audio_decoder_factory, opts_.record_dir);
+          audio_decoder_factory, opts_.record_dir, opts_.voice_swap_udp, opts_.voice_swap_mute);
     }
     if (opts_.impair_loss_pct > 0 || opts_.impair_jitter_ms > 0) {
       audio_encoder_factory = webrtc::CreateImpairingAudioEncoderFactory(

@@ -5,6 +5,11 @@
 #include <cstdio>
 #include <cstring>
 #include <sys/stat.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <memory>
 #include <utility>
@@ -264,32 +269,78 @@ class TapEncoder final : public AudioEncoder {
   int64_t payload_bytes_ = 0;
 };
 
+// Where decoded far-end PCM goes: the quality-run WAV and/or the voice-swap sidecar (UDP to 127.0.0.1).
+class DecodedSink {
+ public:
+  DecodedSink(const std::string& record_dir, int rate, int udp_port, bool mute) : rate_(rate), mute_(mute) {
+    if (!record_dir.empty()) {
+      EnsureDir(record_dir);
+      wav_.Open(record_dir + "/output_48k.wav", rate);
+    }
+    if (udp_port > 0) {
+      fd_ = socket(AF_INET, SOCK_DGRAM, 0);
+      if (fd_ >= 0) {
+        fcntl(fd_, F_SETFL, fcntl(fd_, F_GETFL, 0) | O_NONBLOCK);   // never block the decode thread
+        std::memset(&addr_, 0, sizeof(addr_));
+        addr_.sin_family = AF_INET;
+        addr_.sin_port = htons(static_cast<uint16_t>(udp_port));
+        addr_.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        std::fprintf(stderr, "voice swap: decoded audio -> 127.0.0.1:%d (%d Hz)%s\n", udp_port, rate,
+                     mute ? ", local playout muted" : "");
+      }
+    }
+  }
+  ~DecodedSink() {
+    if (fd_ >= 0) close(fd_);
+  }
+  void Write(int16_t* p, size_t n) {
+    if (!p || n == 0) return;
+    wav_.Write(p, n);
+    if (fd_ < 0) return;
+    const size_t chunk = static_cast<size_t>(rate_ / 100);   // 10 ms per datagram
+    uint8_t buf[4 + 2 * 960];
+    const uint32_t rate = static_cast<uint32_t>(rate_);
+    for (size_t off = 0; off < n; off += chunk) {
+      const size_t m = std::min(chunk, n - off);
+      if (m > 960) break;
+      std::memcpy(buf, &rate, 4);
+      std::memcpy(buf + 4, p + off, m * 2);
+      sendto(fd_, buf, 4 + m * 2, 0, reinterpret_cast<const sockaddr*>(&addr_), sizeof(addr_));
+    }
+    if (mute_) std::fill(p, p + n, static_cast<int16_t>(0));
+  }
+
+ private:
+  PcmWav wav_;
+  int rate_;
+  bool mute_;
+  int fd_ = -1;
+  sockaddr_in addr_{};
+};
+
 class TapFrame final : public AudioDecoder::EncodedAudioFrame {
  public:
-  TapFrame(std::unique_ptr<EncodedAudioFrame> inner, PcmWav* wav)
-      : inner_(std::move(inner)), wav_(wav) {}
+  TapFrame(std::unique_ptr<EncodedAudioFrame> inner, DecodedSink* sink)
+      : inner_(std::move(inner)), sink_(sink) {}
   size_t Duration() const override { return inner_->Duration(); }
   bool IsDtxPacket() const override { return inner_->IsDtxPacket(); }
   std::optional<DecodeResult> Decode(std::span<int16_t> decoded) const override {
     const auto result = inner_->Decode(decoded);
-    if (result && wav_) wav_->Write(decoded.data(), result->num_decoded_samples);
+    if (result && sink_) sink_->Write(decoded.data(), result->num_decoded_samples);
     return result;
   }
 
  private:
   std::unique_ptr<EncodedAudioFrame> inner_;
-  PcmWav* wav_;
+  DecodedSink* sink_;
 };
 
 class TapDecoder final : public AudioDecoder {
  public:
-  TapDecoder(std::unique_ptr<AudioDecoder> inner, std::string record_dir)
-      : inner_(std::move(inner)), record_dir_(std::move(record_dir)) {
-    if (!record_dir_.empty()) {
-      EnsureDir(record_dir_);
-      wav_.Open(record_dir_ + "/output_48k.wav", inner_->SampleRateHz());
-    }
-  }
+  TapDecoder(std::unique_ptr<AudioDecoder> inner, std::string record_dir, int udp_port, bool mute)
+      : inner_(std::move(inner)),
+        record_dir_(std::move(record_dir)),
+        sink_(record_dir_, inner_->SampleRateHz(), udp_port, mute) {}
   int SampleRateHz() const override { return inner_->SampleRateHz(); }
   size_t Channels() const override { return inner_->Channels(); }
   void Reset() override {}
@@ -303,7 +354,7 @@ class TapDecoder final : public AudioDecoder {
     auto parsed = inner_->ParsePayload(std::move(payload), timestamp);
     for (auto& item : parsed) {
       if (item.frame) {
-        item.frame = std::make_unique<TapFrame>(std::move(item.frame), &wav_);
+        item.frame = std::make_unique<TapFrame>(std::move(item.frame), &sink_);
       }
     }
     return parsed;
@@ -318,14 +369,14 @@ class TapDecoder final : public AudioDecoder {
                                  : static_cast<size_t>(sample_rate_hz) * Channels() * sizeof(int16_t);
     const int n = inner_->Decode(encoded, encoded_len, sample_rate_hz, max_bytes, decoded,
                                  speech_type);
-    if (n > 0) wav_.Write(decoded, static_cast<size_t>(n));
+    if (n > 0) sink_.Write(decoded, static_cast<size_t>(n));
     return n;
   }
 
  private:
   std::unique_ptr<AudioDecoder> inner_;
   std::string record_dir_;
-  PcmWav wav_;
+  DecodedSink sink_;
 };
 
 class TapEncoderFactory : public AudioEncoderFactory {
@@ -356,8 +407,8 @@ class TapEncoderFactory : public AudioEncoderFactory {
 
 class TapDecoderFactory : public AudioDecoderFactory {
  public:
-  TapDecoderFactory(scoped_refptr<AudioDecoderFactory> inner, std::string record_dir)
-      : inner_(std::move(inner)), record_dir_(std::move(record_dir)) {}
+  TapDecoderFactory(scoped_refptr<AudioDecoderFactory> inner, std::string record_dir, int udp_port, bool mute)
+      : inner_(std::move(inner)), record_dir_(std::move(record_dir)), udp_port_(udp_port), mute_(mute) {}
   std::vector<AudioCodecSpec> GetSupportedDecoders() override {
     return inner_->GetSupportedDecoders();
   }
@@ -368,12 +419,14 @@ class TapDecoderFactory : public AudioDecoderFactory {
                                       std::optional<AudioCodecPairId> pair) override {
     auto dec = inner_->Create(env, format, pair);
     if (!dec) return nullptr;
-    return std::make_unique<TapDecoder>(std::move(dec), record_dir_);
+    return std::make_unique<TapDecoder>(std::move(dec), record_dir_, udp_port_, mute_);
   }
 
  private:
   scoped_refptr<AudioDecoderFactory> inner_;
   std::string record_dir_;
+  int udp_port_;
+  bool mute_;
 };
 
 }  // namespace
@@ -385,8 +438,9 @@ scoped_refptr<AudioEncoderFactory> CreateTappingAudioEncoderFactory(
 }
 
 scoped_refptr<AudioDecoderFactory> CreateTappingAudioDecoderFactory(
-    scoped_refptr<AudioDecoderFactory> inner, const std::string& record_dir) {
-  return make_ref_counted<TapDecoderFactory>(std::move(inner), record_dir);
+    scoped_refptr<AudioDecoderFactory> inner, const std::string& record_dir, int voice_swap_udp,
+    bool voice_swap_mute) {
+  return make_ref_counted<TapDecoderFactory>(std::move(inner), record_dir, voice_swap_udp, voice_swap_mute);
 }
 
 }  // namespace webrtc

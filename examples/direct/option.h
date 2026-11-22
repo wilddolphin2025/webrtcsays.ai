@@ -141,6 +141,8 @@ struct Options {
     bool opus_dtx = false;
     std::string record_dir{};           // WAV + stats for a quality run
     std::string inject_wav{};           // replace the mic with this 16-bit PCM wav
+    int voice_swap_udp = 0;             // >0: send decoded far-end PCM to 127.0.0.1:<port> (voice-swap sidecar)
+    bool voice_swap_mute = true;        // with voice_swap_udp: play silence locally (the sidecar plays)
     std::string liquid_model_dir{};
     std::string liquid_manifest{};
     int liquid_ctx = 0;                 // 0 = manifest default

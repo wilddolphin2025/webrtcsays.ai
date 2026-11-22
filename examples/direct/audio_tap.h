@@ -16,8 +16,12 @@ scoped_refptr<AudioEncoderFactory> CreateTappingAudioEncoderFactory(
     scoped_refptr<AudioEncoderFactory> inner, const std::string& record_dir,
     const std::string& inject_wav);
 
+// voice_swap_udp > 0: every decoded block is also sent to 127.0.0.1:voice_swap_udp as datagrams of
+// [uint32 sample_rate][int16 mono PCM, <= 10 ms] for the voice-swap sidecar; voice_swap_mute then zeroes the
+// block before playout so only the sidecar's converted voice is heard.
 scoped_refptr<AudioDecoderFactory> CreateTappingAudioDecoderFactory(
-    scoped_refptr<AudioDecoderFactory> inner, const std::string& record_dir);
+    scoped_refptr<AudioDecoderFactory> inner, const std::string& record_dir, int voice_swap_udp = 0,
+    bool voice_swap_mute = true);
 
 }  // namespace webrtc
 

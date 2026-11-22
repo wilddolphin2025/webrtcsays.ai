@@ -328,7 +328,7 @@ class TapDecoder final : public AudioDecoder {
   PcmWav wav_;
 };
 
-class TapEncoderFactory final : public AudioEncoderFactory {
+class TapEncoderFactory : public AudioEncoderFactory {
  public:
   TapEncoderFactory(scoped_refptr<AudioEncoderFactory> inner, std::string record_dir,
                     std::string inject)
@@ -354,7 +354,7 @@ class TapEncoderFactory final : public AudioEncoderFactory {
   std::string inject_;
 };
 
-class TapDecoderFactory final : public AudioDecoderFactory {
+class TapDecoderFactory : public AudioDecoderFactory {
  public:
   TapDecoderFactory(scoped_refptr<AudioDecoderFactory> inner, std::string record_dir)
       : inner_(std::move(inner)), record_dir_(std::move(record_dir)) {}

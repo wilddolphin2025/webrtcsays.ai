@@ -1,3 +1,7 @@
+#ifdef UNSAFE_BUFFERS_BUILD
+#pragma allow_unsafe_buffers
+#endif
+
 #include "modules/audio_coding/codecs/liquidcodec/liquid_stream.h"
 
 #include <cstring>

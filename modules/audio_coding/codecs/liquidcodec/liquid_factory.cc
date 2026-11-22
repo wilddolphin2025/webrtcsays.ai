@@ -1,3 +1,7 @@
+#ifdef UNSAFE_BUFFERS_BUILD
+#pragma allow_unsafe_buffers
+#endif
+
 #include "modules/audio_coding/codecs/liquidcodec/liquid_factory.h"
 
 #include <memory>
@@ -13,10 +17,9 @@
 namespace webrtc {
 namespace {
 
-class LiquidEncoderFactory final : public AudioEncoderFactory {
+class LiquidEncoderFactory : public AudioEncoderFactory {
  public:
   std::vector<AudioCodecSpec> GetSupportedEncoders() override {
-    const liquid::ChunkConfig& chunk = liquid::Runtime().chunk;
     SdpAudioFormat format(liquid::kPayloadName, liquid::kWebRtcClockHz, 1);
     AudioCodecInfo info(liquid::kWebRtcClockHz, 1,
                         static_cast<int>(liquid::PayloadBitrateBps()));
@@ -46,7 +49,7 @@ class LiquidEncoderFactory final : public AudioEncoderFactory {
   }
 };
 
-class LiquidDecoderFactory final : public AudioDecoderFactory {
+class LiquidDecoderFactory : public AudioDecoderFactory {
  public:
   std::vector<AudioCodecSpec> GetSupportedDecoders() override {
     SdpAudioFormat format(liquid::kPayloadName, liquid::kWebRtcClockHz, 1);

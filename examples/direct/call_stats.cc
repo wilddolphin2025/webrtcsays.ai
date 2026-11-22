@@ -192,6 +192,31 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     return bps;
   }
 
+  // bytes/header/packets from RTCStats are totals since the call began; the
+  // rate over the last interval needs their deltas. Dividing the totals by dt
+  // grew the "on-wire" figure with call length (hundreds of kbps for a
+  // ~7 kbps LiquidCodec stream).
+  struct WireCounter {
+    uint64_t bytes = 0;
+    uint64_t header = 0;
+    uint64_t packets = 0;
+    bool seen = false;
+  };
+  static double WireDeltaKbps(WireCounter& prev, uint64_t bytes, uint64_t header,
+                              uint64_t packets, double dt, bool encrypted, bool ipv6) {
+    double kbps = 0;
+    if (prev.seen && dt > 0 && bytes >= prev.bytes && header >= prev.header &&
+        packets >= prev.packets) {
+      kbps = OnWireKbps(bytes - prev.bytes, header - prev.header, packets - prev.packets, dt,
+                        encrypted, ipv6);
+    }
+    prev.bytes = bytes;
+    prev.header = header;
+    prev.packets = packets;
+    prev.seen = true;
+    return kbps;
+  }
+
   static double PerFrameMs(Counter& prev, double total_s, uint64_t frames, bool* have) {
     *have = false;
     double ms = 0;
@@ -295,8 +320,8 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         const uint64_t recv_bytes = in->bytes_received.value_or(0);
         const uint64_t recv_header = in->header_bytes_received.value_or(0);
         const double recv_onwire_kbps_now =
-            OnWireKbps(recv_bytes, recv_header, in->packets_received.value_or(0), dt,
-                       encrypted_, ipv6);
+            WireDeltaKbps(audio_in_wire_, recv_bytes, recv_header,
+                          in->packets_received.value_or(0), dt, encrypted_, ipv6);
         std::string mime = codec && codec->mime_type ? *codec->mime_type : audio_codec_;
         for (char& ch : mime) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
         const int codec_algo_ms = mime.find("liquid") != std::string::npos ? 120 : 20;
@@ -391,7 +416,7 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         const uint64_t send_header = outb->header_bytes_sent.value_or(0);
         const double send_payload_bps = bps;
         const double send_onwire_kbps_now =
-            OnWireKbps(send_bytes, send_header, outb->packets_sent.value_or(0), dt, encrypted_,
+            WireDeltaKbps(audio_out_wire_, send_bytes, send_header, outb->packets_sent.value_or(0), dt, encrypted_,
                        ipv6);
         audio_out.number("send_bitrate_bps", send_payload_bps, 0);
         audio_out.number("send_payload_kbps", send_payload_bps / 1000.0, 3);
@@ -501,6 +526,8 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
   Counter audio_in_total_;
   Counter audio_out_bytes_;
   Counter audio_out_total_;
+  WireCounter audio_in_wire_;
+  WireCounter audio_out_wire_;
   Counter video_in_bytes_;
   Counter video_out_bytes_;
   Counter video_enc_;

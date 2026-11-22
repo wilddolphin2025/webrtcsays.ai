@@ -9,7 +9,7 @@
  * Wire payload. Each code is in [0, 2016), which fits in 11 bits.
  * Information rate is 12 * log2(2016) * 12.5 ≈ 1646 bps.
  *
- * u16 (default), N frames in {1, 2, 4}:
+ * u16 (default), N frames in {1, 2, 3, 4}:
  *   u8  version = 1
  *   u8  frame_count = N
  *   u16 sequence of the first frame, little-endian

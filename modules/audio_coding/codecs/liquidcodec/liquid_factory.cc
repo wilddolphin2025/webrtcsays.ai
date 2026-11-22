@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <utility>
@@ -25,7 +26,38 @@ SdpAudioFormat MakeLiquidFormat() {
   const liquid::RuntimeConfig& runtime = liquid::Runtime();
   format.parameters["pack"] = runtime.pack == liquid::WirePack::kTight ? "tight" : "u16";
   format.parameters["fpp"] = std::to_string(std::max(1, runtime.frames_per_packet));
+  if (runtime.dtx) format.parameters["usedtx"] = "1";
   return format;
+}
+
+// Send side: the decoder detects pack and frame count from the payload
+// length, so each sender may pick freely. Use the lower-bitrate choice of the
+// two peers: tight if either asks, the larger frames-per-packet, DTX if either
+// asks. The app's setting then lowers the Mac's send rate too.
+liquid::RuntimeConfig EncoderConfigFromFormat(const SdpAudioFormat& format) {
+  liquid::RuntimeConfig config = liquid::Runtime();
+  const auto pack = format.parameters.find("pack");
+  const auto fpp = format.parameters.find("fpp");
+  const auto dtx = format.parameters.find("usedtx");
+  if (pack != format.parameters.end() && pack->second == "tight") {
+    config.pack = liquid::WirePack::kTight;
+  }
+  // Frames per packet is the sender's own latency choice (each extra frame adds
+  // 80 ms). The peer's fpp is informational; the decoder reads any 1-4 frames
+  // from the payload length, so we never let the remote raise our ptime.
+  if (fpp != format.parameters.end()) {
+    const int n = std::atoi(fpp->second.c_str());
+    if (n >= 1 && n <= 4 && n != config.frames_per_packet) {
+      fprintf(stderr, "LiquidCodec: peer prefers %d frames/packet; sending %d (local setting)\n", n,
+              config.frames_per_packet);
+    }
+  }
+  if (dtx != format.parameters.end() && dtx->second == "1") config.dtx = true;
+  fprintf(stderr, "LiquidCodec send: pack=%s frames/packet=%d (ptime %d ms) dtx=%s\n",
+          config.pack == liquid::WirePack::kTight ? "tight" : "u16",
+          config.frames_per_packet, config.frames_per_packet * liquid::kFrameMs,
+          config.dtx ? "on" : "off");
+  return config;
 }
 
 liquid::RuntimeConfig ConfigFromFormat(const SdpAudioFormat& format) {
@@ -71,7 +103,7 @@ class LiquidEncoderFactory : public AudioEncoderFactory {
                                       const SdpAudioFormat& format,
                                       Options options) override {
     if (!QueryAudioEncoder(format)) return nullptr;
-    return std::make_unique<AudioEncoderLiquid>(options.payload_type, ConfigFromFormat(format));
+    return std::make_unique<AudioEncoderLiquid>(options.payload_type, EncoderConfigFromFormat(format));
   }
 };
 

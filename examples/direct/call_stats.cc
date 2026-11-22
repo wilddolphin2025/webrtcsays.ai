@@ -37,16 +37,19 @@ int64_t ElapsedMs(std::chrono::steady_clock::time_point origin,
 uint64_t RtpHeaderForOnWire(uint64_t reported, uint64_t packets) {
   if (packets == 0) return reported;
   const double per = static_cast<double>(reported) / static_cast<double>(packets);
-  if (per >= 8.0 && per <= 20.0) return reported;
+  // 12-byte fixed header plus any header extensions (one-byte form: 4-byte
+  // block header + elements, padded to 4). Earlier this capped at 20 bytes and
+  // hid extension overhead.
+  if (per >= 12.0 && per <= 80.0) return reported;
   return packets * 12;
 }
 
-// payload + RTP header + packets * (20 IPv4 + 8 UDP [+ 16 SRTP] [+ 20 IPv6]).
+// payload + RTP header + packets * (20 IPv4 + 8 UDP + SRTP tag [+ 20 IPv6]).
+// SRTP tag: 10 bytes (AES_CM_128_HMAC_SHA1_80), 4 (_32), 16 (AEAD GCM), 0 plain.
 double OnWireKbps(uint64_t payload, uint64_t header, uint64_t packets, double seconds,
-                  bool encrypted, bool ipv6) {
+                  int srtp_tag, bool ipv6) {
   if (seconds <= 0) return 0;
-  uint64_t extra = 28;
-  if (encrypted) extra += 16;
+  uint64_t extra = 28 + static_cast<uint64_t>(std::max(0, srtp_tag));
   if (ipv6) extra += 20;
   const uint64_t total = payload + RtpHeaderForOnWire(header, packets) + packets * extra;
   return static_cast<double>(total) * 8.0 / seconds / 1000.0;
@@ -203,12 +206,12 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     bool seen = false;
   };
   static double WireDeltaKbps(WireCounter& prev, uint64_t bytes, uint64_t header,
-                              uint64_t packets, double dt, bool encrypted, bool ipv6) {
+                              uint64_t packets, double dt, int srtp_tag, bool ipv6) {
     double kbps = 0;
     if (prev.seen && dt > 0 && bytes >= prev.bytes && header >= prev.header &&
         packets >= prev.packets) {
       kbps = OnWireKbps(bytes - prev.bytes, header - prev.header, packets - prev.packets, dt,
-                        encrypted, ipv6);
+                        srtp_tag, ipv6);
     }
     prev.bytes = bytes;
     prev.header = header;
@@ -260,6 +263,17 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
           break;
         }
       }
+    }
+    // Real SRTP auth tag from the negotiated cipher.
+    int srtp_tag = encrypted_ ? 10 : 0;
+    std::string srtp_cipher = encrypted_ ? "unknown" : "none";
+    for (const auto* transport : report->GetStatsOfType<webrtc::RTCTransportStats>()) {
+      if (!transport->srtp_cipher) continue;
+      srtp_cipher = *transport->srtp_cipher;
+      if (srtp_cipher.find("_32") != std::string::npos) srtp_tag = 4;
+      else if (srtp_cipher.find("GCM") != std::string::npos) srtp_tag = 16;
+      else if (srtp_cipher.find("_80") != std::string::npos) srtp_tag = 10;
+      break;
     }
     bool ipv6 = false;
     if (pair) {
@@ -321,7 +335,7 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         const uint64_t recv_header = in->header_bytes_received.value_or(0);
         const double recv_onwire_kbps_now =
             WireDeltaKbps(audio_in_wire_, recv_bytes, recv_header,
-                          in->packets_received.value_or(0), dt, encrypted_, ipv6);
+                          in->packets_received.value_or(0), dt, srtp_tag, ipv6);
         std::string mime = codec && codec->mime_type ? *codec->mime_type : audio_codec_;
         for (char& ch : mime) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
         const int codec_algo_ms = mime.find("liquid") != std::string::npos ? 120 : 20;
@@ -329,6 +343,12 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         const double jb = jitter_buffer_ms >= 0 ? jitter_buffer_ms : 0;
         const double m2e = 10.0 + codec_algo_ms + half_rtt + jb + 10.0;
         audio_out.str("codec", mime);
+        audio_out.str("srtp_cipher", srtp_cipher);
+        audio_out.integer("srtp_tag_bytes", srtp_tag);
+        if (const uint64_t rp = in->packets_received.value_or(0)) {
+          audio_out.number("recv_rtp_header_bytes_per_packet",
+                           static_cast<double>(recv_header) / static_cast<double>(rp), 1);
+        }
         audio_out.number("recv_bitrate_bps", bps, 0);
         audio_out.number("recv_payload_kbps", bps / 1000.0, 3);
         audio_out.number("recv_onwire_ipv4_udp_rtp_kbps", recv_onwire_kbps_now, 3);
@@ -415,9 +435,36 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         const uint64_t send_bytes = outb->bytes_sent.value_or(0);
         const uint64_t send_header = outb->header_bytes_sent.value_or(0);
         const double send_payload_bps = bps;
+        const uint64_t send_pk = outb->packets_sent.value_or(0);
+        if (audio_out_wire_.seen && dt > 0 && send_pk >= audio_out_wire_.packets) {
+          const uint64_t dp = send_pk - audio_out_wire_.packets;
+          audio_out.number("send_packets_per_s", static_cast<double>(dp) / dt, 2);
+          if (dp > 0) {
+            const double pay = static_cast<double>(send_bytes - audio_out_wire_.bytes) / dp;
+            const double hdr = static_cast<double>(send_header - audio_out_wire_.header) / dp;
+            audio_out.number("send_payload_bytes_per_packet", pay, 1);
+            audio_out.number("send_rtp_header_bytes_per_packet", hdr, 1);
+            // LiquidCodec payload sizes identify pack and frames per packet.
+            int fpp = 0;
+            const int ipay = static_cast<int>(pay + 0.5);
+            const int tight[] = {17, 33, 50, 66};
+            const int u16[] = {28, 52, 76, 100};
+            for (int i = 0; i < 4; ++i) {
+              if (ipay == tight[i] || ipay == u16[i]) fpp = i + 1;
+            }
+            if (fpp > 0) {
+              audio_out.integer("send_frames_per_packet", fpp);
+              audio_out.integer("send_ptime_ms", fpp * 80);
+              const double expected = 12.5 / fpp;
+              const double active = std::min(1.0, static_cast<double>(dp) / dt / expected);
+              audio_out.number("send_dtx_pct", (1.0 - active) * 100.0, 0);
+            }
+          } else {
+            audio_out.number("send_dtx_pct", 100.0, 0);
+          }
+        }
         const double send_onwire_kbps_now =
-            WireDeltaKbps(audio_out_wire_, send_bytes, send_header, outb->packets_sent.value_or(0), dt, encrypted_,
-                       ipv6);
+            WireDeltaKbps(audio_out_wire_, send_bytes, send_header, send_pk, dt, srtp_tag, ipv6);
         audio_out.number("send_bitrate_bps", send_payload_bps, 0);
         audio_out.number("send_payload_kbps", send_payload_bps / 1000.0, 3);
         audio_out.number("send_onwire_ipv4_udp_rtp_kbps", send_onwire_kbps_now, 3);

@@ -384,6 +384,32 @@ DirectPeer::~DirectPeer() {
   Cleanup();
 }
 
+// LiquidCodec packets carry 28 bytes of payload; the default audio RTP header
+// extensions (audio level, abs-send-time, transport-wide CC, ...) added 16
+// bytes to every packet, and transport-cc also triggers transport feedback
+// RTCP. Keep only MID (sent in the first packets of a call) unless asked.
+static void TrimAudioHeaderExtensions(webrtc::PeerConnectionInterface* pc, const Options& o) {
+  if (!pc) return;
+  const bool keep = o.rtp_header_extensions < 0 ? o.audio_codec != "liquidcodec"
+                                                : o.rtp_header_extensions != 0;
+  if (keep) return;
+  for (const auto& t : pc->GetTransceivers()) {
+    if (t->media_type() != webrtc::MediaType::AUDIO) continue;
+    auto exts = t->GetHeaderExtensionsToNegotiate();
+    int stopped = 0;
+    for (auto& e : exts) {
+      if (e.uri == webrtc::RtpExtension::kMidUri) continue;
+      if (e.direction != webrtc::RtpTransceiverDirection::kStopped) {
+        e.direction = webrtc::RtpTransceiverDirection::kStopped;
+        ++stopped;
+      }
+    }
+    auto err = t->SetHeaderExtensionsToNegotiate(exts);
+    fprintf(stderr, "Audio RTP header extensions: stopped %d (MID kept)%s\n", stopped,
+            err.ok() ? "" : " - failed");
+  }
+}
+
 void DirectPeer::ShutdownInternal() {
     if (call_stats_) call_stats_->Summarize();
     if (video_pump_) {
@@ -583,6 +609,7 @@ void DirectPeer::Start() {
         ConfigureOutgoingAudio();
 
         webrtc::PeerConnectionInterface::RTCOfferAnswerOptions offer_options;
+        TrimAudioHeaderExtensions(peer_connection_.get(), opts_);
 
         // Store observer in a member variable to keep it alive
         create_session_observer_ = webrtc::make_ref_counted<LambdaCreateSessionDescriptionObserver>(
@@ -1081,6 +1108,7 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                         RTC_LOG(LS_INFO) << "Video source configured for callee.";
                     }
                     ConfigureOutgoingAudio();
+                    TrimAudioHeaderExtensions(peer_connection_.get(), opts_);
 
                     create_session_observer_ = webrtc::make_ref_counted<LambdaCreateSessionDescriptionObserver>(
                         [this](std::unique_ptr<webrtc::SessionDescriptionInterface> desc) {

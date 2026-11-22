@@ -421,7 +421,11 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --liquid-new=<frames>              New frames per Core ML call (0 = manifest)\n"
       "  --liquid-decode=ane|cpu|all        Core ML compute units\n"
       "  --liquid-pack=u16|tight           u16 is 28 bytes/frame; tight is 17 bytes, no header\n"
-      "  --liquid-frames-per-packet=<n>    1, 2, or 4 codec frames in each RTP packet\n"
+      "  --liquid-frames-per-packet=<n>    1-4 codec frames (80-320 ms) in each RTP packet\n"
+      "  --liquid-dtx / --no-liquid-dtx    Send nothing during silence (default off)\n"
+      "  --srtp-tag32 / --no-srtp-tag32    4-byte SRTP auth tag (AES_CM_128_HMAC_SHA1_32); default on for liquidcodec\n"
+      "  --audio-rtcp-ms=<ms>              Audio RTCP report interval (default 10000 liquidcodec, 5000 otherwise)\n"
+      "  --rtp-extensions / --no-rtp-extensions  Audio RTP header extensions (default off for liquidcodec)\n"
       "  --aec=on|off                      AEC3, NS, and AGC (default on)\n"
       "  --quality=offline|factory         Codec or NetEq loop, no call\n"
       "  --impair-loss=<0-100>             Drop that percent of packets, no sudo\n"
@@ -462,6 +466,8 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--aec", "--liquid-encoder", "--liquid_encoder",
     "--quality", "--impair-loss", "--impair_loss", "--impair-jitter-ms", "--impair_jitter_ms",
     "--opus-ptime", "--opus_ptime", "--opus-dtx", "--no-opus-dtx",
+    "--liquid-dtx", "--no-liquid-dtx", "--srtp-tag32", "--no-srtp-tag32",
+    "--rtp-extensions", "--no-rtp-extensions", "--audio-rtcp-ms", "--audio_rtcp_ms",
     "--help"
   };
 
@@ -875,6 +881,20 @@ Options parseOptions(const std::vector<std::string>& args) {
     } else if (arg.find("--opus-ptime=") == 0 || arg.find("--opus_ptime=") == 0) {
         const auto eq = arg.find('=');
         opts.opus_ptime_ms = std::atoi(arg.substr(eq + 1).c_str());
+    } else if (arg == "--liquid-dtx" || arg == "--liquid_dtx") {
+        opts.liquid_dtx = true;
+    } else if (arg == "--no-liquid-dtx" || arg == "--no-liquid_dtx") {
+        opts.liquid_dtx = false;
+    } else if (arg == "--srtp-tag32" || arg == "--srtp_tag32") {
+        opts.srtp_tag32 = 1;
+    } else if (arg == "--no-srtp-tag32" || arg == "--no-srtp_tag32") {
+        opts.srtp_tag32 = 0;
+    } else if (arg.find("--audio-rtcp-ms=") == 0 || arg.find("--audio_rtcp_ms=") == 0) {
+        opts.audio_rtcp_ms = std::atoi(arg.substr(arg.find('=') + 1).c_str());
+    } else if (arg == "--rtp-extensions" || arg == "--rtp_extensions") {
+        opts.rtp_header_extensions = 1;
+    } else if (arg == "--no-rtp-extensions" || arg == "--no-rtp_extensions") {
+        opts.rtp_header_extensions = 0;
     } else if (arg == "--opus-dtx" || arg == "--opus_dtx") {
         opts.opus_dtx = true;
     } else if (arg == "--no-opus-dtx" || arg == "--no-opus_dtx") {
@@ -1165,9 +1185,8 @@ Options parseOptions(const std::vector<std::string>& args) {
   if (opts.liquid_pack != "u16" && opts.liquid_pack != "tight") {
     opts.parse_error = "liquid-pack must be u16 or tight";
   }
-  if (opts.liquid_frames_per_packet != 1 && opts.liquid_frames_per_packet != 2 &&
-      opts.liquid_frames_per_packet != 4) {
-    opts.parse_error = "liquid-frames-per-packet must be 1, 2, or 4";
+  if (opts.liquid_frames_per_packet < 1 || opts.liquid_frames_per_packet > 4) {
+    opts.parse_error = "liquid-frames-per-packet must be 1, 2, 3, or 4";
   }
 
   RTC_LOG(LS_INFO) << "Mode used " << opts.mode; // Log final mode value

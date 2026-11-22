@@ -213,7 +213,7 @@ double PayloadBitrateBps() {
 }
 
 int PayloadBytes(WirePack pack, int frames) {
-  if (frames != 1 && frames != 2 && frames != 4) return 0;
+  if (frames < 1 || frames > 4) return 0;
   if (pack == WirePack::kTight) {
     return (frames * kCodebooks * kTightBitsPerCode + 7) / 8;
   }
@@ -434,9 +434,9 @@ bool ApplyNegotiatedPack(const std::string& pack, const std::string& fpp,
   }
   if (!fpp.empty()) {
     const int n = std::atoi(fpp.c_str());
-    if (n != 1 && n != 2 && n != 4) {
+    if (n < 1 || n > 4) {
       if (!note.empty()) note += "; ";
-      note += "negotiated fpp \"" + fpp + "\" is not 1, 2, or 4";
+      note += "negotiated fpp \"" + fpp + "\" is not 1..4";
     } else if (n != *frames_per_packet) {
       if (!note.empty()) note += "; ";
       note += "fpp local " + std::to_string(*frames_per_packet) + " negotiated " +
@@ -592,7 +592,8 @@ bool UnpackPayload(const uint8_t* src, size_t len, int codebook_size, WirePack* 
   WirePack found = WirePack::kU16;
   int n = 0;
   bool matched = false;
-  for (int candidate : {1, 2, 4}) {
+  // Lengths are distinct: tight 17/33/50/66, u16 28/52/76/100 bytes.
+  for (int candidate : {1, 2, 3, 4}) {
     if (static_cast<size_t>(PayloadBytes(WirePack::kTight, candidate)) == len) {
       found = WirePack::kTight;
       n = candidate;

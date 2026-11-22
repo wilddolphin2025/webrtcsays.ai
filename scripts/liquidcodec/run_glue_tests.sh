@@ -12,7 +12,7 @@ g++ -std=c++20 -Wall -Wextra -Werror -Wshadow -O2 \
   "${ROOT}/modules/audio_coding/codecs/liquidcodec/liquid_stream.cc" \
   "${ROOT}/modules/audio_coding/codecs/liquidcodec/liquid_tail.cc"
 LIQUID_TEST_DIR="${OUT}" "${OUT}/liquid_glue_test" | tee "${OUT}/glue.txt"
-grep -c '^QUALITY_PACK ' "${OUT}/glue.txt" | grep -qx 6
+grep -c '^QUALITY_PACK ' "${OUT}/glue.txt" | grep -qx 8
 python3 -m pip install --quiet numpy
 python3 "${ROOT}/scripts/liquidcodec/check_tail.py" "${OUT}/tail_case.bin"
 python3 "${ROOT}/scripts/liquidcodec/bandwidth.py" --self-check

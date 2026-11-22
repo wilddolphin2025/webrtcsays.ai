@@ -5,6 +5,7 @@
 #include "modules/audio_coding/codecs/liquidcodec/audio_encoder_liquid.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include "rtc_base/logging.h"
@@ -156,6 +157,7 @@ AudioEncoder::EncodedInfo AudioEncoderLiquid::EncodeImpl(
                    std::span<int16_t>(dst, liquid::kSampleRateHz / 100));
     std::memcpy(pcm24, dst, sizeof(dst));
   }
+  const bool voice = VoiceActive(pcm24, liquid::kSampleRateHz / 100);
   codec_wav_.Write(pcm24, liquid::kSampleRateHz / 100);
   stats_.samples_24k += liquid::kSampleRateHz / 100;
 
@@ -188,6 +190,13 @@ AudioEncoder::EncodedInfo AudioEncoderLiquid::EncodeImpl(
   }
   const uint32_t stamp = bundle_.front().timestamp;
   bundle_.clear();
+  if (config_.dtx && !voice) {
+    // Silence: the encoder keeps running so its state stays current, but no
+    // packet goes out. The receiver's NetEq conceals the gap and fades out.
+    ++dtx_skipped_packets_;
+    info.speech = false;
+    return info;
+  }
   uint8_t bytes[128];
   size_t len = 0;
   if (!liquid::PackPayload(config_.pack, packed.data(), fpp,
@@ -204,6 +213,21 @@ AudioEncoder::EncodedInfo AudioEncoderLiquid::EncodeImpl(
     stats_.WriteJson(liquid::JoinPath(config_.record_dir, "encoder_stats.json"));
   }
   return info;
+}
+
+// Energy VAD. Speech when the 10 ms level is 9 dB over the tracked noise floor
+// and above -55 dBFS. The hangover (400 ms) covers the 120 ms algorithmic
+// lookahead plus word tails, so the packet that carries an onset is sent.
+bool AudioEncoderLiquid::VoiceActive(const int16_t* pcm24, int n) {
+  double sum = 0;
+  for (int i = 0; i < n; ++i) sum += static_cast<double>(pcm24[i]) * pcm24[i];
+  const double rms = std::sqrt(sum / std::max(1, n)) / 32768.0;
+  const double db = 20.0 * std::log10(std::max(rms, 1e-6));
+  // Floor follows quiet input quickly and loud input slowly.
+  noise_floor_db_ += (db < noise_floor_db_ ? 0.3 : 0.002) * (db - noise_floor_db_);
+  const bool loud = db > -55.0 && db > noise_floor_db_ + 9.0;
+  ticks_since_voice_ = loud ? 0 : std::min(ticks_since_voice_ + 1, 1 << 20);
+  return ticks_since_voice_ <= 40;
 }
 
 }  // namespace webrtc

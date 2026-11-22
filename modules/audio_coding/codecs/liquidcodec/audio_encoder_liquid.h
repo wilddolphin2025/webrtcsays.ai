@@ -26,6 +26,9 @@ struct RuntimeConfig {
   bool hidden_tail = true;
   WirePack pack = WirePack::kU16;
   int frames_per_packet = 1;
+  // DTX: skip packets while the input is silent (energy VAD with an adaptive
+  // noise floor and a hangover that covers the codec lookahead).
+  bool dtx = false;
 };
 
 // Process-wide settings copied from directcall before the peer connection
@@ -75,6 +78,11 @@ class AudioEncoderLiquid final : public AudioEncoder {
   size_t inject_pos_ = 0;
   int inject_rate_ = 0;
   bool failed_ = false;
+  // DTX state, in 10 ms ticks.
+  bool VoiceActive(const int16_t* pcm24, int n);
+  double noise_floor_db_ = -60.0;
+  int ticks_since_voice_ = 1 << 20;
+  long long dtx_skipped_packets_ = 0;
 };
 
 }  // namespace webrtc

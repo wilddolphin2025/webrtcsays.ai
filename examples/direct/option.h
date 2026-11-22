@@ -144,7 +144,11 @@ struct Options {
     std::string liquid_decode{"ane"};   // ane, cpu, all
     std::string liquid_encoder{"int8"};  // int8 or fp16 Core ML encoder package
     std::string liquid_pack{"u16"};     // u16 (28 bytes/frame) or tight (17 bytes/frame)
-    int liquid_frames_per_packet = 1;   // 1, 2, or 4
+    int liquid_frames_per_packet = 1;   // 1-4 (80-320 ms per packet)
+    bool liquid_dtx = false;            // skip LiquidCodec packets during silence
+    int srtp_tag32 = -1;                // AES_CM_128_HMAC_SHA1_32 (4-byte tag): -1 auto (on for liquidcodec), 0, 1
+    int audio_rtcp_ms = -1;             // audio RTCP report interval: -1 auto (10000 liquidcodec, else 5000)
+    int rtp_header_extensions = -1;     // -1 auto (off for liquidcodec), 0 off, 1 on (audio)
     bool aec = true;                    // AEC3, NS, and AGC in the platform ADM
     // Quality ladder. Empty means a normal call. offline = codec only.
     // factory = AudioEncoder/AudioDecoder plus NetEq, no network.

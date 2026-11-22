@@ -108,7 +108,7 @@ void TestPayload() {
   Expect(std::fabs(plain - 5700.0) < 0.1, "tight n=1 IPv4/UDP/RTP is 5700 bps");
   Expect(std::fabs(srtp - 7300.0) < 0.1, "tight n=1 with 16-byte SRTP tag is 7300 bps");
 
-  for (int n : {1, 2, 4}) {
+  for (int n : {1, 2, 3, 4}) {
     for (auto pack : {webrtc::liquid::WirePack::kU16, webrtc::liquid::WirePack::kTight}) {
       std::vector<int32_t> many(static_cast<size_t>(n * 12));
       for (int i = 0; i < n * 12; ++i) many[static_cast<size_t>(i)] = (i * 17 + 2015) % 2016;

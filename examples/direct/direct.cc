@@ -398,6 +398,7 @@ bool DirectApplication::CreatePeerConnection() {
       liquid.pack = opts_.liquid_pack == "tight" ? webrtc::liquid::WirePack::kTight
                                                  : webrtc::liquid::WirePack::kU16;
       liquid.frames_per_packet = opts_.liquid_frames_per_packet;
+      liquid.dtx = opts_.liquid_dtx;
       liquid.paths.model_dir = model_dir;
       std::string liquid_error;
       if (!webrtc::ConfigureLiquidRuntime(liquid, &liquid_error)) {
@@ -462,6 +463,22 @@ bool DirectApplication::CreatePeerConnection() {
     webrtc::PeerConnectionFactoryInterface::Options options;
     options.disable_encryption = true;
     peer_connection_factory_->SetOptions(options);
+  }
+
+  // Low-bitrate transport for LiquidCodec (none of these add latency):
+  // the 4-byte SRTP tag (used only when both peers allow it; otherwise
+  // SHA1_80's 10 bytes) and a slower audio RTCP report interval.
+  {
+    const bool liquid = opts_.audio_codec == "liquidcodec";
+    const bool tag32 = opts_.srtp_tag32 < 0 ? liquid : opts_.srtp_tag32 != 0;
+    if (opts_.encryption && tag32) {
+      webrtc::CryptoOptions crypto;
+      crypto.srtp.enable_aes128_sha1_32_crypto_cipher = true;
+      config.crypto_options = crypto;
+    }
+    const int rtcp_ms = opts_.audio_rtcp_ms > 0 ? opts_.audio_rtcp_ms : (liquid ? 10000 : 5000);
+    config.set_audio_rtcp_report_interval_ms(rtcp_ms);
+    fprintf(stderr, "Transport: srtp_tag32=%s audio_rtcp=%d ms\n", tag32 ? "on" : "off", rtcp_ms);
   }
 
   // Host, srflx and relay candidates so LAN calls connect directly.

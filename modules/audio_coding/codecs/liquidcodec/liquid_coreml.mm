@@ -5,6 +5,7 @@
 #import <CoreML/CoreML.h>
 #import <Foundation/Foundation.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -208,9 +209,20 @@ void WriteFloats(MLMultiArray* arr, const float* src, int n) {
   }
 }
 
+std::vector<int> StridesOf(MLMultiArray* arr);
+std::vector<int> ShapeOfArray(MLMultiArray* arr);
+
 std::vector<float> ReadFloats(MLMultiArray* arr) {
-  const int n = static_cast<int>(arr.count);
-  std::vector<float> out(static_cast<size_t>(n));
+  const std::vector<int> shape = ShapeOfArray(arr);
+  const std::vector<int> strides = StridesOf(arr);
+  const int count = static_cast<int>(arr.count);
+  // ANE pads strides. Indexing with those strides walks past `count`, which
+  // libc++ hardening reports as vector[] index out of bounds.
+  int n = count;
+  if (!shape.empty() && strides.size() == shape.size()) {
+    n = StridedElementCount(shape.data(), strides.data(), static_cast<int>(shape.size()), count);
+  }
+  std::vector<float> out(static_cast<size_t>(std::max(n, 0)));
   if (arr.dataType == MLMultiArrayDataTypeFloat16) {
     const uint16_t* p = static_cast<const uint16_t*>(arr.dataPointer);
     for (int i = 0; i < n; ++i) out[static_cast<size_t>(i)] = HalfToFloat(p[i]);
@@ -530,12 +542,23 @@ class CoreMlBackend final : public LiquidBackend {
           [out featureValueForName:[NSString stringWithUTF8String:state.out_name.c_str()]]
               .multiArrayValue;
       MLMultiArray* dest = (MLMultiArray*)ToId(state.array);
-      if (!updated || !dest || updated.count != dest.count || updated.dataType != dest.dataType) {
+      if (!updated || !dest || updated.dataType != dest.dataType) {
         if (error) *error = "encoder state \"" + state.out_name + "\" did not match the stored tensor";
         return false;
       }
-      std::memcpy(dest.dataPointer, updated.dataPointer,
-                  static_cast<size_t>(updated.count) * ElementBytes(updated.dataType));
+      const std::vector<int> shape = ShapeOfArray(updated);
+      const std::vector<int> strides = StridesOf(updated);
+      // The stored state is dense. An ANE state output is often padded, so a
+      // memcpy of `count` elements keeps the wrong bytes and later frames
+      // emit codes outside the codebook. The encode call then fails on every
+      // tick and the callee sends nothing more.
+      if (shape.empty() || strides.size() != shape.size() ||
+          !GatherStrided(updated.dataPointer, shape.data(), strides.data(),
+                         static_cast<int>(shape.size()), ElementBytes(updated.dataType),
+                         dest.dataPointer, static_cast<int>(dest.count))) {
+        if (error) *error = "encoder state \"" + state.out_name + "\" could not be copied";
+        return false;
+      }
     }
     for (int i = 0; i < frames_out * chunk.codebooks; ++i) {
       if (codes_out[i] < 0 || codes_out[i] >= chunk.codebook_size) {

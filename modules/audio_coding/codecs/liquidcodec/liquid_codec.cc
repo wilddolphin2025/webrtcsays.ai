@@ -364,6 +364,60 @@ std::string CompiledModelPath(const std::string& path) {
   return path;
 }
 
+int StridedElementCount(const int* shape, const int* strides, int rank, int count) {
+  if (rank <= 0 || shape == nullptr || strides == nullptr) {
+    return count > 0 ? count : 0;
+  }
+  int extent = 1;
+  for (int d = 0; d < rank; ++d) {
+    if (shape[d] <= 0) continue;
+    extent += (shape[d] - 1) * strides[d];
+  }
+  if (extent < 1) extent = 1;
+  return extent > count ? extent : count;
+}
+
+bool GatherStrided(const void* src, const int* shape, const int* strides, int rank,
+                   int elem_bytes, void* dense, int dense_count) {
+  if (src == nullptr || dense == nullptr || elem_bytes <= 0 || rank < 0) return false;
+  if (rank == 0) return dense_count == 0;
+  if (shape == nullptr || strides == nullptr) return false;
+  int expect = 1;
+  for (int d = 0; d < rank; ++d) {
+    if (shape[d] <= 0) return false;
+    expect *= shape[d];
+  }
+  if (expect != dense_count) return false;
+  int packed = 1;
+  bool contiguous = true;
+  for (int d = rank - 1; d >= 0; --d) {
+    if (strides[d] != packed) contiguous = false;
+    packed *= shape[d];
+  }
+  if (contiguous) {
+    std::memcpy(dense, src, static_cast<size_t>(dense_count) * static_cast<size_t>(elem_bytes));
+    return true;
+  }
+  const auto* in = static_cast<const uint8_t*>(src);
+  auto* out = static_cast<uint8_t*>(dense);
+  std::vector<int> idx(static_cast<size_t>(rank), 0);
+  for (int written = 0; written < dense_count; ++written) {
+    int offset = 0;
+    for (int d = 0; d < rank; ++d) offset += idx[static_cast<size_t>(d)] * strides[d];
+    std::memcpy(out + static_cast<size_t>(written) * static_cast<size_t>(elem_bytes),
+                in + static_cast<size_t>(offset) * static_cast<size_t>(elem_bytes),
+                static_cast<size_t>(elem_bytes));
+    int dim = rank - 1;
+    while (dim >= 0) {
+      ++idx[static_cast<size_t>(dim)];
+      if (idx[static_cast<size_t>(dim)] < shape[dim]) break;
+      idx[static_cast<size_t>(dim)] = 0;
+      --dim;
+    }
+  }
+  return true;
+}
+
 bool PackPayload(WirePack pack, const int32_t* codes, int frames, uint16_t first_seq,
                  int codebook_size, uint8_t* dst, size_t cap, size_t* out_len) {
   const int bytes = PayloadBytes(pack, frames);

@@ -231,6 +231,52 @@ void TestManifest() {
          "other paths are unchanged");
 }
 
+void TestPaddedStrides() {
+  // Decoder hidden on the ANE: shape [1, 512, 1575], time stride padded to 1600.
+  // Dense count is 806400. The last index is 819174, which libc++ rejects if
+  // ReadFloats only copies `count` elements.
+  const int shape[] = {1, 512, 1575};
+  const int strides[] = {819200, 1600, 1};
+  const int count = 1 * 512 * 1575;
+  const int last = 511 * 1600 + 1574;
+  const int n = webrtc::liquid::StridedElementCount(shape, strides, 3, count);
+  Expect(n == last + 1, "padded extent is one past the last strided index");
+  Expect(last >= count, "last ANE index is past the dense count");
+  std::vector<float> dense(static_cast<size_t>(count), 0.f);
+  Expect(last >= static_cast<int>(dense.size()), "dense copy would be out of bounds");
+  std::vector<float> padded(static_cast<size_t>(n), 0.f);
+  padded[static_cast<size_t>(last)] = 3.5f;
+  Expect(padded[static_cast<size_t>(last)] == 3.5f, "padded buffer holds the last index");
+
+  const int packed_strides[] = {512 * 1575, 1575, 1};
+  Expect(webrtc::liquid::StridedElementCount(shape, packed_strides, 3, count) == count,
+         "packed strides stay at the dense count");
+
+  // State feedback: a padded [2, 3] tensor gathers into a dense 6.
+  const int st_shape[] = {2, 3};
+  const int st_strides[] = {8, 1};
+  float src[16] = {};
+  src[0] = 1.f;
+  src[1] = 2.f;
+  src[2] = 3.f;
+  src[8] = 4.f;
+  src[9] = 5.f;
+  src[10] = 6.f;
+  float dst[6] = {};
+  Expect(webrtc::liquid::GatherStrided(src, st_shape, st_strides, 2, sizeof(float), dst, 6),
+         "gather padded state");
+  Expect(dst[0] == 1.f && dst[1] == 2.f && dst[2] == 3.f && dst[3] == 4.f && dst[4] == 5.f &&
+             dst[5] == 6.f,
+         "padded state lands densely in order");
+  float dense_src[6] = {1.f, 2.f, 3.f, 4.f, 5.f, 6.f};
+  const int dense_strides[] = {3, 1};
+  float dense_dst[6] = {};
+  Expect(webrtc::liquid::GatherStrided(dense_src, st_shape, dense_strides, 2, sizeof(float),
+                                      dense_dst, 6),
+         "gather packed state");
+  Expect(dense_dst[5] == 6.f, "packed state is copied");
+}
+
 void TestStatefulHold() {
   webrtc::liquid::ChunkConfig chunk;
   chunk.new_frames = 1;
@@ -428,6 +474,7 @@ int main() {
   TestPayload();
   TestLatency();
   TestManifest();
+  TestPaddedStrides();
   TestStatefulHold();
   TestLatent();
   TestPacer();

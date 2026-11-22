@@ -37,6 +37,9 @@ bool StreamEncoder::PushStateful(std::vector<std::array<int32_t, kCodebooks>>* c
   while (static_cast<int>(pending_.size()) >= step) {
     std::vector<int32_t> out(kCodebooks);
     if (!backend_->EncodeWindow(pending_.data(), chunk_, out.data(), timing, error)) {
+      // Leave this 10 ms unsent, but do not keep the same window at the
+      // front. Retrying it forever is how one bad frame silences the call.
+      pending_.erase(pending_.begin(), pending_.begin() + frame);
       return false;
     }
     std::array<int32_t, kCodebooks> one{};

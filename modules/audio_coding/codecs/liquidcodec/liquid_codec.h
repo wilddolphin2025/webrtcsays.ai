@@ -168,6 +168,17 @@ bool FileExists(const std::string& path);
 // (same directory, suffix replaced). Any other path is returned unchanged.
 std::string CompiledModelPath(const std::string& path);
 
+// Elements a strided tensor occupies. `count` is the dense product of the
+// shape. ANE MLMultiArray strides are often padded, so the last index is
+// past `count`. extent = 1 + sum((shape[d] - 1) * strides[d]), and the
+// buffer must hold max(extent, count) elements.
+int StridedElementCount(const int* shape, const int* strides, int rank, int count);
+// Copy a strided tensor into a dense buffer of `dense_count` elements.
+// Contiguous strides are a memcpy. Returns false when the shape product
+// is not `dense_count`.
+bool GatherStrided(const void* src, const int* shape, const int* strides, int rank,
+                   int elem_bytes, void* dense, int dense_count);
+
 bool PackFrame(const int32_t* codes12, uint16_t seq, int codebook_size,
                uint8_t* dst, size_t cap, size_t* out_len);
 bool UnpackFrame(const uint8_t* src, size_t len, int codebook_size,

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "api/audio_codecs/audio_decoder.h"
+#include "rtc_base/buffer.h"
 #include "common_audio/resampler/include/push_resampler.h"
 #include "modules/audio_coding/codecs/liquidcodec/audio_encoder_liquid.h"
 
@@ -20,6 +21,10 @@ class AudioDecoderLiquid final : public AudioDecoder {
   size_t Channels() const override { return 1; }
   void Reset() override;
   int PacketDuration(const uint8_t* encoded, size_t encoded_len) const override;
+  std::vector<ParseResult> ParsePayload(Buffer&& payload, uint32_t timestamp) override;
+  // One 80 ms codec frame. Used by ParsePayload so a multi-frame packet stays
+  // inside NetEq's 120 ms frame limit.
+  int DecodeOne(const int32_t* codes12, int16_t* decoded48, SpeechType* speech_type);
 
  protected:
   int DecodeInternal(const uint8_t* encoded, size_t encoded_len, int sample_rate_hz,
@@ -34,9 +39,6 @@ class AudioDecoderLiquid final : public AudioDecoder {
   liquid::CodecStats stats_;
   liquid::WavWriter codec_wav_;
   std::vector<int16_t> fifo24_;
-  int32_t last_codes_[liquid::kCodebooks] = {};
-  uint16_t expected_seq_ = 0;
-  bool have_seq_ = false;
   PushResampler<int16_t> up_;
   bool failed_ = false;
 };

@@ -14,6 +14,9 @@ g++ -std=c++20 -Wall -Wextra -Werror -O2 \
 LIQUID_TEST_DIR="${OUT}" "${OUT}/liquid_glue_test"
 python3 -m pip install --quiet numpy
 python3 "${ROOT}/scripts/liquidcodec/check_tail.py" "${OUT}/tail_case.bin"
+python3 "${ROOT}/scripts/liquidcodec/bandwidth.py" --self-check
+python3 "${ROOT}/scripts/liquidcodec/bandwidth.py" --theoretical --out "${OUT}/theoretical.csv"
 bash -n "${ROOT}/scripts/liquidcodec/fetch_models.sh"
+bash -n "${ROOT}/scripts/liquidcodec/bench_bandwidth.sh"
 bash -n "${ROOT}/build.sh"
 echo "glue tests and script syntax passed"

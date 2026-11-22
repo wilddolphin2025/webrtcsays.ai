@@ -379,6 +379,9 @@ bool DirectApplication::CreatePeerConnection() {
       }
       if (opts_.liquid_ctx > 0) liquid.chunk.ctx_frames = opts_.liquid_ctx;
       if (opts_.liquid_new > 0) liquid.chunk.new_frames = opts_.liquid_new;
+      liquid.pack = opts_.liquid_pack == "tight" ? webrtc::liquid::WirePack::kTight
+                                                 : webrtc::liquid::WirePack::kU16;
+      liquid.frames_per_packet = opts_.liquid_frames_per_packet;
       liquid.paths.model_dir = opts_.liquid_model_dir.empty()
                                    ? "scripts/liquidcodec/models"
                                    : opts_.liquid_model_dir;
@@ -896,14 +899,21 @@ void DirectApplication::ConfigureOutgoingAudio() {
     std::string name = codec.name;
     for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (liquid) {
-      if (name == "liquidcodec") preferred.push_back(std::move(codec));
+      if (name == "liquidcodec") {
+        codec.parameters["pack"] = opts_.liquid_pack;
+        codec.parameters["fpp"] = std::to_string(opts_.liquid_frames_per_packet);
+        preferred.push_back(std::move(codec));
+      }
     } else if (name == "opus") {
       if (opts_.opus_bitrate_bps > 0) {
         codec.parameters["maxaveragebitrate"] = std::to_string(opts_.opus_bitrate_bps);
-        codec.parameters["stereo"] = "0";
-        codec.parameters["sprop-stereo"] = "0";
-        codec.parameters["usedtx"] = "0";
       }
+      codec.parameters["stereo"] = "0";
+      codec.parameters["sprop-stereo"] = "0";
+      codec.parameters["usedtx"] = opts_.opus_dtx ? "1" : "0";
+      codec.parameters["ptime"] = std::to_string(opts_.opus_ptime_ms);
+      codec.parameters["minptime"] = "10";
+      codec.parameters["useinbandfec"] = "0";
       preferred.push_back(std::move(codec));
     }
   }

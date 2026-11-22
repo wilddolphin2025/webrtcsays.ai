@@ -204,8 +204,55 @@ double InformationBitrateBps(const ChunkConfig& chunk) {
 }
 
 double PayloadBitrateBps() {
-  return static_cast<double>(kPayloadBytes) * 8.0 * kFramesPerSecond;
+  return PayloadBitrateBps(WirePack::kU16, 1);
 }
+
+int PayloadBytes(WirePack pack, int frames) {
+  if (frames != 1 && frames != 2 && frames != 4) return 0;
+  if (pack == WirePack::kTight) {
+    return (frames * kCodebooks * kTightBitsPerCode + 7) / 8;
+  }
+  return kPayloadHeaderBytes + frames * kU16BytesPerFrame;
+}
+
+double PayloadBitrateBps(WirePack pack, int frames) {
+  const int bytes = PayloadBytes(pack, frames);
+  if (bytes <= 0) return 0;
+  return static_cast<double>(bytes) * 8.0 * kFramesPerSecond / static_cast<double>(frames);
+}
+
+void OnWireBitrateBps(int payload_bytes, double packets_per_second,
+                      double* ipv4_udp_rtp_bps, double* with_srtp_bps) {
+  const double packets = packets_per_second;
+  const int headers = kIpHeaderBytes + kUdpHeaderBytes + kRtpHeaderBytes;
+  if (ipv4_udp_rtp_bps) {
+    *ipv4_udp_rtp_bps = (payload_bytes + headers) * 8.0 * packets;
+  }
+  if (with_srtp_bps) {
+    *with_srtp_bps = (payload_bytes + headers + kSrtpTagBytes) * 8.0 * packets;
+  }
+}
+
+namespace {
+
+void WriteBits(uint8_t* dst, int* bit, uint32_t value, int nbits) {
+  for (int i = nbits - 1; i >= 0; --i) {
+    if ((value >> i) & 1u) dst[*bit / 8] |= static_cast<uint8_t>(1u << (7 - (*bit % 8)));
+    ++*bit;
+  }
+}
+
+uint32_t ReadBits(const uint8_t* src, int* bit, int nbits) {
+  uint32_t value = 0;
+  for (int i = 0; i < nbits; ++i) {
+    value <<= 1;
+    if (src[*bit / 8] & (1u << (7 - (*bit % 8)))) value |= 1u;
+    ++*bit;
+  }
+  return value;
+}
+
+}  // namespace
 
 bool ParseManifest(const std::string& json,
                    ModelPaths* paths,
@@ -304,38 +351,88 @@ bool FileExists(const std::string& path) {
   return stat(path.c_str(), &st) == 0;
 }
 
+bool PackPayload(WirePack pack, const int32_t* codes, int frames, uint16_t first_seq,
+                 int codebook_size, uint8_t* dst, size_t cap, size_t* out_len) {
+  const int bytes = PayloadBytes(pack, frames);
+  if (!codes || !dst || !out_len || bytes <= 0 || cap < static_cast<size_t>(bytes)) return false;
+  for (int i = 0; i < frames * kCodebooks; ++i) {
+    if (codes[i] < 0 || codes[i] >= codebook_size || codes[i] >= (1 << kTightBitsPerCode)) {
+      return false;
+    }
+  }
+  std::memset(dst, 0, static_cast<size_t>(bytes));
+  if (pack == WirePack::kU16) {
+    dst[0] = static_cast<uint8_t>(kPayloadVersion);
+    dst[1] = static_cast<uint8_t>(frames);
+    WriteU16(dst + 2, first_seq);
+    for (int i = 0; i < frames * kCodebooks; ++i) {
+      WriteU16(dst + kPayloadHeaderBytes + i * 2, static_cast<uint16_t>(codes[i]));
+    }
+  } else {
+    int bit = 0;
+    for (int i = 0; i < frames * kCodebooks; ++i) {
+      WriteBits(dst, &bit, static_cast<uint32_t>(codes[i]), kTightBitsPerCode);
+    }
+  }
+  *out_len = static_cast<size_t>(bytes);
+  return true;
+}
+
+bool UnpackPayload(const uint8_t* src, size_t len, int codebook_size, WirePack* pack,
+                   int* frames, uint16_t* first_seq, int32_t* codes) {
+  if (!src || !pack || !frames || !first_seq || !codes) return false;
+  WirePack found = WirePack::kU16;
+  int n = 0;
+  bool matched = false;
+  for (int candidate : {1, 2, 4}) {
+    if (static_cast<size_t>(PayloadBytes(WirePack::kTight, candidate)) == len) {
+      found = WirePack::kTight;
+      n = candidate;
+      matched = true;
+      break;
+    }
+    if (static_cast<size_t>(PayloadBytes(WirePack::kU16, candidate)) == len) {
+      found = WirePack::kU16;
+      n = candidate;
+      matched = true;
+      break;
+    }
+  }
+  if (!matched) return false;
+  if (found == WirePack::kU16) {
+    if (src[0] != kPayloadVersion || src[1] != n) return false;
+    ReadU16(src + 2, first_seq);
+    for (int i = 0; i < n * kCodebooks; ++i) {
+      uint16_t v = 0;
+      ReadU16(src + kPayloadHeaderBytes + i * 2, &v);
+      if (v >= codebook_size) return false;
+      codes[i] = v;
+    }
+  } else {
+    *first_seq = 0;
+    int bit = 0;
+    for (int i = 0; i < n * kCodebooks; ++i) {
+      const uint32_t v = ReadBits(src, &bit, kTightBitsPerCode);
+      if (v >= static_cast<uint32_t>(codebook_size)) return false;
+      codes[i] = static_cast<int32_t>(v);
+    }
+  }
+  *pack = found;
+  *frames = n;
+  return true;
+}
+
 bool PackFrame(const int32_t* codes12, uint16_t seq, int codebook_size,
                uint8_t* dst, size_t cap, size_t* out_len) {
-  if (!codes12 || !dst || !out_len || cap < static_cast<size_t>(kPayloadBytes)) {
-    return false;
-  }
-  for (int i = 0; i < kCodebooks; ++i) {
-    if (codes12[i] < 0 || codes12[i] >= codebook_size) return false;
-  }
-  dst[0] = static_cast<uint8_t>(kPayloadVersion);
-  dst[1] = 1;
-  WriteU16(dst + 2, seq);
-  for (int i = 0; i < kCodebooks; ++i) {
-    WriteU16(dst + 4 + i * 2, static_cast<uint16_t>(codes12[i]));
-  }
-  *out_len = kPayloadBytes;
-  return true;
+  return PackPayload(WirePack::kU16, codes12, 1, seq, codebook_size, dst, cap, out_len);
 }
 
 bool UnpackFrame(const uint8_t* src, size_t len, int codebook_size,
                  int32_t* codes12, uint16_t* seq) {
-  if (!src || !codes12 || !seq || len != static_cast<size_t>(kPayloadBytes)) {
-    return false;
-  }
-  if (src[0] != kPayloadVersion || src[1] != 1) return false;
-  ReadU16(src + 2, seq);
-  for (int i = 0; i < kCodebooks; ++i) {
-    uint16_t v = 0;
-    ReadU16(src + 4 + i * 2, &v);
-    if (v >= codebook_size) return false;
-    codes12[i] = static_cast<int32_t>(v);
-  }
-  return true;
+  WirePack pack = WirePack::kU16;
+  int frames = 0;
+  if (!UnpackPayload(src, len, codebook_size, &pack, &frames, seq, codes12)) return false;
+  return pack == WirePack::kU16 && frames == 1;
 }
 
 void CodesToLatent(const int32_t* codes, int frames, int codebooks, float* lat) {

@@ -6,17 +6,28 @@
  * model. It packetizes 12 GFSQ codes per 80 ms codec frame and drives
  * whatever chunk size the fetched manifest declares.
  *
- * Wire payload (one codec frame, 80 ms):
- *   u8  version = 1
- *   u8  frame_count = 1
- *   u16 sequence, little-endian
- *   12 * u16 codes, little-endian, each in [0, codebook_size)
- * Payload rate with the stock codebook (2016) is 28 bytes * 12.5 Hz = 2800 bps.
+ * Wire payload. Each code is in [0, 2016), which fits in 11 bits.
  * Information rate is 12 * log2(2016) * 12.5 ≈ 1646 bps.
  *
+ * u16 (default), N frames in {1, 2, 4}:
+ *   u8  version = 1
+ *   u8  frame_count = N
+ *   u16 sequence of the first frame, little-endian
+ *   N * 12 little-endian uint16 codes
+ *   N=1 is 28 bytes (4 + 24). N=2 is 52. N=4 is 100.
+ *   The sequence is kept so a missing packet can be counted in codec frames.
+ *   RTP already has a sequence number; this one is the codec-frame index.
+ *
+ * tight, no payload header. RTP carries the sequence number and the timestamp,
+ * and SDP fmtp `pack=tight` plus `fpp` fixes N. The length is also unique:
+ *   N=1: 12*11 = 132 bits = 17 bytes (4 pad bits)
+ *   N=2: 264 bits = 33 bytes
+ *   N=4: 528 bits = 66 bytes
+ * Bits are packed MSB first. Pad bits are zero.
+ *
  * SDP clock rate is 48 kHz because NetEq only accepts 8/16/32/48 kHz.
- * The codec itself is 24 kHz mono. One RTP packet carries one codec frame
- * (80 ms, 3840 samples at 48 kHz), which fits NetEq's 120 ms limit.
+ * The codec itself is 24 kHz mono. A packet of N frames is parsed into N
+ * frames of 80 ms so each one stays inside NetEq's 120 ms limit.
  */
 
 #ifndef MODULES_AUDIO_CODING_CODECS_LIQUIDCODEC_LIQUID_CODEC_H_
@@ -39,7 +50,23 @@ inline constexpr int kCodebooks = 12;
 inline constexpr int kCodebookSize = 2016;  // 8*7*6*6
 inline constexpr double kFramesPerSecond = 12.5;
 inline constexpr int kPayloadVersion = 1;
-inline constexpr int kPayloadBytes = 4 + kCodebooks * 2;  // 28
+inline constexpr int kPayloadHeaderBytes = 4;
+inline constexpr int kU16BytesPerFrame = kCodebooks * 2;  // 24
+inline constexpr int kPayloadBytes = kPayloadHeaderBytes + kU16BytesPerFrame;  // 28
+inline constexpr int kTightBitsPerCode = 11;
+inline constexpr int kIpHeaderBytes = 20;
+inline constexpr int kUdpHeaderBytes = 8;
+inline constexpr int kRtpHeaderBytes = 12;
+inline constexpr int kSrtpTagBytes = 16;  // AEAD tag used by typical DTLS-SRTP
+
+enum class WirePack { kU16, kTight };
+
+int PayloadBytes(WirePack pack, int frames);
+double PayloadBitrateBps(WirePack pack, int frames);
+// payload + RTP + UDP + IPv4, and the same plus a 16-byte SRTP tag.
+// packets_per_second is 12.5 / frames for LiquidCodec.
+void OnWireBitrateBps(int payload_bytes, double packets_per_second,
+                      double* ipv4_udp_rtp_bps, double* with_srtp_bps);
 inline constexpr int kHidden = 512;
 inline constexpr int kLatent = 48;
 inline constexpr int kFft = 1280;
@@ -84,7 +111,7 @@ LatencyReport DescribeLatency(const ChunkConfig& chunk, bool hidden_tail,
                               const ModelPaths& paths);
 
 double InformationBitrateBps(const ChunkConfig& chunk);
-double PayloadBitrateBps();
+double PayloadBitrateBps();  // u16, one frame: 2800 bps
 
 struct ModelPaths {
   std::string model_dir;
@@ -142,6 +169,12 @@ bool PackFrame(const int32_t* codes12, uint16_t seq, int codebook_size,
                uint8_t* dst, size_t cap, size_t* out_len);
 bool UnpackFrame(const uint8_t* src, size_t len, int codebook_size,
                  int32_t* codes12, uint16_t* seq);
+// `codes` is frame-major, `frames` * 12. Tight ignores `first_seq` on pack
+// and returns 0 from unpack. The format is recognized from the length.
+bool PackPayload(WirePack pack, const int32_t* codes, int frames, uint16_t first_seq,
+                 int codebook_size, uint8_t* dst, size_t cap, size_t* out_len);
+bool UnpackPayload(const uint8_t* src, size_t len, int codebook_size, WirePack* pack,
+                   int* frames, uint16_t* first_seq, int32_t* codes);
 
 // codes: frame-major, `frames` * codebooks. lat: channel-major (48, frames).
 void CodesToLatent(const int32_t* codes, int frames, int codebooks, float* lat);

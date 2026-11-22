@@ -1,5 +1,6 @@
 #include "modules/audio_coding/codecs/liquidcodec/audio_encoder_liquid.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "rtc_base/logging.h"
@@ -26,18 +27,21 @@ AudioEncoderLiquid::~AudioEncoderLiquid() {
 }
 
 int AudioEncoderLiquid::GetTargetBitrate() const {
-  return static_cast<int>(liquid::PayloadBitrateBps());
+  return static_cast<int>(liquid::PayloadBitrateBps(
+      config_.pack, std::max(1, config_.frames_per_packet)));
 }
 
 void AudioEncoderLiquid::Reset() {
   if (stream_) stream_->Reset();
   pacer_.Reset();
+  bundle_.clear();
   inject_pos_ = 0;
 }
 
 std::optional<std::pair<TimeDelta, TimeDelta>>
 AudioEncoderLiquid::GetFrameLengthRange() const {
-  return {{TimeDelta::Millis(liquid::kFrameMs), TimeDelta::Millis(liquid::kFrameMs)}};
+  const int ms = liquid::kFrameMs * std::max(1, config_.frames_per_packet);
+  return {{TimeDelta::Millis(ms), TimeDelta::Millis(ms)}};
 }
 
 bool AudioEncoderLiquid::EnsureStarted(std::string* error) {
@@ -63,11 +67,21 @@ bool AudioEncoderLiquid::EnsureStarted(std::string* error) {
       liquid::DescribeLatency(config_.chunk, config_.hidden_tail, config_.paths);
   RTC_LOG(LS_INFO) << latency.summary;
   fprintf(stderr, "%s\n", latency.summary.c_str());
+  const double ipv4 = 0;
+  double plain = 0;
+  double srtp = 0;
+  const int fpp = std::max(1, config_.frames_per_packet);
+  const int payload = liquid::PayloadBytes(config_.pack, fpp);
+  liquid::OnWireBitrateBps(payload, liquid::kFramesPerSecond / fpp, &plain, &srtp);
   fprintf(stderr,
-          "LiquidCodec payload %d bytes/frame, information %.0f bps, "
-          "payload %.0f bps, compute=%s\n",
-          liquid::kPayloadBytes, liquid::InformationBitrateBps(config_.chunk),
-          liquid::PayloadBitrateBps(), config_.paths.compute.c_str());
+          "LiquidCodec pack=%s frames/packet=%d payload=%d bytes, information %.0f bps, "
+          "payload %.0f bps, on-wire IPv4/UDP/RTP %.0f bps, with 16-byte SRTP tag %.0f bps, "
+          "compute=%s\n",
+          config_.pack == liquid::WirePack::kTight ? "tight" : "u16", fpp, payload,
+          liquid::InformationBitrateBps(config_.chunk),
+          liquid::PayloadBitrateBps(config_.pack, fpp), plain, srtp,
+          config_.paths.compute.c_str());
+  (void)ipv4;
   if (!config_.record_dir.empty()) {
     std::string wav_error;
     codec_wav_.Open(liquid::JoinPath(config_.record_dir, "codec_in_24k.wav"),
@@ -157,19 +171,30 @@ AudioEncoder::EncodedInfo AudioEncoderLiquid::EncodeImpl(
   }
   const auto packet = pacer_.Tick(rtp_timestamp, flat.empty() ? nullptr : flat.data(),
                                   static_cast<int>(frames.size()));
-  if (!packet) return info;
+  if (packet) bundle_.push_back(*packet);
+  const int fpp = std::max(1, config_.frames_per_packet);
+  if (static_cast<int>(bundle_.size()) < fpp) return info;
 
-  uint8_t bytes[liquid::kPayloadBytes];
+  std::vector<int32_t> packed(static_cast<size_t>(fpp * liquid::kCodebooks));
+  for (int f = 0; f < fpp; ++f) {
+    for (int c = 0; c < liquid::kCodebooks; ++c) {
+      packed[static_cast<size_t>(f * liquid::kCodebooks + c)] =
+          bundle_[static_cast<size_t>(f)].codes[static_cast<size_t>(c)];
+    }
+  }
+  const uint32_t stamp = bundle_.front().timestamp;
+  bundle_.clear();
+  uint8_t bytes[128];
   size_t len = 0;
-  if (!liquid::PackFrame(packet->codes.data(),
-                         static_cast<uint16_t>(stats_.packets & 0xffff),
-                         config_.chunk.codebook_size, bytes, sizeof(bytes), &len)) {
+  if (!liquid::PackPayload(config_.pack, packed.data(), fpp,
+                           static_cast<uint16_t>(stats_.packets & 0xffff),
+                           config_.chunk.codebook_size, bytes, sizeof(bytes), &len)) {
     RTC_LOG(LS_ERROR) << "LiquidCodec pack rejected a code";
     return info;
   }
   encoded->AppendData(bytes, len);
   info.encoded_bytes = len;
-  info.encoded_timestamp = packet->timestamp;
+  info.encoded_timestamp = stamp;
   stats_.AddPacket(static_cast<int>(len));
   if (!config_.record_dir.empty() && stats_.packets % 50 == 0) {
     stats_.WriteJson(liquid::JoinPath(config_.record_dir, "encoder_stats.json"));

@@ -88,6 +88,62 @@ void TestPayload() {
   codes[0] = 2016;
   Expect(!webrtc::liquid::PackFrame(codes, 1, 2016, bytes, sizeof(bytes), &len),
          "reject code 2016");
+
+  Expect(webrtc::liquid::PayloadBytes(webrtc::liquid::WirePack::kU16, 1) == 28, "u16 n=1 is 28");
+  Expect(webrtc::liquid::PayloadBytes(webrtc::liquid::WirePack::kU16, 2) == 52, "u16 n=2 is 52");
+  Expect(webrtc::liquid::PayloadBytes(webrtc::liquid::WirePack::kU16, 4) == 100, "u16 n=4 is 100");
+  Expect(webrtc::liquid::PayloadBytes(webrtc::liquid::WirePack::kTight, 1) == 17, "tight n=1 is 17");
+  Expect(webrtc::liquid::PayloadBytes(webrtc::liquid::WirePack::kTight, 2) == 33, "tight n=2 is 33");
+  Expect(webrtc::liquid::PayloadBytes(webrtc::liquid::WirePack::kTight, 4) == 66, "tight n=4 is 66");
+  Expect(std::fabs(webrtc::liquid::PayloadBitrateBps(webrtc::liquid::WirePack::kTight, 1) - 1700.0) <
+             0.1,
+         "tight one-frame payload is 1700 bps");
+  Expect(std::fabs(webrtc::liquid::PayloadBitrateBps(webrtc::liquid::WirePack::kTight, 2) - 1650.0) <
+             0.1,
+         "tight two-frame payload is 1650 bps");
+  double plain = 0;
+  double srtp = 0;
+  webrtc::liquid::OnWireBitrateBps(17, 12.5, &plain, &srtp);
+  Expect(std::fabs(plain - 5700.0) < 0.1, "tight n=1 IPv4/UDP/RTP is 5700 bps");
+  Expect(std::fabs(srtp - 7300.0) < 0.1, "tight n=1 with 16-byte SRTP tag is 7300 bps");
+
+  for (int n : {1, 2, 4}) {
+    for (auto pack : {webrtc::liquid::WirePack::kU16, webrtc::liquid::WirePack::kTight}) {
+      std::vector<int32_t> many(static_cast<size_t>(n * 12));
+      for (int i = 0; i < n * 12; ++i) many[static_cast<size_t>(i)] = (i * 17 + 2015) % 2016;
+      uint8_t buf[128];
+      size_t out = 0;
+      Expect(webrtc::liquid::PackPayload(pack, many.data(), n, 9, 2016, buf, sizeof(buf), &out),
+             "pack multi");
+      Expect(out == static_cast<size_t>(webrtc::liquid::PayloadBytes(pack, n)), "packed size");
+      int32_t back_n[4 * 12];
+      webrtc::liquid::WirePack got = webrtc::liquid::WirePack::kU16;
+      int frames = 0;
+      uint16_t seq_n = 99;
+      Expect(webrtc::liquid::UnpackPayload(buf, out, 2016, &got, &frames, &seq_n, back_n),
+             "unpack multi");
+      Expect(got == pack && frames == n, "detected pack and frame count");
+      Expect(std::memcmp(many.data(), back_n, many.size() * sizeof(int32_t)) == 0,
+             "multi-frame codes roundtrip");
+      if (pack == webrtc::liquid::WirePack::kU16) Expect(seq_n == 9, "u16 keeps the first sequence");
+      if (pack == webrtc::liquid::WirePack::kTight) Expect(seq_n == 0, "tight has no sequence");
+    }
+  }
+  int32_t edge[12];
+  for (int i = 0; i < 12; ++i) edge[i] = (i % 2) ? 2015 : 0;
+  uint8_t tight[32];
+  size_t tight_len = 0;
+  Expect(webrtc::liquid::PackPayload(webrtc::liquid::WirePack::kTight, edge, 1, 0, 2016, tight,
+                                     sizeof(tight), &tight_len),
+         "pack edge codes");
+  int32_t edge_back[12];
+  webrtc::liquid::WirePack edge_pack = webrtc::liquid::WirePack::kU16;
+  int edge_n = 0;
+  uint16_t edge_seq = 1;
+  Expect(webrtc::liquid::UnpackPayload(tight, tight_len, 2016, &edge_pack, &edge_n, &edge_seq,
+                                       edge_back),
+         "unpack edge");
+  Expect(std::memcmp(edge, edge_back, sizeof(edge)) == 0, "0 and 2015 survive 11-bit packing");
 }
 
 void TestLatency() {

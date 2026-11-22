@@ -319,6 +319,53 @@ Opus A/B, same clip, same record dirs (use a different folder so the WAVs are no
 
 `--audio-codec` omitted is the existing Opus path with no extra flags. The manifest contract is `scripts/liquidcodec/liquidcodec.example.json`.
 
+### Bandwidth: tight packing and Opus
+
+Each code is in `[0, 2016)`, so it fits in 11 bits. Twelve codes are 132 bits. `--liquid-pack=tight` stores that in **17 bytes** and adds no payload header: the RTP sequence number and timestamp already identify the packet, and SDP `pack=tight` with `fpp` fixes how many frames are inside. The length is unique too (17, 33, or 66 bytes). `--liquid-pack=u16` keeps the current header plus 12 little-endian codes: 28, 52, or 100 bytes for 1, 2, or 4 frames. `--liquid-frames-per-packet` is 1, 2, or 4. A packet of several frames is parsed into 80 ms frames so NetEq's 120 ms limit still holds.
+
+Calculated on-wire rate, IPv4 20 + UDP 8 + RTP 12, no header extensions. The SRTP column adds a 16-byte tag. The quality calls use `--no-encryption`, so the plain column is the one getStats should approach.
+
+| pack | frames/packet | payload | payload kbps | IPv4/UDP/RTP kbps | plus SRTP tag |
+|---|---:|---:|---:|---:|---:|
+| u16 | 1 | 28 | 2.800 | 6.800 | 8.400 |
+| tight | 1 | 17 | 1.700 | 5.700 | 7.300 |
+| tight | 2 | 33 | 1.650 | 3.650 | 4.450 |
+| tight | 4 | 66 | 1.650 | 2.650 | 3.050 |
+
+`scripts/liquidcodec/bench_bandwidth.sh --theoretical` prints the full matrix, including Opus at 6, 8, 12, 16, 24, and 32 kbps, ptime 20/40/60, and DTX on or off. Opus sizes in that table are the nominal target. DTX is smaller only while the signal is quiet, which a real call measures and the table does not invent.
+
+On the Mac, after the LiquidCodec build:
+
+```bash
+# Fork samples, plus one longer clip that contains pauses.
+scripts/liquidcodec/bench_bandwidth.sh --theoretical
+scripts/liquidcodec/bench_bandwidth.sh \
+  --samples "$HOME/liquidcodec-ane/samples" \
+  --conversation "$HOME/speech/conversation.wav"
+
+# Fewer calls, one clip, tight fpp=1 and Opus 6k/32k:
+scripts/liquidcodec/bench_bandwidth.sh --quick \
+  --samples "$HOME/liquidcodec-ane/samples"
+
+# These print sudo commands and do not run them.
+scripts/liquidcodec/bench_bandwidth.sh --pcap --impair --theoretical
+```
+
+Each measured run writes `scripts/liquidcodec/out/bandwidth/<config>/caller.log` (getStats `send_bytes`, `send_packets`, `send_header_bytes`) and a WAV under `callee/`. The analyzer writes `bandwidth.csv` and, when a score exists, `bandwidth.svg` (quality vs on-wire kbps) and `bandwidth_wer.svg`. Mouth-to-ear in the CSV is an estimate: calculated codec latency + jitter buffer + half the RTT + mean Core ML prediction time. It is not an acoustic measurement.
+
+Quality tools are optional and were not run here:
+
+```bash
+python3 -m pip install numpy soundfile pesq pystoi
+# ViSQOL speech mode, if the package builds: python3 -m pip install visqol
+# Whisper WER: python3 -m pip install openai-whisper
+#   LIQUID_BENCH_WHISPER=1 python3 scripts/liquidcodec/bandwidth.py --analyze scripts/liquidcodec/out/bandwidth
+# A .txt transcript with the same basename as the clip is the WER reference.
+# Without one, Whisper transcribes the original and the decode and compares those texts.
+```
+
+ANE and CPU decode time per frame are `prediction_ms_mean` in `callee/decoder_stats.json`. The bench runs each LiquidCodec packing twice, `--liquid-decode=ane` and `--liquid-decode=cpu`. Nothing in this checkout has executed those calls.
+
 ## Troubleshooting
 - If you encounter missing dependencies, ensure all prerequisites are installed.
 - For Linux/ARM64, the script will attempt to build missing runtime libraries if needed.

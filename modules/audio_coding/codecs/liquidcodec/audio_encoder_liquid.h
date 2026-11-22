@@ -1,6 +1,7 @@
 #ifndef MODULES_AUDIO_CODING_CODECS_LIQUIDCODEC_AUDIO_ENCODER_LIQUID_H_
 #define MODULES_AUDIO_CODING_CODECS_LIQUIDCODEC_AUDIO_ENCODER_LIQUID_H_
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -23,6 +24,8 @@ struct RuntimeConfig {
   std::string record_dir;
   std::string inject_wav;
   bool hidden_tail = true;
+  WirePack pack = WirePack::kU16;
+  int frames_per_packet = 1;
 };
 
 // Process-wide settings copied from directcall before the peer connection
@@ -39,8 +42,12 @@ class AudioEncoderLiquid final : public AudioEncoder {
 
   int SampleRateHz() const override { return liquid::kWebRtcClockHz; }
   size_t NumChannels() const override { return 1; }
-  size_t Num10MsFramesInNextPacket() const override { return 8; }
-  size_t Max10MsFramesInAPacket() const override { return 8; }
+  size_t Num10MsFramesInNextPacket() const override {
+    return static_cast<size_t>(8 * std::max(1, config_.frames_per_packet));
+  }
+  size_t Max10MsFramesInAPacket() const override {
+    return static_cast<size_t>(8 * std::max(1, config_.frames_per_packet));
+  }
   int GetTargetBitrate() const override;
   void Reset() override;
   std::optional<std::pair<TimeDelta, TimeDelta>> GetFrameLengthRange()
@@ -60,6 +67,7 @@ class AudioEncoderLiquid final : public AudioEncoder {
   std::unique_ptr<liquid::LiquidBackend> backend_;
   std::unique_ptr<liquid::StreamEncoder> stream_;
   liquid::FramePacer pacer_;
+  std::vector<liquid::PacedPacket> bundle_;
   liquid::CodecStats stats_;
   liquid::WavWriter codec_wav_;
   PushResampler<int16_t> down_;

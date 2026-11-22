@@ -259,6 +259,10 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         const auto* codec = CodecFor<webrtc::RTCCodecStats>(*report, in->codec_id);
         audio_out.str("codec", codec && codec->mime_type ? *codec->mime_type : "");
         audio_out.number("recv_bitrate_bps", bps, 0);
+        audio_out.integer("recv_bytes", static_cast<long long>(in->bytes_received.value_or(0)));
+        audio_out.integer("recv_packets", static_cast<long long>(in->packets_received.value_or(0)));
+        audio_out.integer("recv_header_bytes",
+                          static_cast<long long>(in->header_bytes_received.value_or(0)));
         audio_out.number("recv_jitter_ms", in->jitter ? *in->jitter * 1000.0 : -1, 2);
         audio_out.integer("recv_packets_lost", in->packets_lost.value_or(0));
         audio_out.integer("recv_packets", in->packets_received.value_or(0));
@@ -327,6 +331,10 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
           }
         }
         audio_out.number("send_bitrate_bps", bps, 0);
+        audio_out.integer("send_bytes", static_cast<long long>(outb->bytes_sent.value_or(0)));
+        audio_out.integer("send_packets", static_cast<long long>(outb->packets_sent.value_or(0)));
+        audio_out.integer("send_header_bytes",
+                          static_cast<long long>(outb->header_bytes_sent.value_or(0)));
         audio_out.integer("send_packets_lost", remote && remote->packets_lost ? *remote->packets_lost : 0);
         audio_out.number("send_jitter_ms", remote && remote->jitter ? *remote->jitter * 1000.0 : -1, 2);
         audio_out.integer("nack", outb->nack_count.value_or(0));

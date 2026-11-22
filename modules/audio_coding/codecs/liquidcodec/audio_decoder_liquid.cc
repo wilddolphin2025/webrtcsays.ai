@@ -1,10 +1,34 @@
 #include "modules/audio_coding/codecs/liquidcodec/audio_decoder_liquid.h"
 
+#include <array>
 #include <cstring>
+#include <memory>
 
 #include "rtc_base/logging.h"
 
 namespace webrtc {
+namespace {
+
+class LiquidOneFrame final : public AudioDecoder::EncodedAudioFrame {
+ public:
+  LiquidOneFrame(AudioDecoderLiquid* owner, std::array<int32_t, liquid::kCodebooks> codes)
+      : owner_(owner), codes_(codes) {}
+  size_t Duration() const override {
+    return static_cast<size_t>(liquid::kWebRtcClockHz * liquid::kFrameMs / 1000);
+  }
+  std::optional<DecodeResult> Decode(std::span<int16_t> decoded) const override {
+    auto speech = AudioDecoder::kSpeech;
+    const int n = owner_->DecodeOne(codes_.data(), decoded.data(), &speech);
+    if (n < 0) return std::nullopt;
+    return DecodeResult{static_cast<size_t>(n), speech};
+  }
+
+ private:
+  AudioDecoderLiquid* owner_;
+  std::array<int32_t, liquid::kCodebooks> codes_;
+};
+
+}  // namespace
 
 AudioDecoderLiquid::AudioDecoderLiquid(liquid::RuntimeConfig config)
     : config_(std::move(config)) {}
@@ -18,20 +42,39 @@ AudioDecoderLiquid::~AudioDecoderLiquid() {
 void AudioDecoderLiquid::Reset() {
   if (stream_) stream_->Reset();
   fifo24_.clear();
-  have_seq_ = false;
-  expected_seq_ = 0;
-  std::memset(last_codes_, 0, sizeof(last_codes_));
 }
 
 int AudioDecoderLiquid::PacketDuration(const uint8_t* encoded,
                                       size_t encoded_len) const {
-  int32_t codes[liquid::kCodebooks];
-  uint16_t seq = 0;
-  if (!liquid::UnpackFrame(encoded, encoded_len, config_.chunk.codebook_size, codes,
-                           &seq)) {
-    return liquid::kWebRtcClockHz * liquid::kFrameMs / 1000;
-  }
+  // Each parsed frame is 80 ms. Report one frame so a caller that sizes a
+  // single decode buffer stays inside NetEq's 120 ms limit. ParsePayload
+  // splits N-frame packets into N such frames.
+  (void)encoded;
+  (void)encoded_len;
   return liquid::kWebRtcClockHz * liquid::kFrameMs / 1000;
+}
+
+std::vector<AudioDecoder::ParseResult> AudioDecoderLiquid::ParsePayload(
+    Buffer&& payload, uint32_t timestamp) {
+  std::vector<ParseResult> results;
+  int32_t codes[4 * liquid::kCodebooks];
+  liquid::WirePack pack = liquid::WirePack::kU16;
+  int frames = 0;
+  uint16_t seq = 0;
+  if (!liquid::UnpackPayload(payload.data(), payload.size(), config_.chunk.codebook_size, &pack,
+                             &frames, &seq, codes)) {
+    return results;
+  }
+  const uint32_t step = static_cast<uint32_t>(liquid::kWebRtcClockHz * liquid::kFrameMs / 1000);
+  for (int i = 0; i < frames; ++i) {
+    std::array<int32_t, liquid::kCodebooks> one{};
+    for (int c = 0; c < liquid::kCodebooks; ++c) {
+      one[static_cast<size_t>(c)] = codes[i * liquid::kCodebooks + c];
+    }
+    results.emplace_back(timestamp + static_cast<uint32_t>(i) * step, 0,
+                         std::make_unique<LiquidOneFrame>(this, one));
+  }
+  return results;
 }
 
 bool AudioDecoderLiquid::EnsureStarted() {
@@ -57,46 +100,28 @@ bool AudioDecoderLiquid::EnsureStarted() {
   return true;
 }
 
-int AudioDecoderLiquid::DecodeInternal(const uint8_t* encoded, size_t encoded_len,
-                                      int /*sample_rate_hz*/, int16_t* decoded,
-                                      SpeechType* speech_type) {
+int AudioDecoderLiquid::DecodeOne(const int32_t* codes12, int16_t* decoded48,
+                                   SpeechType* speech_type) {
   *speech_type = kSpeech;
   const int out48 = liquid::kWebRtcClockHz * liquid::kFrameMs / 1000;
-  int32_t codes[liquid::kCodebooks];
-  uint16_t seq = 0;
-  if (!EnsureStarted() ||
-      !liquid::UnpackFrame(encoded, encoded_len, config_.chunk.codebook_size, codes,
-                           &seq)) {
-    std::memset(decoded, 0, static_cast<size_t>(out48) * sizeof(int16_t));
+  if (!EnsureStarted() || !codes12) {
+    std::memset(decoded48, 0, static_cast<size_t>(out48) * sizeof(int16_t));
     return out48;
   }
   std::vector<int16_t> produced;
   liquid::WindowTiming timing;
   std::string error;
-  if (!have_seq_) {
-    expected_seq_ = seq;
-    have_seq_ = true;
-  }
-  int missing = 0;
-  while (expected_seq_ != seq && missing < 4) {
-    stream_->PushFrame(last_codes_, &produced, &timing, &error);
-    expected_seq_ = static_cast<uint16_t>(expected_seq_ + 1);
-    ++missing;
-  }
-  if (expected_seq_ != seq) expected_seq_ = seq;
-  if (!stream_->PushFrame(codes, &produced, &timing, &error)) {
+  if (!stream_->PushFrame(codes12, &produced, &timing, &error)) {
     RTC_LOG(LS_ERROR) << "LiquidCodec decode window: " << error;
     fprintf(stderr, "LiquidCodec decode window: %s\n", error.c_str());
   }
-  std::memcpy(last_codes_, codes, sizeof(last_codes_));
-  expected_seq_ = static_cast<uint16_t>(seq + 1);
   if (timing.window_ms > 0) stats_.AddWindow(timing.window_ms, timing.prediction_ms);
   if (!produced.empty()) {
     codec_wav_.Write(produced.data(), produced.size());
     stats_.samples_24k += static_cast<int64_t>(produced.size());
     fifo24_.insert(fifo24_.end(), produced.begin(), produced.end());
   }
-  stats_.AddPacket(static_cast<int>(encoded_len));
+  stats_.AddPacket(liquid::kPayloadBytes);
 
   const int need24 = liquid::kFrameSamples;
   int16_t frame24[liquid::kFrameSamples];
@@ -109,13 +134,30 @@ int AudioDecoderLiquid::DecodeInternal(const uint8_t* encoded, size_t encoded_le
   for (int i = 0; i < 8; ++i) {
     up_.Resample(std::span<const int16_t>(frame24 + i * (liquid::kSampleRateHz / 100),
                                           liquid::kSampleRateHz / 100),
-                 std::span<int16_t>(decoded + i * (liquid::kWebRtcClockHz / 100),
+                 std::span<int16_t>(decoded48 + i * (liquid::kWebRtcClockHz / 100),
                                     liquid::kWebRtcClockHz / 100));
   }
   if (!config_.record_dir.empty() && stats_.packets % 50 == 0) {
     stats_.WriteJson(liquid::JoinPath(config_.record_dir, "decoder_stats.json"));
   }
   return out48;
+}
+
+int AudioDecoderLiquid::DecodeInternal(const uint8_t* encoded, size_t encoded_len,
+                                      int /*sample_rate_hz*/, int16_t* decoded,
+                                      SpeechType* speech_type) {
+  int32_t codes[4 * liquid::kCodebooks];
+  liquid::WirePack pack = liquid::WirePack::kU16;
+  int frames = 0;
+  uint16_t seq = 0;
+  if (!liquid::UnpackPayload(encoded, encoded_len, config_.chunk.codebook_size, &pack, &frames,
+                             &seq, codes)) {
+    *speech_type = kSpeech;
+    const int out48 = liquid::kWebRtcClockHz * liquid::kFrameMs / 1000;
+    std::memset(decoded, 0, static_cast<size_t>(out48) * sizeof(int16_t));
+    return out48;
+  }
+  return DecodeOne(codes, decoded, speech_type);
 }
 
 }  // namespace webrtc

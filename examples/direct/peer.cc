@@ -772,6 +772,21 @@ void DirectPeer::HandleMessage(webrtc::AsyncPacketSocket* socket,
 #else
       RTC_LOG(LS_WARNING) << "FACE command ignored: build has no WEBRTC_SPEECH_DEVICES";
 #endif
+    } else if (message.rfind(Msg::kVoiceSwapPrefix, 0) == 0) {
+      // Mid-call voice change from the caller (callee side). Our --voice-swap override wins.
+      if (!is_caller()) {
+        std::string req = message.substr(sizeof(Msg::kVoiceSwapPrefix) - 1);
+        while (!req.empty() && (req.back() == '\n' || req.back() == '\r' || req.back() == ' ')) req.pop_back();
+        const std::string use = webrtc::ResolveVoiceSwap(opts_.voice_swap, req);
+        if (opts_.voice_swap_udp > 0) {
+          webrtc::SetVoiceSwapVoice(use);
+          fprintf(stderr, "Voice swap: caller switched to '%s', using '%s'\n", req.c_str(),
+                  use.empty() ? "none" : use.c_str());
+        } else {
+          fprintf(stderr, "Voice swap: caller asked '%s' but this callee has no --voice-swap-udp sidecar\n",
+                  req.c_str());
+        }
+      }
     } else if (message.find(Msg::kVoicePrefix) == 0) {
       // The TTS server validates the name against its voices directory.
       std::string voice = message.substr(sizeof(Msg::kVoicePrefix) - 1);

@@ -315,7 +315,8 @@ class DecodedSink {
       const std::string ctl = "VOICE:" + (voice_.empty() ? std::string("none") : voice_);
       sendto(fd_, ctl.data(), ctl.size(), 0, reinterpret_cast<const sockaddr*>(&addr_), sizeof(addr_));
     }
-    if (voice_.empty()) return;   // no conversion: play the caller as is
+    // PCM always goes to the sidecar while it is attached, also for "none", so its Core ML engine stays warm
+    // and a mid-call switch is heard at the next 80 ms block instead of after a cold start.
     const size_t chunk = static_cast<size_t>(rate_ / 100);   // 10 ms per datagram
     uint8_t buf[4 + 2 * 960];
     const uint32_t rate = static_cast<uint32_t>(rate_);
@@ -326,7 +327,18 @@ class DecodedSink {
       std::memcpy(buf + 4, p + off, m * 2);
       sendto(fd_, buf, 4 + m * 2, 0, reinterpret_cast<const sockaddr*>(&addr_), sizeof(addr_));
     }
-    if (mute_) std::fill(p, p + n, static_cast<int16_t>(0));
+    // Local playout of the caller's own voice: on while no voice is active. A switch ramps it over 30 ms
+    // (no click); the sidecar ramps the converted voice the same way.
+    const float target = (mute_ && !voice_.empty()) ? 0.f : 1.f;
+    if (gain_ == target) {
+      if (target == 0.f) std::fill(p, p + n, static_cast<int16_t>(0));
+      return;
+    }
+    const float step = 1.f / (0.03f * static_cast<float>(rate_));
+    for (size_t i = 0; i < n; ++i) {
+      gain_ = target > gain_ ? std::min(target, gain_ + step) : std::max(target, gain_ - step);
+      p[i] = static_cast<int16_t>(static_cast<float>(p[i]) * gain_);
+    }
   }
 
  private:
@@ -337,6 +349,7 @@ class DecodedSink {
   int seen_gen_ = -1;
   int since_ctl_ = 0;
   std::string voice_;
+  float gain_ = 1.f;   // local playout gain, ramped on switches
   sockaddr_in addr_{};
 };
 

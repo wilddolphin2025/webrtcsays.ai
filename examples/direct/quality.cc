@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <memory>
@@ -167,6 +168,9 @@ void ResampleMono(const int16_t* src, size_t src_n, int src_rate, int dst_rate,
   }
 }
 
+int g_jitter_max_ms = 500;
+bool g_jitter_fast_accelerate = false;
+
 struct Stats {
   const char* status = "fail";
   const char* stage = "";
@@ -186,6 +190,10 @@ struct Stats {
   double onwire_kbps = 0;
   int algorithmic_ms = 0;
   double jitter_buffer_ms = 0;
+  int jitter_max_ms = 0;        // NetEq max_delay_ms (0 = no cap)
+  double jitter_target_ms = 0;  // NetEq preferred (target) buffer at the end
+  double expand_pct = 0;        // concealment, % of output
+  double accelerate_pct = 0;    // time-compressed, % of output
   std::string detail;
 };
 
@@ -217,12 +225,17 @@ void WriteStats(const char* path, const Stats& s) {
                "  \"onwire_kbps\": %.4f,\n"
                "  \"algorithmic_ms\": %d,\n"
                "  \"jitter_buffer_ms\": %.2f,\n"
+               "  \"jitter_max_ms\": %d,\n"
+               "  \"jitter_target_ms\": %.0f,\n"
+               "  \"expand_pct\": %.2f,\n"
+               "  \"accelerate_pct\": %.2f,\n"
                "  \"detail\": \"%s\"\n"
                "}\n",
                s.status, s.stage, s.codec, s.compute, s.encoder, s.loss_pct, s.jitter_ms,
                s.opus_bps, s.out_of_codebook, s.clamped, s.packets, s.dropped, s.pack_mismatches,
                static_cast<long long>(s.payload_bytes), s.seconds, s.onwire_kbps, s.algorithmic_ms,
-               s.jitter_buffer_ms, detail.c_str());
+               s.jitter_buffer_ms, s.jitter_max_ms, s.jitter_target_ms, s.expand_pct,
+               s.accelerate_pct, detail.c_str());
   std::fclose(f);
 }
 
@@ -230,10 +243,12 @@ void PrintResult(const Stats& s) {
   std::printf(
       "QUALITY_RESULT status=%s stage=%s codec=%s compute=%s encoder=%s loss=%d jitter_ms=%d "
       "opus_bps=%d out_of_codebook=%d clamped=%d packets=%d dropped=%d onwire_kbps=%.3f "
-      "algo_ms=%d jitter_buffer_ms=%.2f pack_mismatches=%d\n",
+      "algo_ms=%d jitter_buffer_ms=%.2f pack_mismatches=%d jitter_max_ms=%d "
+      "jitter_target_ms=%.0f expand_pct=%.2f accelerate_pct=%.2f\n",
       s.status, s.stage, s.codec, s.compute, s.encoder, s.loss_pct, s.jitter_ms, s.opus_bps,
       s.out_of_codebook, s.clamped, s.packets, s.dropped, s.onwire_kbps, s.algorithmic_ms,
-      s.jitter_buffer_ms, s.pack_mismatches);
+      s.jitter_buffer_ms, s.pack_mismatches, s.jitter_max_ms, s.jitter_target_ms, s.expand_pct,
+      s.accelerate_pct);
   std::fflush(stdout);
 }
 
@@ -426,7 +441,11 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
 
   webrtc::NetEq::Config neteq_config;
   neteq_config.sample_rate_hz = 48000;
-  neteq_config.max_delay_ms = 500;
+  // 500 ms unless DirectQualitySetJitterBuffer chose the live call's
+  // low-latency cap (directcall --quality passes --jitter-max-ms).
+  neteq_config.max_delay_ms = g_jitter_max_ms;
+  neteq_config.enable_fast_accelerate = g_jitter_fast_accelerate;
+  stats->jitter_max_ms = g_jitter_max_ms;
   webrtc::DefaultNetEqFactory neteq_factory;
   std::unique_ptr<webrtc::NetEq> neteq = neteq_factory.Create(env, neteq_config, dec_factory);
   if (!neteq || !neteq->RegisterPayloadType(111, format)) {
@@ -437,6 +456,8 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
   std::vector<int16_t> pcm48;
   ResampleMono(in.mono.data(), in.mono.size(), in.rate, 48000, &pcm48);
   const int frame = 480;
+  const char* stall_env = std::getenv("LIQUID_QUALITY_STALL_MS");
+  const int stall_ms = stall_env ? std::max(0, std::min(1000, std::atoi(stall_env))) : 0;
   const int64_t t0 = clock->CurrentTime().ms();
   int64_t now = t0;
   uint32_t rtp_ts = 0;
@@ -465,6 +486,16 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
         } else {
           Scheduled item;
           item.arrival_ms = (now - t0) + webrtc::quality::DelayMs(packet_index, jitter_ms);
+          if (stall_ms > 0) {
+            // Test-only (LIQUID_QUALITY_STALL_MS): every 5 s the network
+            // holds packets for stall_ms, then delivers them in one burst,
+            // like a Wi-Fi stall. Shows how fast the buffer drains after.
+            const int64_t send_ms = now - t0;
+            const int64_t phase = send_ms % 5000;
+            if (send_ms >= 2000 && phase < stall_ms) {
+              item.arrival_ms = std::max<int64_t>(item.arrival_ms, send_ms - phase + stall_ms);
+            }
+          }
           item.seq = seq++;
           item.timestamp = info.encoded_timestamp;
           item.payload.AppendData(encoded.data(), encoded.size());
@@ -513,6 +544,10 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
   webrtc::NetEqNetworkStatistics net;
   neteq->NetworkStatistics(&net);
   stats->jitter_buffer_ms = net.mean_waiting_time_ms;
+  stats->jitter_target_ms = net.preferred_buffer_size_ms;
+  // Q14 rates over the whole run's output.
+  stats->expand_pct = net.expand_rate * 100.0 / 16384.0;
+  stats->accelerate_pct = net.accelerate_rate * 100.0 / 16384.0;
 #if defined(WEBRTC_USE_LIQUIDCODEC)
   if (liquid) {
     stats->out_of_codebook = webrtc::liquid::ConsumeOutOfCodebook();
@@ -527,6 +562,11 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
 }
 
 }  // namespace
+
+extern "C" void DirectQualitySetJitterBuffer(int max_delay_ms, int fast_accelerate) {
+  g_jitter_max_ms = max_delay_ms < 0 ? 500 : max_delay_ms;
+  g_jitter_fast_accelerate = fast_accelerate != 0;
+}
 
 extern "C" int DirectQualityRun(const char* stage, const char* wav_in, const char* wav_out,
                                 const char* stats_json, const char* codec, const char* model_dir,

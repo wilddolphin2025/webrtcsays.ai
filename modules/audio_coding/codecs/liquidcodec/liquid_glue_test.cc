@@ -104,9 +104,16 @@ void TestPayload() {
          "tight two-frame payload is 1650 bps");
   double plain = 0;
   double srtp = 0;
-  webrtc::liquid::OnWireBitrateBps(17, 12.5, &plain, &srtp);
+  webrtc::liquid::OnWireBitrateBps(17, 12.5, webrtc::liquid::kSrtpTagSha1_32Bytes, &plain,
+                                   &srtp);
   Expect(std::fabs(plain - 5700.0) < 0.1, "tight n=1 IPv4/UDP/RTP is 5700 bps");
-  Expect(std::fabs(srtp - 7300.0) < 0.1, "tight n=1 with 16-byte SRTP tag is 7300 bps");
+  Expect(std::fabs(srtp - 6100.0) < 0.1, "tight n=1 with 4-byte SHA1_32 SRTP tag is 6100 bps");
+  webrtc::liquid::OnWireBitrateBps(28, 12.5, webrtc::liquid::kSrtpTagSha1_32Bytes, &plain,
+                                   &srtp);
+  Expect(std::fabs(srtp - 7200.0) < 0.1, "u16 n=1 with 4-byte SHA1_32 SRTP tag is 7200 bps");
+  webrtc::liquid::OnWireBitrateBps(28, 12.5, webrtc::liquid::kSrtpTagSha1_80Bytes, &plain,
+                                   &srtp);
+  Expect(std::fabs(srtp - 7800.0) < 0.1, "u16 n=1 with 10-byte SHA1_80 SRTP tag is 7800 bps");
 
   for (int n : {1, 2, 3, 4}) {
     for (auto pack : {webrtc::liquid::WirePack::kU16, webrtc::liquid::WirePack::kTight}) {

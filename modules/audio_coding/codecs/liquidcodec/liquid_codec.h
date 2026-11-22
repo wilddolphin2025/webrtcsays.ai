@@ -57,15 +57,19 @@ inline constexpr int kTightBitsPerCode = 11;
 inline constexpr int kIpHeaderBytes = 20;
 inline constexpr int kUdpHeaderBytes = 8;
 inline constexpr int kRtpHeaderBytes = 12;
-inline constexpr int kSrtpTagBytes = 16;  // AEAD tag used by typical DTLS-SRTP
+// SRTP auth tags: AES_CM_128_HMAC_SHA1_32 (LiquidCodec default when the
+// peer allows it), AES_CM_128_HMAC_SHA1_80, AEAD GCM.
+inline constexpr int kSrtpTagSha1_32Bytes = 4;
+inline constexpr int kSrtpTagSha1_80Bytes = 10;
+inline constexpr int kSrtpTagGcmBytes = 16;
 
 enum class WirePack { kU16, kTight };
 
 int PayloadBytes(WirePack pack, int frames);
 double PayloadBitrateBps(WirePack pack, int frames);
-// payload + RTP + UDP + IPv4, and the same plus a 16-byte SRTP tag.
-// packets_per_second is 12.5 / frames for LiquidCodec.
-void OnWireBitrateBps(int payload_bytes, double packets_per_second,
+// payload + RTP + UDP + IPv4, and the same plus an `srtp_tag_bytes` SRTP
+// auth tag. packets_per_second is 12.5 / frames for LiquidCodec.
+void OnWireBitrateBps(int payload_bytes, double packets_per_second, int srtp_tag_bytes,
                       double* ipv4_udp_rtp_bps, double* with_srtp_bps);
 inline constexpr int kHidden = 512;
 inline constexpr int kLatent = 48;

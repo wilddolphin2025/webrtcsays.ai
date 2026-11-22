@@ -10,6 +10,8 @@
 
 #include "modules/audio_coding/neteq/decision_logic.h"
 
+#include <algorithm>
+
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -267,9 +269,19 @@ NetEq::Operation DecisionLogic::ExpectedPacketAvailable(
       !status.play_dtmf) {
     const int playout_delay_ms = GetPlayoutDelayMs(status);
     const int64_t low_limit = TargetLevelMs();
-    const int64_t high_limit = low_limit +
-                               packet_arrival_history_->GetMaxDelayMs() +
-                               kDelayAdjustmentGranularityMs;
+    int64_t high_limit = low_limit +
+                         packet_arrival_history_->GetMaxDelayMs() +
+                         kDelayAdjustmentGranularityMs;
+    // With a maximum delay set (low-latency mode), the cap bounds the
+    // playout delay too, not just the target: otherwise one delayed packet
+    // in the 2 s arrival history lets the buffer float at target + that
+    // delay for 2 s before NetEq accelerates.
+    const int max_delay_ms = delay_constraints_.maximum_delay_ms();
+    if (max_delay_ms > 0) {
+      high_limit = std::min<int64_t>(
+          high_limit, std::max<int64_t>(low_limit, max_delay_ms) +
+                          kDelayAdjustmentGranularityMs);
+    }
     if (playout_delay_ms >= high_limit * 4) {
       return NetEq::Operation::kFastAccelerate;
     }

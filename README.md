@@ -342,11 +342,32 @@ Opus A/B, same clip, same record dirs (use a different folder so the WAVs are no
 
 `--audio-codec` omitted is the existing Opus path with no extra flags. The manifest contract is `scripts/liquidcodec/liquidcodec.example.json`.
 
+### Latency: low-latency jitter buffer
+
+For `--audio-codec=liquidcodec` the receive jitter buffer (NetEq) runs in a low-latency mode by default: `--jitter-max-ms=80` caps NetEq's target delay, and the same cap (plus NetEq's 20 ms window) bounds the playout delay NetEq accelerates down to, with fast accelerate on. Below the cap NetEq still adapts to measured jitter. `--jitter-max-ms=160` is a balanced setting, `--jitter-max-ms=0` is stock NetEq with no cap (the old behavior), and `--no-jitter-fast-accelerate` turns fast accelerate off. The startup line `Jitter buffer: ...` shows what is in effect. Opus calls keep stock NetEq unless the flag is given.
+
+The stats line reports `jitter_buffer_ms` for the last interval (it was the whole-call average, which lagged changes by tens of seconds), `jitter_buffer_avg_ms` for the call, and `jitter_buffer_target_ms`, NetEq's target. `mouth_to_ear_est_ms` uses the interval value. Once DTLS has picked the SRTP cipher, an `On-wire (negotiated): ...` line prints the per-packet bytes with the real tag (4 bytes for SHA1_32).
+
+The factory quality stage uses the same cap. `LIQUID_QUALITY_STALL_MS=150` makes it hold packets for 150 ms every 5 s and deliver them in a burst, like a Wi-Fi stall:
+
+```bash
+LIQUID_QUALITY_STALL_MS=150 src/out/lowlat/directcall --quality=factory \
+  --inject-wav=speech.wav --record-dir=/tmp/q --liquid-model-dir=<models> --jitter-max-ms=80
+```
+
+Measured in that simulation (speech, 18 s, Core ML ANE): with no stalls the mean packet wait is 30 ms at any setting. With 150 ms stalls every 5 s, stock NetEq waits 154 ms on average (target 120 ms) and the 80 ms cap waits 90 ms (target 80 ms) for 0.5 percentage points more concealment. With 300 ms stalls: 289 ms stock, 158 ms capped, concealment 1.5% vs 3.9%.
+
+Build the Mac binary into its own directory, so a callee running from `out/release` or another directory is not relinked under it:
+
+```bash
+src/scripts/liquidcodec/build_mac_directcall.sh lowlat   # -> src/out/lowlat/directcall
+```
+
 ### Bandwidth: tight packing and Opus
 
 Each code is in `[0, 2016)`, so it fits in 11 bits. Twelve codes are 132 bits. `--liquid-pack=tight` stores that in **17 bytes** and adds no payload header: the RTP sequence number and timestamp already identify the packet, and SDP `pack=tight` with `fpp` fixes how many frames are inside. The length is unique too (17, 33, or 66 bytes). `--liquid-pack=u16` keeps the current header plus 12 little-endian codes: 28, 52, or 100 bytes for 1, 2, or 4 frames. `--liquid-frames-per-packet` is 1, 2, or 4. A packet of several frames is parsed into 80 ms frames so NetEq's 120 ms limit still holds.
 
-Calculated on-wire rate, IPv4 20 + UDP 8 + RTP 12, no header extensions. The SRTP column adds a 16-byte tag. The quality calls use `--no-encryption`, so the plain column is the one getStats should approach.
+Calculated on-wire rate, IPv4 20 + UDP 8 + RTP 12, no header extensions. The SRTP column adds a 16-byte (GCM) tag; LiquidCodec calls offer SHA1_32, a 4-byte tag, so a u16 one-frame call is 7.2 kbps on the wire. The quality calls use `--no-encryption`, so the plain column is the one getStats should approach.
 
 | pack | frames/packet | payload | payload kbps | IPv4/UDP/RTP kbps | plus SRTP tag |
 |---|---:|---:|---:|---:|---:|

@@ -226,7 +226,7 @@ double PayloadBitrateBps(WirePack pack, int frames) {
   return static_cast<double>(bytes) * 8.0 * kFramesPerSecond / static_cast<double>(frames);
 }
 
-void OnWireBitrateBps(int payload_bytes, double packets_per_second,
+void OnWireBitrateBps(int payload_bytes, double packets_per_second, int srtp_tag_bytes,
                       double* ipv4_udp_rtp_bps, double* with_srtp_bps) {
   const double packets = packets_per_second;
   const int headers = kIpHeaderBytes + kUdpHeaderBytes + kRtpHeaderBytes;
@@ -234,7 +234,8 @@ void OnWireBitrateBps(int payload_bytes, double packets_per_second,
     *ipv4_udp_rtp_bps = (payload_bytes + headers) * 8.0 * packets;
   }
   if (with_srtp_bps) {
-    *with_srtp_bps = (payload_bytes + headers + kSrtpTagBytes) * 8.0 * packets;
+    *with_srtp_bps =
+        (payload_bytes + headers + std::max(0, srtp_tag_bytes)) * 8.0 * packets;
   }
 }
 

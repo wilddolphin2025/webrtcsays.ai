@@ -35,6 +35,7 @@
 #include "api/video_codecs/video_encoder_factory_template_libvpx_vp9_adapter.h"
 #include "api/video_codecs/video_encoder_factory_template_open_h264_adapter.h"
 
+#include "api/neteq/default_neteq_factory.h"
 #include "direct.h"
 #include "option.h"
 #include "audio_tap.h"
@@ -44,6 +45,36 @@
 #endif
 #include "video.h"
 #include "status.h"
+
+namespace {
+
+// Low-latency jitter buffer (kLiquidJitterMaxMs in option.h): caps NetEq's
+// target delay and (see DecisionLogic::ExpectedPacketAvailable) the playout
+// delay it accelerates down to. Below the cap NetEq still adapts to jitter.
+class CappedNetEqFactory : public webrtc::NetEqFactory {
+ public:
+  CappedNetEqFactory(int max_delay_ms, bool fast_accelerate)
+      : max_delay_ms_(max_delay_ms), fast_accelerate_(fast_accelerate) {}
+  std::unique_ptr<webrtc::NetEq> Create(
+      const webrtc::Environment& env,
+      const webrtc::NetEq::Config& config,
+      webrtc::scoped_refptr<webrtc::AudioDecoderFactory> decoder_factory) const override {
+    webrtc::NetEq::Config capped = config;
+    if (max_delay_ms_ > 0 &&
+        (capped.max_delay_ms <= 0 || capped.max_delay_ms > max_delay_ms_)) {
+      capped.max_delay_ms = max_delay_ms_;
+    }
+    capped.enable_fast_accelerate = capped.enable_fast_accelerate || fast_accelerate_;
+    return inner_.Create(env, capped, std::move(decoder_factory));
+  }
+
+ private:
+  webrtc::DefaultNetEqFactory inner_;
+  const int max_delay_ms_;
+  const bool fast_accelerate_;
+};
+
+}  // namespace
 
 // String split from option.cc
 std::vector<std::string> stringSplit(std::string input, std::string delimiter);
@@ -348,6 +379,27 @@ bool DirectApplication::CreatePeerConnection() {
     deps.env = *env_;
     deps.socket_factory = pss();
     deps.network_manager = std::move(network_manager);
+    {
+      const bool liquid_jb = opts_.audio_codec == "liquidcodec";
+      const int jitter_max = opts_.jitter_max_ms < 0 ? (liquid_jb ? kLiquidJitterMaxMs : 0)
+                                                     : opts_.jitter_max_ms;
+      const bool fast_accelerate = opts_.jitter_fast_accelerate < 0
+                                       ? jitter_max > 0
+                                       : opts_.jitter_fast_accelerate != 0;
+      if (jitter_max > 0 || fast_accelerate) {
+        deps.neteq_factory =
+            std::make_unique<CappedNetEqFactory>(jitter_max, fast_accelerate);
+      }
+      if (jitter_max > 0) {
+        fprintf(stderr,
+                "Jitter buffer: low-latency, max %d ms (NetEq adapts below it), "
+                "fast_accelerate=%s\n",
+                jitter_max, fast_accelerate ? "on" : "off");
+      } else {
+        fprintf(stderr, "Jitter buffer: stock NetEq (no cap), fast_accelerate=%s\n",
+                fast_accelerate ? "on" : "off");
+      }
+    }
     deps.adm = audio_device_module_;
     webrtc::scoped_refptr<webrtc::AudioEncoderFactory> audio_encoder_factory =
         webrtc::CreateBuiltinAudioEncoderFactory();
@@ -399,6 +451,9 @@ bool DirectApplication::CreatePeerConnection() {
                                                  : webrtc::liquid::WirePack::kU16;
       liquid.frames_per_packet = opts_.liquid_frames_per_packet;
       liquid.dtx = opts_.liquid_dtx;
+      // Expected SRTP tag for the startup on-wire estimate (SHA1_32 is
+      // offered for liquidcodec unless --no-srtp-tag32).
+      liquid.srtp_tag_bytes = !opts_.encryption ? 0 : (opts_.srtp_tag32 != 0 ? 4 : 10);
       liquid.paths.model_dir = model_dir;
       std::string liquid_error;
       if (!webrtc::ConfigureLiquidRuntime(liquid, &liquid_error)) {

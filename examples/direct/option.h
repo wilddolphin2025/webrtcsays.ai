@@ -74,6 +74,10 @@ enum LoggingSeverity {
 
 #endif // DIRECT_EXPORT_H 
 
+// Default jitter buffer cap for liquidcodec (low-latency mode): one 80 ms
+// packet of target plus NetEq's 20 ms window before it accelerates.
+inline constexpr int kLiquidJitterMaxMs = 80;
+
 // Command line options
 struct Options {
     std::string mode{}; // default to empty, set in parseOptions
@@ -149,6 +153,12 @@ struct Options {
     int srtp_tag32 = -1;                // AES_CM_128_HMAC_SHA1_32 (4-byte tag): -1 auto (on for liquidcodec), 0, 1
     int audio_rtcp_ms = -1;             // audio RTCP report interval: -1 auto (10000 liquidcodec, else 5000)
     int rtp_header_extensions = -1;     // -1 auto (off for liquidcodec), 0 off, 1 on (audio)
+    // Receive jitter buffer (NetEq). jitter_max_ms caps the target delay and
+    // the playout delay NetEq accelerates down to: -1 auto (80 ms for
+    // liquidcodec, the low-latency mode; unlimited otherwise), 0 unlimited
+    // (stock NetEq), else 20..1000 ms. Below the cap NetEq still adapts.
+    int jitter_max_ms = -1;
+    int jitter_fast_accelerate = -1;    // -1 auto (on when jitter_max_ms caps), 0, 1
     bool aec = true;                    // AEC3, NS, and AGC in the platform ADM
     // Quality ladder. Empty means a normal call. offline = codec only.
     // factory = AudioEncoder/AudioDecoder plus NetEq, no network.

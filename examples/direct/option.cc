@@ -426,6 +426,9 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --srtp-tag32 / --no-srtp-tag32    4-byte SRTP auth tag (AES_CM_128_HMAC_SHA1_32); default on for liquidcodec\n"
       "  --audio-rtcp-ms=<ms>              Audio RTCP report interval (default 10000 liquidcodec, 5000 otherwise)\n"
       "  --rtp-extensions / --no-rtp-extensions  Audio RTP header extensions (default off for liquidcodec)\n"
+      "  --jitter-max-ms=<ms>              Jitter buffer cap: low-latency mode (default 80 for liquidcodec;\n"
+      "                                    0 = stock NetEq, unlimited). NetEq adapts below the cap.\n"
+      "  --jitter-fast-accelerate / --no-jitter-fast-accelerate  Drain buffer spikes quickly (default on when capped)\n"
       "  --aec=on|off                      AEC3, NS, and AGC (default on)\n"
       "  --quality=offline|factory         Codec or NetEq loop, no call\n"
       "  --impair-loss=<0-100>             Drop that percent of packets, no sudo\n"
@@ -468,6 +471,7 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--opus-ptime", "--opus_ptime", "--opus-dtx", "--no-opus-dtx",
     "--liquid-dtx", "--no-liquid-dtx", "--srtp-tag32", "--no-srtp-tag32",
     "--rtp-extensions", "--no-rtp-extensions", "--audio-rtcp-ms", "--audio_rtcp_ms",
+    "--jitter-max-ms", "--jitter_max_ms", "--jitter-fast-accelerate", "--no-jitter-fast-accelerate",
     "--help"
   };
 
@@ -590,6 +594,9 @@ Options parseOptions(const std::vector<std::string>& args) {
         }
         if (config_json.isMember("liquid_frames_per_packet") && config_json["liquid_frames_per_packet"].isInt()) {
              opts.liquid_frames_per_packet = config_json["liquid_frames_per_packet"].asInt();
+        }
+        if (config_json.isMember("jitter_max_ms") && config_json["jitter_max_ms"].isInt()) {
+             opts.jitter_max_ms = config_json["jitter_max_ms"].asInt();
         }
         if (config_json.isMember("opus_ptime") && config_json["opus_ptime"].isInt()) {
              opts.opus_ptime_ms = config_json["opus_ptime"].asInt();
@@ -889,6 +896,12 @@ Options parseOptions(const std::vector<std::string>& args) {
         opts.srtp_tag32 = 1;
     } else if (arg == "--no-srtp-tag32" || arg == "--no-srtp_tag32") {
         opts.srtp_tag32 = 0;
+    } else if (arg.find("--jitter-max-ms=") == 0 || arg.find("--jitter_max_ms=") == 0) {
+        opts.jitter_max_ms = std::atoi(arg.substr(arg.find('=') + 1).c_str());
+    } else if (arg == "--jitter-fast-accelerate" || arg == "--jitter_fast_accelerate") {
+        opts.jitter_fast_accelerate = 1;
+    } else if (arg == "--no-jitter-fast-accelerate" || arg == "--no-jitter_fast_accelerate") {
+        opts.jitter_fast_accelerate = 0;
     } else if (arg.find("--audio-rtcp-ms=") == 0 || arg.find("--audio_rtcp_ms=") == 0) {
         opts.audio_rtcp_ms = std::atoi(arg.substr(arg.find('=') + 1).c_str());
     } else if (arg == "--rtp-extensions" || arg == "--rtp_extensions") {
@@ -1164,6 +1177,10 @@ Options parseOptions(const std::vector<std::string>& args) {
   }
   if (opts.impair_loss_pct < 0 || opts.impair_loss_pct > 100) {
     opts.parse_error = "impair-loss must be 0..100";
+  }
+  if (opts.jitter_max_ms != -1 && opts.jitter_max_ms != 0 &&
+      (opts.jitter_max_ms < 20 || opts.jitter_max_ms > 1000)) {
+    opts.parse_error = "jitter-max-ms must be 0 (unlimited) or 20..1000";
   }
   if (opts.impair_jitter_ms < 0 || opts.impair_jitter_ms > 500) {
     opts.parse_error = "impair-jitter-ms must be 0..500";

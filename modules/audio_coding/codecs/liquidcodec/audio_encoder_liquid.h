@@ -29,6 +29,10 @@ struct RuntimeConfig {
   // DTX: skip packets while the input is silent (energy VAD with an adaptive
   // noise floor and a hangover that covers the codec lookahead).
   bool dtx = false;
+  // SRTP auth tag the transport is set up to offer: 4 (SHA1_32, used when
+  // both peers allow it), 10 (SHA1_80), 0 (no encryption), -1 unknown. Only
+  // the startup estimate uses it; the stats print the negotiated cipher.
+  int srtp_tag_bytes = -1;
 };
 
 // Process-wide settings copied from directcall before the peer connection

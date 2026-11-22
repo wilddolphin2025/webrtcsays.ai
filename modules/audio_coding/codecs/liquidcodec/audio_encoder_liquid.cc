@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <string>
 
 #include "rtc_base/logging.h"
 
@@ -72,21 +74,35 @@ bool AudioEncoderLiquid::EnsureStarted(std::string* error) {
       liquid::DescribeLatency(config_.chunk, config_.hidden_tail, config_.paths);
   RTC_LOG(LS_INFO) << latency.summary;
   fprintf(stderr, "%s\n", latency.summary.c_str());
-  const double ipv4 = 0;
   double plain = 0;
   double srtp = 0;
   const int fpp = std::max(1, config_.frames_per_packet);
   const int payload = liquid::PayloadBytes(config_.pack, fpp);
-  liquid::OnWireBitrateBps(payload, liquid::kFramesPerSecond / fpp, &plain, &srtp);
+  const int tag = config_.srtp_tag_bytes;
+  liquid::OnWireBitrateBps(payload, liquid::kFramesPerSecond / fpp, tag, &plain, &srtp);
+  // The SRTP cipher is negotiated in DTLS after this runs, so this is the
+  // expected figure; directcall prints the negotiated one when stats start.
+  std::string srtp_text;
+  if (tag < 0) {
+    srtp_text = "SRTP tag not known yet";
+  } else if (tag == 0) {
+    srtp_text = "no SRTP";
+  } else {
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "expected with %d-byte SRTP tag (%s) %.0f bps", tag,
+                  tag == liquid::kSrtpTagSha1_32Bytes   ? "SHA1_32"
+                  : tag == liquid::kSrtpTagSha1_80Bytes ? "SHA1_80"
+                                                        : "GCM",
+                  srtp);
+    srtp_text = buf;
+  }
   fprintf(stderr,
           "LiquidCodec pack=%s frames/packet=%d payload=%d bytes, information %.0f bps, "
-          "payload %.0f bps, on-wire IPv4/UDP/RTP %.0f bps, with 16-byte SRTP tag %.0f bps, "
-          "compute=%s\n",
+          "payload %.0f bps, on-wire IPv4/UDP/RTP %.0f bps, %s, compute=%s\n",
           config_.pack == liquid::WirePack::kTight ? "tight" : "u16", fpp, payload,
           liquid::InformationBitrateBps(config_.chunk),
-          liquid::PayloadBitrateBps(config_.pack, fpp), plain, srtp,
+          liquid::PayloadBitrateBps(config_.pack, fpp), plain, srtp_text.c_str(),
           config_.paths.compute.c_str());
-  (void)ipv4;
   if (!config_.record_dir.empty()) {
     std::string wav_error;
     codec_wav_.Open(liquid::JoinPath(config_.record_dir, "codec_in_24k.wav"),

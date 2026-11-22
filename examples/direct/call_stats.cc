@@ -297,7 +297,9 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     long long nack = 0;
     long long pli = 0;
     long long concealment = 0;
-    double jitter_buffer_ms = -1;
+    double jitter_buffer_ms = -1;      // this interval
+    double jitter_buffer_avg_ms = -1;  // whole call
+    double jitter_target_ms = -1;      // NetEq target, this interval
     double send_onwire_kbps = -1;
     double recv_onwire_kbps = -1;
     double send_payload_kbps = -1;
@@ -326,9 +328,30 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         have_audio = true;
         note_first_audio(in->packets_received.value_or(0));
         concealment += static_cast<long long>(in->concealment_events.value_or(0));
+        // jitterBufferDelay and jitterBufferTargetDelay are sums since the
+        // call began; the buffer "now" is their delta over this interval.
+        // The cumulative average lagged real changes by tens of seconds.
         if (in->jitter_buffer_delay && in->jitter_buffer_emitted_count &&
             *in->jitter_buffer_emitted_count > 0) {
-          jitter_buffer_ms = (*in->jitter_buffer_delay / static_cast<double>(*in->jitter_buffer_emitted_count)) * 1000.0;
+          const uint64_t emitted = *in->jitter_buffer_emitted_count;
+          const double delay = *in->jitter_buffer_delay;
+          const double target = in->jitter_buffer_target_delay.value_or(0);
+          jitter_buffer_avg_ms = delay / static_cast<double>(emitted) * 1000.0;
+          jitter_buffer_ms = jitter_buffer_avg_ms;
+          if (in->jitter_buffer_target_delay) {
+            jitter_target_ms = target / static_cast<double>(emitted) * 1000.0;
+          }
+          if (jb_prev_.seen && emitted > jb_prev_.emitted && delay >= jb_prev_.delay) {
+            const double n = static_cast<double>(emitted - jb_prev_.emitted);
+            jitter_buffer_ms = (delay - jb_prev_.delay) / n * 1000.0;
+            if (in->jitter_buffer_target_delay && target >= jb_prev_.target) {
+              jitter_target_ms = (target - jb_prev_.target) / n * 1000.0;
+            }
+          }
+          jb_prev_.delay = delay;
+          jb_prev_.target = target;
+          jb_prev_.emitted = emitted;
+          jb_prev_.seen = true;
         }
         const auto* codec = CodecFor<webrtc::RTCCodecStats>(*report, in->codec_id);
         const uint64_t recv_bytes = in->bytes_received.value_or(0);
@@ -354,6 +377,9 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         audio_out.number("recv_onwire_ipv4_udp_rtp_kbps", recv_onwire_kbps_now, 3);
         audio_out.integer("algorithmic_latency_ms", codec_algo_ms);
         audio_out.number("mouth_to_ear_est_ms", m2e, 1);
+        if (jitter_buffer_ms >= 0) audio_out.number("jitter_buffer_ms", jitter_buffer_ms, 1);
+        if (jitter_buffer_avg_ms >= 0) audio_out.number("jitter_buffer_avg_ms", jitter_buffer_avg_ms, 1);
+        if (jitter_target_ms >= 0) audio_out.number("jitter_buffer_target_ms", jitter_target_ms, 1);
         recv_onwire_kbps = recv_onwire_kbps_now;
         recv_payload_kbps = bps / 1000.0;
         recv_packets = static_cast<long long>(in->packets_received.value_or(0));
@@ -452,6 +478,19 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
             for (int i = 0; i < 4; ++i) {
               if (ipay == tight[i] || ipay == u16[i]) fpp = i + 1;
             }
+            if (fpp > 0 && !onwire_printed_ && srtp_cipher != "unknown" && hdr < 16.0) {
+              // Negotiated transport, once per call. The encoder's startup
+              // line cannot know the SRTP cipher; this one uses it.
+              onwire_printed_ = true;
+              const int rtp = static_cast<int>(hdr + 0.5);
+              const int ip = ipv6 ? 48 : 28;
+              const int total = ipay + rtp + ip + srtp_tag;
+              std::fprintf(stderr,
+                           "On-wire (negotiated): payload %d B + RTP %d B + %s %d B + SRTP tag %d B "
+                           "(%s) = %d B x %.1f pkt/s = %.0f bps\n",
+                           ipay, rtp, ipv6 ? "IPv6/UDP" : "IPv4/UDP", ip, srtp_tag,
+                           srtp_cipher.c_str(), total, 12.5 / fpp, total * 8.0 * 12.5 / fpp);
+            }
             if (fpp > 0) {
               audio_out.integer("send_frames_per_packet", fpp);
               audio_out.integer("send_ptime_ms", fpp * 80);
@@ -539,6 +578,7 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     else root.nul("video");
     if (jitter_buffer_ms >= 0) root.number("jitter_buffer_ms", jitter_buffer_ms, 2);
     else root.nul("jitter_buffer_ms");
+    if (jitter_target_ms >= 0) root.number("jitter_buffer_target_ms", jitter_target_ms, 2);
     root.integer("concealment_events", concealment);
     root.integer("nack", nack);
     root.integer("pli", pli);
@@ -548,11 +588,11 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
                     "audio onwire=payload+rtp+ip/udp send_ipv4_udp_rtp_kbps=%.3f send_payload_kbps=%.3f "
                     "recv_ipv4_udp_rtp_kbps=%.3f "
                     "recv_payload_kbps=%.3f send_packets=%lld recv_packets=%lld lost=%lld "
-                    "jitter_ms=%.2f jitter_buffer_ms=%.2f rtt_ms=%.1f algo_ms=%d "
+                    "jitter_ms=%.2f jitter_buffer_ms=%.2f jitter_target_ms=%.1f rtt_ms=%.1f algo_ms=%d "
                     "mouth_to_ear_est_ms=%.1f\n",
                     send_onwire_kbps, send_payload_kbps, recv_onwire_kbps, recv_payload_kbps,
-                    send_packets, recv_packets, packets_lost, jitter_ms, jitter_buffer_ms, rtt_ms,
-                    algo_ms, m2e_ms);
+                    send_packets, recv_packets, packets_lost, jitter_ms, jitter_buffer_ms,
+                    jitter_target_ms, rtt_ms, algo_ms, m2e_ms);
       snap.audio_line = line;
     }
     snap.ice = ice;
@@ -573,6 +613,14 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
   Counter audio_in_total_;
   Counter audio_out_bytes_;
   Counter audio_out_total_;
+  struct JitterCounter {
+    double delay = 0;
+    double target = 0;
+    uint64_t emitted = 0;
+    bool seen = false;
+  };
+  JitterCounter jb_prev_;
+  bool onwire_printed_ = false;
   WireCounter audio_in_wire_;
   WireCounter audio_out_wire_;
   Counter video_in_bytes_;

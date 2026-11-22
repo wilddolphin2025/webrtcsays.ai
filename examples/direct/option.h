@@ -110,6 +110,9 @@ struct Options {
     int tts_threads = 0;     // 0 = auto (hardware_concurrency)
     bool websocket_signaling = true;  // expose raw WebSocket signaling endpoint
     int websocket_port = 3457;        // raw WebSocket signaling port
+    // Empty keeps TCP and WebSocket signaling on 0.0.0.0. A dotted IPv4
+    // address binds only those two sockets. ICE and media UDP are unchanged.
+    std::string signaling_bind{};
     int call_setup_timeout_ms = 45000;  // INVITE -> media connected
     int media_grace_ms = 10000;         // tolerated PeerConnection "disconnected"
     int hangup_ack_timeout_ms = 2000;   // BYE -> 200 OK before force-close

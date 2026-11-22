@@ -965,10 +965,10 @@ Options parseOptions(const std::vector<std::string>& args) {
       opts.websocket_signaling = false;
     } else if (arg == "--bonjour") { 
       RTC_LOG(LS_INFO) << "Args set bonjour on";
-      opts.video = true;
+      opts.bonjour = true;
     } else if (arg == "--no-bonjour") { 
       RTC_LOG(LS_INFO) << "Args set bonjour off";
-      opts.video = false;
+      opts.bonjour = false;
     }
     // Handle address in any position (must not be another known flag/option)
     else if (arg.rfind("--", 0) != 0 && isAddress(arg)) {

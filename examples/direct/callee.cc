@@ -171,9 +171,14 @@ bool DirectCallee::StartListening() {
       if (opts_.bonjour && !opts_.bonjour_name.empty()) {
           if (AdvertiseBonjourService(opts_.bonjour_name, local_port_)) {
               RTC_LOG(LS_INFO) << "Bonjour advertised as '" << opts_.bonjour_name << "' on port " << local_port_;
+              fprintf(stdout, "Bonjour: advertising '%s' as _webrtcsays._tcp on port %d\n",
+                      opts_.bonjour_name.c_str(), local_port_);
           } else {
               RTC_LOG(LS_WARNING) << "Bonjour advertisement failed for '" << opts_.bonjour_name << "'";
+              fprintf(stdout, "Bonjour: advertisement FAILED for '%s' (port %d)\n",
+                      opts_.bonjour_name.c_str(), local_port_);
           }
+          fflush(stdout);
       }
       #endif // #if TARGET_OS_IOS || TARGET_OS_OSX
       return true;

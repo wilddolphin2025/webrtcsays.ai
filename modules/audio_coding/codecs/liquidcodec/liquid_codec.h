@@ -164,6 +164,9 @@ bool LoadManifestFile(const std::string& path,
 
 std::string JoinPath(const std::string& dir, const std::string& leaf);
 bool FileExists(const std::string& path);
+// Core ML loads .mlmodelc. A .mlpackage path maps to the sibling .mlmodelc
+// (same directory, suffix replaced). Any other path is returned unchanged.
+std::string CompiledModelPath(const std::string& path);
 
 bool PackFrame(const int32_t* codes12, uint16_t seq, int codebook_size,
                uint8_t* dst, size_t cap, size_t* out_len);

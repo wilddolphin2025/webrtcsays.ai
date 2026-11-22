@@ -355,6 +355,15 @@ bool FileExists(const std::string& path) {
   return stat(path.c_str(), &st) == 0;
 }
 
+std::string CompiledModelPath(const std::string& path) {
+  const std::string suffix = ".mlpackage";
+  if (path.size() >= suffix.size() &&
+      path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0) {
+    return path.substr(0, path.size() - suffix.size()) + ".mlmodelc";
+  }
+  return path;
+}
+
 bool PackPayload(WirePack pack, const int32_t* codes, int frames, uint16_t first_seq,
                  int codebook_size, uint8_t* dst, size_t cap, size_t* out_len) {
   const int bytes = PayloadBytes(pack, frames);

@@ -5,27 +5,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-# build.sh writes the host binary at src/out/release/directcall when this repo
-# is the gclient parent, and at out/release/directcall when this directory is
-# the WebRTC tree (including src/scripts/... launched from the parent).
-if [[ "$(basename "${ROOT}")" == "src" ]]; then
-  DEFAULT_BIN="${ROOT}/out/release/directcall"
-  if [[ -e "${ROOT}/../.git" ]]; then
-    DEFAULT_MODELS="$(cd "${ROOT}/.." && pwd)/scripts/liquidcodec/models"
-  else
-    DEFAULT_MODELS="${SCRIPT_DIR}/models"
-  fi
-elif [[ -d "${ROOT}/src/.git" || -d "${ROOT}/src/out" ]]; then
-  DEFAULT_BIN="${ROOT}/src/out/release/directcall"
-  DEFAULT_MODELS="${SCRIPT_DIR}/models"
-else
-  DEFAULT_BIN="${ROOT}/out/release/directcall"
-  DEFAULT_MODELS="${SCRIPT_DIR}/models"
-fi
-BIN="${BIN:-${DEFAULT_BIN}}"
-MODEL_DIR="${LIQUIDCODEC_DEST:-${DEFAULT_MODELS}}"
-OUT="${OUT:-${ROOT}/scripts/liquidcodec/out/bandwidth}"
+# shellcheck source=layout.sh
+source "${SCRIPT_DIR}/layout.sh"
+# Binary and models are whatever ./build.sh release liquidcodec wrote.
+BIN="${BIN:-${LC_BIN}}"
+MODEL_DIR="${LIQUIDCODEC_DEST:-${LC_MODELS}}"
+OUT="${OUT:-${LC_TREE}/scripts/liquidcodec/out/bandwidth}"
 SAMPLES="${LIQUIDCODEC_SAMPLES:-}"
 CONVERSATION="${LIQUIDCODEC_CONVERSATION:-}"
 PORT="${LIQUID_BENCH_PORT:-3460}"
@@ -58,7 +43,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p "${OUT}"
-python3 "${ROOT}/scripts/liquidcodec/bandwidth.py" --theoretical --out "${OUT}/theoretical.csv"
+python3 "${SCRIPT_DIR}/bandwidth.py" --theoretical --out "${OUT}/theoretical.csv"
 
 if [[ "${THEORETICAL}" == "1" ]]; then
   echo "Theoretical table only: ${OUT}/theoretical.csv"
@@ -67,8 +52,13 @@ fi
 
 if [[ ! -x "${BIN}" ]]; then
   echo "directcall is not at ${BIN}." >&2
-  echo "On the Mac: ./build.sh release liquidcodec" >&2
+  echo "From the gclient parent: ./build.sh release liquidcodec" >&2
   echo "The theoretical table is still at ${OUT}/theoretical.csv" >&2
+  exit 1
+fi
+if [[ ! -f "${MODEL_DIR}/liquidcodec.json" ]]; then
+  echo "No compiled models at ${MODEL_DIR}." >&2
+  echo "From the gclient parent: ./build.sh release liquidcodec" >&2
   exit 1
 fi
 
@@ -80,8 +70,9 @@ if [[ -n "${CONVERSATION}" && -f "${CONVERSATION}" ]]; then
   clips+=("${CONVERSATION}")
 fi
 if [[ ${#clips[@]} -eq 0 ]]; then
-  echo "No input audio. Pass --samples (the fork's samples/) and --conversation a longer wav." >&2
-  exit 1
+  python3 "${SCRIPT_DIR}/tone_wav.py" "${OUT}/tone.wav" 3
+  clips=("${OUT}/tone.wav")
+  echo "No --samples clip. Using ${OUT}/tone.wav from this script. Pass --samples for speech and WER."
 fi
 if [[ "${QUICK}" == "1" ]]; then
   clips=("${clips[0]}")
@@ -207,7 +198,7 @@ if [[ "${IMPAIR}" == "1" ]]; then
   fi
 fi
 
-python3 "${ROOT}/scripts/liquidcodec/bandwidth.py" --analyze "${OUT}" --out "${OUT}/bandwidth.csv"
+python3 "${SCRIPT_DIR}/bandwidth.py" --analyze "${OUT}" --out "${OUT}/bandwidth.csv"
 echo "Measured table: ${OUT}/bandwidth.csv"
 echo "Quality tools, if you want ViSQOL / PESQ / STOI / Whisper on the WAVs:"
 echo "  python3 -m pip install pesq pystoi soundfile numpy"

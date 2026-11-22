@@ -227,8 +227,12 @@ gclient sync -D --force --nohooks --no-history --shallow -j "$(getconf _NPROCESS
 # Hooks, gn and ninja must use the depot_tools this DEPS pins: an older
 # ~/depot_tools cannot parse newer vpython.toml files ("requires-python").
 if [ -x "src/third_party/depot_tools/gclient" ]; then
+    # A stale gn earlier on PATH fails M156 with
+    # "No value named expand_directory_allowlist". The copy DEPS pins must be first.
     PATH="$REPO_ROOT/src/third_party/depot_tools:$PATH"
-    echo "Using pinned depot_tools from src/third_party/depot_tools"
+    export PATH
+    hash -r 2>/dev/null || true
+    echo "Using pinned depot_tools from src/third_party/depot_tools ($(command -v gn 2>/dev/null || echo 'gn missing'))"
     # DEPOT_TOOLS_UPDATE=0 skips this, and gn then fails with
     # "python3_bin_reldir.txt not found".
     if [ ! -f "src/third_party/depot_tools/python3_bin_reldir.txt" ]; then
@@ -704,6 +708,20 @@ if [ -f "../$LAST_BUILD_COMMIT_FILE" ]; then
     LAST_BUILD_COMMIT=$(cat ../$LAST_BUILD_COMMIT_FILE)
 fi
 
+# gn gen must use the gn from the depot_tools this DEPS pins, not a stale gn
+# that happens to be earlier on PATH.
+GN_BIN="gn"
+PINNED_DEPOT="$REPO_ROOT/src/third_party/depot_tools"
+if [ -d "$PINNED_DEPOT" ]; then
+    PATH="$PINNED_DEPOT:$PATH"
+    export PATH
+    hash -r 2>/dev/null || true
+fi
+if [ -x "$PINNED_DEPOT/gn" ]; then
+    GN_BIN="$PINNED_DEPOT/gn"
+fi
+echo "gn for this build: $GN_BIN"
+
 # Check if binary exists and is executable
 if [ -f "$BINARY_PATH" ] && [ -x "$BINARY_PATH" ]; then
     # Test if binary can run (e.g., by checking version or help output)
@@ -739,7 +757,7 @@ if [ "$IOS_BUILD" = "true" ]; then
     (cd $SRC_DIR && rm -rf out/ios_arm64)
     
     echo "Generating iOS build configuration..."
-    (cd $SRC_DIR && gn gen out/ios_arm64 --args="$IOS_ARGS")
+    (cd $SRC_DIR && "$GN_BIN" gen out/ios_arm64 --args="$IOS_ARGS")
     
     # Ensure whillats framework is available before WebRTC build if enabled
     if [ "$ENABLE_WHILLATS" = "true" ]; then
@@ -775,12 +793,12 @@ if [ "$IOS_BUILD" = "true" ]; then
     
 elif [ "$BUILD_TYPE" = "debug" ]; then
     echo "Building WebRTC project (debug, whillats: $ENABLE_WHILLATS)..."
-    (cd $SRC_DIR && gn gen out/debug --args="is_debug=true rtc_include_opus=true rtc_enable_symbol_export=true rtc_build_examples=true rtc_use_speech_audio_devices=$ENABLE_WHILLATS $EXTRA_ARGS")
+    (cd $SRC_DIR && "$GN_BIN" gen out/debug --args="is_debug=true rtc_include_opus=true rtc_enable_symbol_export=true rtc_build_examples=true rtc_use_speech_audio_devices=$ENABLE_WHILLATS $EXTRA_ARGS")
     (cd $SRC_DIR && ninja -C out/$BUILD_TYPE directcall)
     echo "Debug build completed."
 else
     echo "Building WebRTC project (release, whillats: $ENABLE_WHILLATS)..."
-    (cd $SRC_DIR && gn gen out/release --args="is_debug=false symbol_level=0 rtc_include_opus=true rtc_enable_symbol_export=true rtc_build_examples=true rtc_use_speech_audio_devices=$ENABLE_WHILLATS $EXTRA_ARGS")
+    (cd $SRC_DIR && "$GN_BIN" gen out/release --args="is_debug=false symbol_level=0 rtc_include_opus=true rtc_enable_symbol_export=true rtc_build_examples=true rtc_use_speech_audio_devices=$ENABLE_WHILLATS $EXTRA_ARGS")
     (cd $SRC_DIR && ninja -C out/$BUILD_TYPE directcall)
     echo "Release build completed."
 fi
@@ -816,6 +834,41 @@ if [ "$IOS_BUILD" = "true" ]; then
         echo "❌ WebRTC.framework not found at expected location"
     fi
 else
+    if [ "$ENABLE_LIQUIDCODEC" = "true" ]; then
+        FETCH="$REPO_ROOT/src/scripts/liquidcodec/fetch_models.sh"
+        RUNNER="$REPO_ROOT/src/scripts/liquidcodec/run_local_call.sh"
+        TONE_PY="$REPO_ROOT/src/scripts/liquidcodec/tone_wav.py"
+        if [ ! -f "$FETCH" ]; then
+            FETCH="$REPO_ROOT/scripts/liquidcodec/fetch_models.sh"
+            RUNNER="$REPO_ROOT/scripts/liquidcodec/run_local_call.sh"
+            TONE_PY="$REPO_ROOT/scripts/liquidcodec/tone_wav.py"
+        fi
+        echo "LiquidCodec: fetch models if needed, compile every .mlpackage, point liquidcodec.json at .mlmodelc"
+        "$FETCH" --dest "$REPO_ROOT/scripts/liquidcodec/models"
+        LIQUID_MODELS="$REPO_ROOT/scripts/liquidcodec/models"
+        if [ ! -f "$LIQUID_MODELS/liquidcodec.json" ]; then
+            echo "ERROR: fetch did not write $LIQUID_MODELS/liquidcodec.json" >&2
+            exit 1
+        fi
+        if grep -q '\.mlpackage' "$LIQUID_MODELS/liquidcodec.json"; then
+            echo "ERROR: $LIQUID_MODELS/liquidcodec.json still names a .mlpackage." >&2
+            echo "xcrun coremlcompiler did not compile the packages. Install the Xcode command line tools and rerun." >&2
+            exit 1
+        fi
+        CALL_OUT="$(cd "$(dirname "$RUNNER")" && pwd)/out/local-call"
+        TONE="$CALL_OUT/inject.wav"
+        mkdir -p "$CALL_OUT"
+        python3 "$TONE_PY" "$TONE" 3
+        LIQUID_BIN="$REPO_ROOT/src/out/$BUILD_TYPE/directcall"
+        echo ""
+        echo "LiquidCodec is ready. One local call, no extra setup:"
+        echo "  $RUNNER"
+        echo ""
+        echo "The same callee, then caller:"
+        echo "  $LIQUID_BIN --mode=callee --user_name=alice --room_name=liquid --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama --audio-codec=liquidcodec --liquid-decode=ane --liquid-model-dir=$LIQUID_MODELS --record-dir=$CALL_OUT/callee 127.0.0.1:3456"
+        echo "  $LIQUID_BIN --mode=caller --user_name=bob --target_name=alice --room_name=liquid --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama --audio-codec=liquidcodec --liquid-decode=ane --liquid-model-dir=$LIQUID_MODELS --inject-wav=$TONE --record-dir=$CALL_OUT/caller --duration=8 127.0.0.1:3456"
+        echo ""
+    fi
     # Regular macOS/Linux binary execution
     LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$REPO_ROOT/src/modules/third_party/whillats/build/lib/$BUILD_TYPE"
     if [ "$ENABLE_WHILLATS" = "true" ]; then

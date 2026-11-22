@@ -221,6 +221,14 @@ void TestManifest() {
          "fork state inputs");
   Expect(live.encoder_states_out.back() == "pos_out", "fork state outputs");
   Expect(live_chunk.new_frames == 1 && live_chunk.ctx_frames == 20, "fork decoder chunk");
+  Expect(webrtc::liquid::CompiledModelPath("stream/lc_enc_step_int8.mlpackage") ==
+             "stream/lc_enc_step_int8.mlmodelc",
+         "mlpackage compiles to a sibling mlmodelc");
+  Expect(webrtc::liquid::CompiledModelPath("stream/lc_dec_n1_int8.mlmodelc") ==
+             "stream/lc_dec_n1_int8.mlmodelc",
+         "mlmodelc path is unchanged");
+  Expect(webrtc::liquid::CompiledModelPath("stream/not-a-model") == "stream/not-a-model",
+         "other paths are unchanged");
 }
 
 void TestStatefulHold() {

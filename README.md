@@ -252,31 +252,34 @@ cd ~/Public/webrtcsays-m156   # or ~/Dev/webrtcsays.ai
 git fetch origin liquidcodec-ane
 git checkout liquidcodec-ane
 
-# Default ref is the streaming draft branch. After that PR merges, pass --ref master.
-# From the gclient parent (the directory that contains src/), either of these
-# writes models to <parent>/scripts/liquidcodec/models, which is where the
-# directcall commands below look when you stay in that directory:
-scripts/liquidcodec/fetch_models.sh
-# src/scripts/liquidcodec/fetch_models.sh
-# If you start directcall from inside src/, pass
-# --liquid-model-dir=../scripts/liquidcodec/models
-# or the binary also checks ../scripts/liquidcodec/models when
-# scripts/liquidcodec/models has no manifest.
-
+# One command from the gclient parent. It syncs, runs the pinned depot_tools gn,
+# builds directcall, fetches models (skipped when they are already compiled),
+# runs xcrun coremlcompiler on every .mlpackage, and rewrites liquidcodec.json
+# to those .mlmodelc paths. It then prints the callee and caller lines.
 ./build.sh release liquidcodec
-BIN=src/out/release/directcall
+# ./build.sh -b liquidcodec-ane release liquidcodec
 
-# 16-bit PCM WAV. 24 kHz mono is the codec rate; 16 kHz and 48 kHz are resampled.
+# Same call the build prints. It writes a 24 kHz tone, runs 8 seconds on
+# 127.0.0.1, and leaves caller/codec_in_24k.wav and callee/codec_out_24k.wav.
+src/scripts/liquidcodec/run_local_call.sh
+
+# A hand-supplied clip still works. 24 kHz mono is the codec rate.
 # afconvert -f WAVE -d LEI16@24000 input.flac "$HOME/liquid-clip.wav"
+# src/scripts/liquidcodec/run_local_call.sh --inject-wav "$HOME/liquid-clip.wav" --duration 20
 
-# One Mac, two processes. Callee first. Headphones, so the mic does not hear the speaker.
-# AEC, AGC, noise suppression, and the high-pass filter are off for this run.
+# The flags below match the script. It generates the tone when you omit
+# --inject-wav. Headphones, so the mic
+# does not hear the speaker. AEC, AGC, noise suppression, and the high-pass
+# filter are off for this run.
+BIN=src/out/release/directcall
+MODELS=scripts/liquidcodec/models
 mkdir -p "$HOME/liquidcodec-record/callee" "$HOME/liquidcodec-record/caller"
 
 "$BIN" --mode=callee --user_name=alice --room_name=liquid \
   --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama \
   --audio-codec=liquidcodec \
   --liquid-decode=ane \
+  --liquid-model-dir="$MODELS" \
   --record-dir="$HOME/liquidcodec-record/callee" \
   127.0.0.1:3456
 
@@ -284,6 +287,7 @@ mkdir -p "$HOME/liquidcodec-record/callee" "$HOME/liquidcodec-record/caller"
   --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama \
   --audio-codec=liquidcodec \
   --liquid-decode=ane \
+  --liquid-model-dir="$MODELS" \
   --inject-wav="$HOME/liquid-clip.wav" \
   --record-dir="$HOME/liquidcodec-record/caller" \
   --duration=20 \
@@ -341,21 +345,16 @@ Calculated on-wire rate, IPv4 20 + UDP 8 + RTP 12, no header extensions. The SRT
 
 `scripts/liquidcodec/bench_bandwidth.sh --theoretical` prints the full matrix, including Opus at 6, 8, 12, 16, 24, and 32 kbps, ptime 20/40/60, and DTX on or off. Opus sizes in that table are the nominal target. DTX is smaller only while the signal is quiet, which a real call measures and the table does not invent.
 
-On the Mac, after the LiquidCodec build:
+On the Mac, after `./build.sh release liquidcodec`. The bench uses that binary and `scripts/liquidcodec/models`. With no `--samples` it generates a tone, so it does not need a separate download.
 
 ```bash
-# Fork samples, plus one longer clip that contains pauses.
-# From the gclient parent, both scripts/liquidcodec/bench_bandwidth.sh and
-# src/scripts/liquidcodec/bench_bandwidth.sh use src/out/release/directcall
-# and <parent>/scripts/liquidcodec/models.
-scripts/liquidcodec/bench_bandwidth.sh --theoretical
-scripts/liquidcodec/bench_bandwidth.sh \
+src/scripts/liquidcodec/bench_bandwidth.sh --theoretical
+src/scripts/liquidcodec/bench_bandwidth.sh --quick
+
+# Speech clips, when you want WER rather than the generated tone:
+src/scripts/liquidcodec/bench_bandwidth.sh \
   --samples "$HOME/liquidcodec-ane/samples" \
   --conversation "$HOME/speech/conversation.wav"
-
-# Fewer calls, one clip, tight fpp=1 and Opus 6k/32k:
-scripts/liquidcodec/bench_bandwidth.sh --quick \
-  --samples "$HOME/liquidcodec-ane/samples"
 
 # These print sudo commands and do not run them.
 scripts/liquidcodec/bench_bandwidth.sh --pcap --impair --theoretical

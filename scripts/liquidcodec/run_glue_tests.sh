@@ -17,8 +17,46 @@ python3 "${ROOT}/scripts/liquidcodec/check_tail.py" "${OUT}/tail_case.bin"
 python3 "${ROOT}/scripts/liquidcodec/bandwidth.py" --self-check
 python3 "${ROOT}/scripts/liquidcodec/bandwidth.py" --theoretical --out "${OUT}/theoretical.csv"
 bash -n "${ROOT}/scripts/liquidcodec/fetch_models.sh"
+REWRITE="$(mktemp -d)"
+printf '%s\n' '{"encoder_model":"stream/lc_enc_step_int8.mlpackage","decoder_model":"stream/lc_dec_n1_int8.mlpackage"}' \
+  > "${REWRITE}/liquidcodec.json"
+bash "${ROOT}/scripts/liquidcodec/fetch_models.sh" --rewrite-manifest "${REWRITE}/liquidcodec.json"
+grep -q 'stream/lc_enc_step_int8.mlmodelc' "${REWRITE}/liquidcodec.json"
+grep -q 'stream/lc_dec_n1_int8.mlmodelc' "${REWRITE}/liquidcodec.json"
+if grep -q mlpackage "${REWRITE}/liquidcodec.json"; then
+  echo "manifest rewrite left a .mlpackage path" >&2
+  exit 1
+fi
+rm -rf "${REWRITE}"
 bash -n "${ROOT}/scripts/liquidcodec/bench_bandwidth.sh"
+bash -n "${ROOT}/scripts/liquidcodec/run_local_call.sh"
 bash -n "${ROOT}/build.sh"
+python3 "${ROOT}/scripts/liquidcodec/tone_wav.py" "${OUT}/tone.wav" 0.05
+test -s "${OUT}/tone.wav"
+PREP="$(mktemp -d)"
+bash "${ROOT}/scripts/liquidcodec/run_local_call.sh" --prepare-only --duration 2 --record-dir "${PREP}"
+grep -q -- '--inject-wav=' "${PREP}/commands.txt"
+grep -q -- '--record-dir=' "${PREP}/commands.txt"
+grep -q '127.0.0.1:' "${PREP}/commands.txt"
+grep -q -- '--liquid-model-dir=' "${PREP}/commands.txt"
+test -s "${PREP}/inject.wav"
+rm -rf "${PREP}"
+READY="$(mktemp -d)/models"
+mkdir -p "${READY}/stream/lc_enc_step_int8.mlmodelc" "${READY}/stream/lc_dec_n1_int8.mlmodelc"
+mkdir -p "${READY}/stream/lc_enc_step_int8.mlpackage"
+printf '%s\n' '{"encoder_model":"stream/lc_enc_step_int8.mlmodelc","decoder_model":"stream/lc_dec_n1_int8.mlmodelc"}' \
+  > "${READY}/liquidcodec.json"
+echo keep > "${READY}/KEEP"
+bash "${ROOT}/scripts/liquidcodec/fetch_models.sh" --dest "${READY}" | tee "${OUT}/fetch-ready.txt"
+grep -q 'models ready' "${OUT}/fetch-ready.txt"
+test "$(cat "${READY}/KEEP")" = keep
+if ! grep -q 'GN_BIN' "${ROOT}/build.sh"; then
+  echo "build.sh does not pin gn" >&2
+  exit 1
+fi
+grep -q 'third_party/depot_tools' "${ROOT}/build.sh"
+grep -q 'fetch_models.sh' "${ROOT}/build.sh"
+grep -q 'run_local_call.sh' "${ROOT}/build.sh"
 
 # The macOS ninja build is not part of Linux CI. These are the mistakes that
 # failed `ninja -C out/release directcall` on Apple clang and that a relative

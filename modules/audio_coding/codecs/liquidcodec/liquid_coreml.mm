@@ -105,6 +105,48 @@ std::string NsError(NSError* err) {
   return err.localizedDescription.UTF8String ? err.localizedDescription.UTF8String : "Core ML error";
 }
 
+// modelWithContentsOfURL rejects a .mlpackage ("Compile the model with Xcode
+// or MLModel.compileModel(at:)"). Compile once and keep the .mlmodelc beside it.
+bool PrepareModelPath(const std::string& path, std::string* load_path, std::string* error) {
+  const std::string compiled = CompiledModelPath(path);
+  if (compiled == path) {
+    *load_path = path;
+    return true;
+  }
+  if (FileExists(compiled)) {
+    *load_path = compiled;
+    return true;
+  }
+  @autoreleasepool {
+    fprintf(stderr, "LiquidCodec compiling %s -> %s\n", path.c_str(), compiled.c_str());
+    NSString* src = [NSString stringWithUTF8String:path.c_str()];
+    NSURL* srcURL = [NSURL fileURLWithPath:src isDirectory:YES];
+    NSError* err = nil;
+    NSURL* tmp = [MLModel compileModelAtURL:srcURL error:&err];
+    if (!tmp) {
+      if (error) *error = "compile " + path + ": " + NsError(err);
+      return false;
+    }
+    NSString* dst = [NSString stringWithUTF8String:compiled.c_str()];
+    NSURL* dstURL = [NSURL fileURLWithPath:dst isDirectory:YES];
+    NSFileManager* files = [NSFileManager defaultManager];
+    NSError* moveErr = nil;
+    if (![files moveItemAtURL:tmp toURL:dstURL error:&moveErr]) {
+      moveErr = nil;
+      if (![files copyItemAtURL:tmp toURL:dstURL error:&moveErr]) {
+        if ([files fileExistsAtPath:dst]) {
+          *load_path = compiled;
+          return true;
+        }
+        if (error) *error = "save compiled model " + compiled + ": " + NsError(moveErr);
+        return false;
+      }
+    }
+  }
+  *load_path = compiled;
+  return true;
+}
+
 std::string JoinNames(NSDictionary<NSString*, MLFeatureDescription*>* map) {
   NSMutableString* s = [NSMutableString string];
   for (NSString* key in map) {
@@ -307,8 +349,12 @@ class CoreMlBackend final : public LiquidBackend {
     NSError* err = nil;
     MLModelConfiguration* cfg = [[MLModelConfiguration alloc] init];
     cfg.computeUnits = Units(paths.compute);
-    const std::string enc_path = JoinPath(paths.model_dir, paths.encoder_model);
-    const std::string dec_path = JoinPath(paths.model_dir, paths.decoder_model);
+    const std::string enc_src = JoinPath(paths.model_dir, paths.encoder_model);
+    const std::string dec_src = JoinPath(paths.model_dir, paths.decoder_model);
+    std::string enc_path;
+    std::string dec_path;
+    if (!PrepareModelPath(enc_src, &enc_path, error)) return false;
+    if (!PrepareModelPath(dec_src, &dec_path, error)) return false;
     MLModel* enc = [MLModel modelWithContentsOfURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:enc_path.c_str()]]
                                     configuration:cfg
                                             error:&err];

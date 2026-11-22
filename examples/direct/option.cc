@@ -420,7 +420,7 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --liquid-ctx=<frames>              Left-context frames (0 = manifest)\n"
       "  --liquid-new=<frames>              New frames per Core ML call (0 = manifest)\n"
       "  --liquid-decode=ane|cpu|all        Core ML compute units\n"
-      "  --liquid-pack=u16|tight           u16 is 28 bytes/frame; tight is 17 bytes, no header\n"
+      "  --liquid-pack=tight|u16           tight (default) is 17 bytes/frame, no header; u16 is 28\n"
       "  --liquid-frames-per-packet=<n>    1-4 codec frames (80-320 ms) in each RTP packet\n"
       "  --liquid-dtx / --no-liquid-dtx    Send nothing during silence (default off)\n"
       "  --srtp-tag32 / --no-srtp-tag32    4-byte SRTP auth tag (AES_CM_128_HMAC_SHA1_32); default on for liquidcall\n"
@@ -429,8 +429,9 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --jitter-max-ms=<ms>              Jitter buffer cap: low-latency mode (default 80 for liquidcall;\n"
       "                                    0 = stock NetEq, unlimited). NetEq adapts below the cap.\n"
       "  --jitter-fast-accelerate / --no-jitter-fast-accelerate  Drain buffer spikes quickly (default on when capped)\n"
-      "  --aec=on|off                      AEC3, NS, and AGC (default on)\n"
-      "  --quality=offline|factory         Codec or NetEq loop, no call\n"
+      "  --aec=on|off|vpio|aec3            Echo cancel, NS, AGC (default on: macOS Voice\n"
+      "                                    Processing I/O; aec3 = HAL + WebRTC AEC3)\n"
+      "  --quality=offline|factory|aec     Codec or NetEq loop, or echo-canceller loop; no call\n"
       "  --impair-loss=<0-100>             Drop that percent of packets, no sudo\n"
       "  --impair-jitter-ms=<ms>           Delay packets by 0, half, then full\n"
       "  --liquid-encoder=int8|fp16        Core ML encoder package (default int8)\n"
@@ -948,7 +949,8 @@ Options parseOptions(const std::vector<std::string>& args) {
         const std::string value = arg.substr(6);
         if (value == "on" || value == "1" || value == "true") opts.aec = true;
         else if (value == "off" || value == "0" || value == "false") opts.aec = false;
-        else opts.parse_error = "aec must be on or off";
+        else if (value == "vpio" || value == "aec3") { opts.aec = true; opts.aec_mode = value; }
+        else opts.parse_error = "aec must be on, off, vpio, or aec3";
     } else if (arg.find("--liquid-pack=") == 0 || arg.find("--liquid_pack=") == 0) {
         const auto eq = arg.find('=');
         opts.liquid_pack = arg.substr(eq + 1);
@@ -1175,8 +1177,9 @@ Options parseOptions(const std::vector<std::string>& args) {
       opts.liquid_encoder != "fp32") {
     opts.parse_error = "liquid-encoder must be int8, fp16, or fp32";
   }
-  if (!opts.quality.empty() && opts.quality != "offline" && opts.quality != "factory") {
-    opts.parse_error = "quality must be offline or factory";
+  if (!opts.quality.empty() && opts.quality != "offline" && opts.quality != "factory" &&
+      opts.quality != "aec") {
+    opts.parse_error = "quality must be offline, factory, or aec";
   }
   if (opts.impair_loss_pct < 0 || opts.impair_loss_pct > 100) {
     opts.parse_error = "impair-loss must be 0..100";

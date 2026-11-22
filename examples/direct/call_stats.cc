@@ -4,6 +4,7 @@
  */
 
 #include "call_stats.h"
+#include "echo_stats.h"
 
 #include <atomic>
 #include <cctype>
@@ -129,6 +130,28 @@ struct Counter {
   bool seen = false;
 };
 
+constexpr double kNoLevel = -999.0;
+
+// totalAudioEnergy / totalSamplesDuration deltas give the mean power of the
+// interval; reported in dB relative to full scale.
+struct EnergyCounter {
+  double energy = 0;
+  double duration = 0;
+  bool seen = false;
+};
+
+double LevelDbfs(EnergyCounter& prev, double energy, double duration) {
+  double dbfs = kNoLevel;
+  if (prev.seen && duration > prev.duration + 1e-6 && energy >= prev.energy) {
+    const double power = (energy - prev.energy) / (duration - prev.duration);
+    dbfs = power > 1e-12 ? 10.0 * std::log10(power) : -120.0;
+  }
+  prev.energy = energy;
+  prev.duration = duration;
+  prev.seen = true;
+  return dbfs;
+}
+
 struct Snapshot {
   std::string json;
   std::string ice;
@@ -146,6 +169,7 @@ struct Snapshot {
   double encode_ms = 0;
   double decode_ms = 0;
   std::string audio_line;
+  std::string echo_line;
   long long frames_dropped = 0;
   long long nack = 0;
   long long pli = 0;
@@ -310,6 +334,7 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     double jitter_ms = -1;
     int algo_ms = -1;
     double m2e_ms = -1;
+    double recv_dbfs = kNoLevel;
 
     auto note_first_audio = [&](uint64_t packets) {
       if (packets == 0) return;
@@ -328,6 +353,10 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         have_audio = true;
         note_first_audio(in->packets_received.value_or(0));
         concealment += static_cast<long long>(in->concealment_events.value_or(0));
+        if (in->total_audio_energy && in->total_samples_duration) {
+          recv_dbfs = LevelDbfs(recv_energy_, *in->total_audio_energy,
+                                *in->total_samples_duration);
+        }
         // jitterBufferDelay and jitterBufferTargetDelay are sums since the
         // call began; the buffer "now" is their delta over this interval.
         // The cumulative average lagged real changes by tens of seconds.
@@ -559,6 +588,58 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
       // rewriting only when we stored one from outbound and inbound was empty.
     }
 
+    // Echo: the level we send (after the echo canceller) next to the level we
+    // play. When the far end talks and nobody talks here, send should stay
+    // near the noise floor; a send level that follows recv is echo leaking.
+    double send_dbfs = kNoLevel;
+    double erl_db = kNoLevel;
+    double erle_db = kNoLevel;
+    const auto audio_sources = report->GetStatsOfType<webrtc::RTCAudioSourceStats>();
+    if (!audio_sources.empty()) {
+      const auto* src = audio_sources.front();
+      if (src->total_audio_energy && src->total_samples_duration) {
+        send_dbfs = LevelDbfs(send_energy_, *src->total_audio_energy,
+                              *src->total_samples_duration);
+      }
+      if (src->echo_return_loss) erl_db = *src->echo_return_loss;
+      if (src->echo_return_loss_enhancement) erle_db = *src->echo_return_loss_enhancement;
+    }
+    const std::string echo_path = DirectEchoPath();
+    webrtc::AudioProcessingStats apm;
+    const bool have_apm = echo_path == "aec3" && DirectApmStats(&apm);
+    if (have_apm) {
+      if (erl_db == kNoLevel && apm.echo_return_loss) erl_db = *apm.echo_return_loss;
+      if (erle_db == kNoLevel && apm.echo_return_loss_enhancement)
+        erle_db = *apm.echo_return_loss_enhancement;
+    }
+    if (have_audio) {
+      audio_out.str("aec", echo_path);
+      if (send_dbfs != kNoLevel) audio_out.number("send_level_dbfs", send_dbfs, 1);
+      if (recv_dbfs != kNoLevel) audio_out.number("recv_level_dbfs", recv_dbfs, 1);
+      if (erl_db != kNoLevel) audio_out.number("echo_return_loss_db", erl_db, 1);
+      if (erle_db != kNoLevel) audio_out.number("echo_return_loss_enhancement_db", erle_db, 1);
+      if (have_apm && apm.delay_ms) audio_out.integer("aec_delay_ms", *apm.delay_ms);
+      if (have_apm && apm.divergent_filter_fraction)
+        audio_out.number("aec_divergent_filter_fraction", *apm.divergent_filter_fraction, 3);
+      char eline[384];
+      auto fmt = [](double v, char* buf, size_t n) {
+        if (v == kNoLevel) std::snprintf(buf, n, "na");
+        else std::snprintf(buf, n, "%.1f", v);
+      };
+      char sb[16], rb[16], lb[16], eb[16];
+      fmt(send_dbfs, sb, sizeof(sb));
+      fmt(recv_dbfs, rb, sizeof(rb));
+      fmt(erl_db, lb, sizeof(lb));
+      fmt(erle_db, eb, sizeof(eb));
+      std::snprintf(eline, sizeof(eline),
+                    "echo aec=%s send_dbfs=%s recv_dbfs=%s erl_db=%s erle_db=%s "
+                    "aec_delay_ms=%d divergent=%.3f\n",
+                    echo_path.c_str(), sb, rb, lb, eb,
+                    have_apm && apm.delay_ms ? *apm.delay_ms : -1,
+                    have_apm && apm.divergent_filter_fraction ? *apm.divergent_filter_fraction : -1.0);
+      snap.echo_line = eline;
+    }
+
     Json root;
     root.begin();
     root.str("event", "stats");
@@ -620,6 +701,8 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     bool seen = false;
   };
   JitterCounter jb_prev_;
+  EnergyCounter send_energy_;
+  EnergyCounter recv_energy_;
   bool onwire_printed_ = false;
   WireCounter audio_in_wire_;
   WireCounter audio_out_wire_;
@@ -745,6 +828,7 @@ class DirectCallStatsImpl : public DirectCallStats {
                  snap.recv_w, snap.recv_h, snap.recv_fps, snap.decode_ms,
                  static_cast<long long>(snap.frames_dropped));
     if (!snap.audio_line.empty()) std::fputs(snap.audio_line.c_str(), stderr);
+    if (!snap.echo_line.empty()) std::fputs(snap.echo_line.c_str(), stderr);
   }
 
  private:
@@ -796,6 +880,9 @@ class DirectCallStatsImpl : public DirectCallStats {
         std::fflush(stdout);
         if (!snap.audio_line.empty()) {
           std::fputs(snap.audio_line.c_str(), stderr);
+        }
+        if (!snap.echo_line.empty()) {
+          std::fputs(snap.echo_line.c_str(), stderr);
         }
       }
     }

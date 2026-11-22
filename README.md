@@ -363,6 +363,18 @@ Build the Mac binary into its own directory, so a callee running from `out/relea
 src/scripts/liquidcall/build_mac_directcall.sh lowlat   # -> src/out/lowlat/directcall
 ```
 
+### Echo cancellation on macOS
+
+`--aec=on` (the default) now runs the Mac's audio through Apple's Voice Processing I/O unit, the canceller FaceTime uses, instead of the CoreAudio HAL device plus WebRTC's software AEC3. VPIO cancels against exactly what the speaker played, so NetEq's accelerate and expand don't matter to it. `--aec=aec3` keeps the old HAL + AEC3 path; `--aec=off` turns cancellation off. iOS always uses VPIO. The startup log prints `Audio device:` and `Echo canceller:`; every stats second prints
+
+    echo aec=vpio send_dbfs=-52.1 recv_dbfs=-24.0 erl_db=na erle_db=na aec_delay_ms=-1 divergent=-1.000
+
+`send_dbfs` is what we transmit after cancellation and `recv_dbfs` what we play. While only the far end talks, `send_dbfs` should stay near the room's noise floor (about -50 dBFS or lower); a send level that rises and falls with `recv_dbfs` is echo leaking. With `--aec=aec3` the line also has AEC3's ERL, ERLE, delay, and divergent-filter fraction. Decoding for playout runs on its own thread with a 20 ms ring ahead of the VPIO callback (`LIQUIDCALL_VPIO_PREBUFFER_MS`), like the HAL device's ring.
+
+Two devices in the same room form an acoustic loop no canceller can see: the Mac's speaker reaches the iPhone's mic, and the iPhone's speaker reaches the Mac's mic. Each canceller only removes its own speaker. For a same-room test, use headphones on one side or the iPhone's earpiece.
+
+`directcall --quality=aec --inject-wav=<render.wav> --record-dir=<dir>` is an offline check of AEC3: the WAV plays through a simulated speaker-to-mic path (40 ms delay, 40 ms room tail, -6 dB; `AEC_TEST_DELAY_MS`, `AEC_TEST_GAIN_DB`, `AEC_TEST_JUMP_MS`) into APM, and it prints ERLE per second. Feeding it the factory stage's `quality_out.wav` with `LIQUID_QUALITY_STALL_MS=150` (80 ms cap, accelerate and expand active) gave the same steady ERLE as the unstretched speech, about 68 dB per second after convergence. A 30 ms jump in the device delay cost one to two seconds of leak (13.7 dB worst second). NetEq doesn't change that delay, because the canceller's reference is the audio after NetEq.
+
 ### Bandwidth: tight packing and Opus
 
 Each code is in `[0, 2016)`, so it fits in 11 bits. Twelve codes are 132 bits. `--liquid-pack=tight` stores that in **17 bytes** and adds no payload header: the RTP sequence number and timestamp already identify the packet, and SDP `pack=tight` with `fpp` fixes how many frames are inside. The length is unique too (17, 33, or 66 bytes). `--liquid-pack=u16` keeps the current header plus 12 little-endian codes: 28, 52, or 100 bytes for 1, 2, or 4 frames. `--liquid-frames-per-packet` is 1, 2, or 4. A packet of several frames is parsed into 80 ms frames so NetEq's 120 ms limit still holds.

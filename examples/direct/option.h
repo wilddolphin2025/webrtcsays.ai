@@ -147,7 +147,7 @@ struct Options {
     int liquid_new = 0;                 // 0 = manifest default
     std::string liquid_decode{"ane"};   // ane, cpu, all
     std::string liquid_encoder{"int8"};  // int8 or fp16 Core ML encoder package
-    std::string liquid_pack{"u16"};     // u16 (28 bytes/frame) or tight (17 bytes/frame)
+    std::string liquid_pack{"tight"};   // tight (17 bytes/frame, default) or u16 (28 bytes/frame)
     int liquid_frames_per_packet = 1;   // 1-4 (80-320 ms per packet)
     bool liquid_dtx = false;            // skip LiquidCall packets during silence
     int srtp_tag32 = -1;                // AES_CM_128_HMAC_SHA1_32 (4-byte tag): -1 auto (on for liquidcall), 0, 1
@@ -166,6 +166,11 @@ struct Options {
     int impair_loss_pct = 0;            // deterministic, packet_index % 100 < pct
     int impair_jitter_ms = 0;           // delay cycles 0, half, full
     std::string parse_error{};
+    // Echo canceller when aec is on. "" = platform default: macOS uses the
+    // Voice Processing I/O unit (Apple's canceller), iOS always uses VPIO.
+    // "vpio" forces it, "aec3" = CoreAudio HAL + WebRTC software AEC3 (the
+    // pre-fix macOS path).
+    std::string aec_mode{};
 };
 
 struct SignalEndpoint {

@@ -707,6 +707,9 @@ int main(int argc, char* argv[]) {
       fprintf(stderr, "--quality needs --inject-wav and --record-dir\n");
       return 1;
     }
+    if (opts.quality == "aec") {
+      return DirectAecSelfTest(opts.inject_wav.c_str(), opts.record_dir.c_str());
+    }
     DirectApplication::rtcInitialize();
     const std::string wav_out = opts.record_dir + "/quality_out.wav";
     const std::string stats_path = opts.record_dir + "/quality_stats.json";

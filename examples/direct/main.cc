@@ -40,6 +40,7 @@
 #include "option.h"
 #include "client.h"
 #include "quality.h"
+#include "signaling_log.h"
 //#include "room.h"
 
 static volatile sig_atomic_t g_shutdown = 0;
@@ -652,6 +653,24 @@ class DirectWebSocketProxy {
   std::vector<ClientThread> client_threads_;
 };
 
+// --print-sdp: print the full offer/answer SDP, ICE candidates and state
+// changes to stdout as they happen (unredacted; for a local terminal only).
+void PrintSignalingEvent(void*, const char* event, const char* text) {
+  const std::string kind = event ? event : "?";
+  const bool sdp = kind.size() > 6 &&
+      (kind.compare(kind.size() - 6, 6, "-offer") == 0 ||
+       (kind.size() > 7 && kind.compare(kind.size() - 7, 7, "-answer") == 0));
+  if (sdp) {
+    std::string body = text ? text : "";
+    body.erase(std::remove(body.begin(), body.end(), '\r'), body.end());
+    fprintf(stdout, "===== %s SDP =====\n%s%s===== end %s =====\n", kind.c_str(),
+            body.c_str(), (!body.empty() && body.back() == '\n') ? "" : "\n", kind.c_str());
+  } else {
+    fprintf(stdout, "[signaling] %s %s\n", kind.c_str(), text ? text : "");
+  }
+  fflush(stdout);
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -662,8 +681,13 @@ int main(int argc, char* argv[]) {
     opts.help = true;
   } else {
     std::vector<std::string> args(argv + 1, argv + argc);
-    for (const auto& piece : args)
+    for (const auto& piece : args) {
+      if (piece == "--print-sdp" || piece == "--print_sdp") {
+        DirectSetSignalingLogCallback(PrintSignalingEvent, nullptr);
+        continue;
+      }
       options += (piece + " ");
+    }
     opts = parseOptions(options.c_str());
   }
 

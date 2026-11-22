@@ -24,6 +24,7 @@
 #include <filesystem> // For filename extraction
 #include <api/units/time_delta.h> // For webrtc::TimeDelta
 
+#include "signaling_log.h"
 #include "direct.h"
 #include "client.h"
 #include "status.h"
@@ -206,12 +207,18 @@ void DirectCaller::OnConnect(webrtc::AsyncPacketSocket* socket) {
     BeginHandshake();
 }
 
+static bool IsSignalingControl(const std::string& m) {
+  return m.rfind("OFFER:", 0) != 0 && m.rfind("ANSWER:", 0) != 0 &&
+         m.rfind("ICE:", 0) != 0;
+}
+
 void DirectCaller::OnMessage(webrtc::AsyncPacketSocket* socket,
                            const unsigned char* data,
                            size_t len,
                            const webrtc::SocketAddress& remote_addr) {
     std::string raw(reinterpret_cast<const char*>(data), len);
     RTC_LOG(LS_INFO) << "Caller received: " << RedactedSignalingLine(raw);
+    if (IsSignalingControl(raw)) DirectSignalingLog("message-in", raw);
 
     // Helper to trim CR/LF and spaces so we can reliably compare tokens.
     auto trim = [](const std::string& in) {

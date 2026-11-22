@@ -886,6 +886,7 @@ if (!build_with_chromium) {
         "direct/client.h",
         "direct/wsock.h",
         "direct/quality.h",
+        "direct/signaling_log.h",
         "direct/video.h",
         "direct/bonjour.h",
         "direct/parser.h",
@@ -943,6 +944,8 @@ if (!build_with_chromium) {
         "direct/impair.h",
         "direct/quality.cc",
         "direct/quality.h",
+        "direct/signaling_log.cc",
+        "direct/signaling_log.h",
       ]
 
       # Use the output of the action_foreach target for public headers
@@ -1095,6 +1098,8 @@ if (!build_with_chromium) {
         "direct/impair.h",
         "direct/quality.cc",
         "direct/quality.h",
+        "direct/signaling_log.cc",
+        "direct/signaling_log.h",
       ]
 
       if ((is_mac || is_ios) && rtc_use_liquidcodec) {

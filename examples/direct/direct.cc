@@ -10,6 +10,7 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include "signaling_log.h"
 #include "rtc_base/network.h"
 #include "rtc_base/ip_address.h"
 #include <unistd.h> // For usleep
@@ -610,6 +611,12 @@ void DirectApplication::HandleMessage(webrtc::AsyncPacketSocket* socket,
   }
 }
 
+// OFFER/ANSWER/ICE are reported with their own events by DirectPeer.
+static bool IsControlMessage(const std::string& m) {
+  return m.rfind("OFFER:", 0) != 0 && m.rfind("ANSWER:", 0) != 0 &&
+         m.rfind("ICE:", 0) != 0;
+}
+
 bool DirectApplication::SendMessage(const std::string& message) {
   // The signaling socket lives on the network thread; hop there so sends from
   // observer callbacks stay ordered and never race with socket teardown.
@@ -623,6 +630,7 @@ bool DirectApplication::SendMessage(const std::string& message) {
     return false;
   }
   RTC_LOG(LS_INFO) << "Sending message: " << message.substr(0, 120);
+  if (IsControlMessage(message)) DirectSignalingLog("message-out", message);
   int sent = tcp_socket_->Send(message.c_str(), message.length(),
                                webrtc::AsyncSocketPacketOptions());
   if (sent <= 0) {

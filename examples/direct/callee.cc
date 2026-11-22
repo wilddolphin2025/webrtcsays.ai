@@ -24,6 +24,7 @@
 #include <thread>
 #include <vector>
 
+#include "signaling_log.h"
 #include "direct.h"
 #include "status.h"
 #include "sdp_diag.h"
@@ -240,12 +241,18 @@ void DirectCallee::OnNewConnection(webrtc::AsyncListenSocket* listen_socket,
       });
 }
 
+static bool IsSignalingControl(const std::string& m) {
+  return m.rfind("OFFER:", 0) != 0 && m.rfind("ANSWER:", 0) != 0 &&
+         m.rfind("ICE:", 0) != 0;
+}
+
 void DirectCallee::OnMessage(webrtc::AsyncPacketSocket* socket,
                              const unsigned char* data,
                              size_t len,
                              const webrtc::SocketAddress& remote_addr) {
   std::string message(reinterpret_cast<const char*>(data), len);
   RTC_LOG(LS_INFO) << "Callee received: " << RedactedSignalingLine(message);
+    if (IsSignalingControl(message)) DirectSignalingLog("message-in", message);
 
   if (message.rfind(Msg::kHello, 0) == 0) {
     SendMessage(InCall() ? StatusCodes::kBusyHere : StatusCodes::kOk);

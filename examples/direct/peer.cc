@@ -21,6 +21,7 @@
 #include <memory>
 #include <utility>
 
+#include "signaling_log.h"
 #include "api/peer_connection_interface.h"
 #include "api/rtc_event_log/rtc_event_log.h"
 #include "api/task_queue/default_task_queue_factory.h"
@@ -495,6 +496,7 @@ void DirectPeer::OnConnectionChange(
     webrtc::PeerConnectionInterface::PeerConnectionState new_state) {
     using State = webrtc::PeerConnectionInterface::PeerConnectionState;
     pc_state_ = new_state;
+    DirectSignalingLog("pc-state", std::string(webrtc::PeerConnectionInterface::AsString(new_state)));
     RTC_LOG(LS_INFO) << "PeerConnectionState -> "
                      << webrtc::PeerConnectionInterface::AsString(new_state);
     switch (new_state) {
@@ -612,6 +614,7 @@ void DirectPeer::Start() {
                         fprintf(stderr, "%s\n", RedactedSignalingLine(std::string(Msg::kOfferPrefix) + sdp).c_str());
                         // Now that both descriptions may be in place, process any queued ICE candidates.
                         DrainPendingIceCandidates();
+                        DirectSignalingLog("local-offer", sdp);
                         SendMessage(std::string(Msg::kOfferPrefix) + sdp);
                     });
 
@@ -762,6 +765,7 @@ void DirectPeer::OnIceCandidate(const webrtc::IceCandidateInterface* candidate) 
     }
 
     int mline_index = candidate->sdp_mline_index();
+    DirectSignalingLog("local-ice", std::to_string(mline_index) + ":" + sdp);
 
     RTC_LOG(LS_INFO) << "New ICE candidate: " << sdp 
                      << " mid: " << candidate->sdp_mid()
@@ -779,6 +783,7 @@ void DirectPeer::OnIceCandidate(const webrtc::IceCandidateInterface* candidate) 
 }
 
 void DirectPeer::SetRemoteDescription(const std::string& sdp) {
+    DirectSignalingLog(is_caller() ? "remote-answer" : "remote-offer", sdp);
     signaling_thread()->PostTask([this, sdp]() {
         fprintf(stderr, "[peer] SetRemoteDescription enter (caller=%d) sdp_len=%zu\n",
                 is_caller() ? 1 : 0, sdp.size());
@@ -1133,6 +1138,7 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                                     // Both descriptions should now be set on callee side as well.
                                     DrainPendingIceCandidates();
                                     fprintf(stderr, "[peer] sending ANSWER len=%zu\n", sdp.size());
+                                    DirectSignalingLog("local-answer", sdp);
                                     SendMessage(std::string(Msg::kAnswerPrefix) + sdp);
                             });
                             peer_connection_->SetLocalDescription(std::move(patched_desc), set_local_description_observer_);
@@ -1149,6 +1155,7 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
 }
 
 void DirectPeer::AddIceCandidate(const std::string& candidate_sdp, int mline_index) {
+    DirectSignalingLog("remote-ice", std::to_string(mline_index) + ":" + candidate_sdp);
     signaling_thread()->PostTask([this, candidate_sdp, mline_index]() {
         // Queue until the PeerConnection exists and both descriptions are set.
         if (!peer_connection_ || !peer_connection_->remote_description() ||
@@ -1179,6 +1186,7 @@ void DirectPeer::OnSignalingChange(webrtc::PeerConnectionInterface::SignalingSta
         "Stable", "HaveLocalOffer", "HaveLocalPrAnswer", "HaveRemoteOffer", "HaveRemotePrAnswer", "Closed"
     };
     const char* state_name = (new_state < 6) ? state_names[new_state] : "Unknown";
+    DirectSignalingLog("signaling-state", state_name);
     
     RTC_LOG(LS_INFO) << "PeerConnection SignalingState changed to: " 
                      << static_cast<int>(new_state) << " (" << state_name << ")";
@@ -1192,6 +1200,7 @@ void DirectPeer::OnIceConnectionChange(webrtc::PeerConnectionInterface::IceConne
         "New", "Checking", "Connected", "Completed", "Failed", "Disconnected", "Closed", "Max"
     };
     const char* state_name = (new_state < 7) ? state_names[new_state] : "Unknown";
+    DirectSignalingLog("ice-state", state_name);
     
     RTC_LOG(LS_INFO) << "PeerConnection IceConnectionState changed to: " 
                      << static_cast<int>(new_state) << " (" << state_name << ")";

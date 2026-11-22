@@ -127,7 +127,7 @@ struct Options {
     int video_width = 0;
     int video_height = 0;
     int video_fps = 0;                  // 1..60, 30 if video is on and unset
-    int stats_interval_sec = 0;
+    int stats_interval_sec = 1;
     int call_duration_sec = 0;
     std::string audio{};                // "dummy" forces the fake audio device
     std::string audio_codec{};          // empty = built-in default; opus; liquidcodec
@@ -143,6 +143,7 @@ struct Options {
     std::string liquid_decode{"ane"};   // ane, cpu, all
     std::string liquid_pack{"u16"};     // u16 (28 bytes/frame) or tight (17 bytes/frame)
     int liquid_frames_per_packet = 1;   // 1, 2, or 4
+    bool aec = true;                    // AEC3, NS, and AGC in the platform ADM
     std::string parse_error{};
 };
 

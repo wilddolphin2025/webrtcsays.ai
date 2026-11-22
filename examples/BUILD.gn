@@ -1035,7 +1035,7 @@ if (!build_with_chromium) {
         "direct/audio_tap.h",
       ]
 
-      if (is_mac && rtc_use_liquidcodec) {
+      if ((is_mac || is_ios) && rtc_use_liquidcodec) {
         defines += [ "WEBRTC_USE_LIQUIDCODEC" ]
       }
 
@@ -1125,7 +1125,7 @@ if (!build_with_chromium) {
         "//third_party/jsoncpp:jsoncpp",
       ]
 
-      if (is_mac && rtc_use_liquidcodec) {
+      if ((is_mac || is_ios) && rtc_use_liquidcodec) {
         deps += [ "//modules/audio_coding/codecs/liquidcodec:liquidcodec" ]
       }
 
@@ -1145,7 +1145,7 @@ if (!build_with_chromium) {
         }
       }
 
-      if (is_mac && rtc_use_liquidcodec) {
+      if ((is_mac || is_ios) && rtc_use_liquidcodec) {
         if (!defined(frameworks)) {
           frameworks = []
         }

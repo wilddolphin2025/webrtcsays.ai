@@ -259,18 +259,19 @@ git checkout liquidcodec-ane
 ./build.sh release liquidcodec
 # ./build.sh -b liquidcodec-ane release liquidcodec
 
-# Same call the build prints. It writes a 24 kHz tone, runs 8 seconds on
-# 127.0.0.1, and leaves caller/codec_in_24k.wav and callee/codec_out_24k.wav.
+# Same call the build prints. Both sides inject the tone. It runs N seconds,
+# then fails the shell if a log shows Check failed, a bad code, or a session
+# restart, or if either direction sent fewer than 90% of duration/80ms packets.
+# It does not use GNU timeout. Default directcall AEC is on; this script passes
+# --aec=off so the injected clip is not altered. Use --aec=on for a mic loop.
 src/scripts/liquidcodec/run_local_call.sh
 
 # A hand-supplied clip still works. 24 kHz mono is the codec rate.
 # afconvert -f WAVE -d LEI16@24000 input.flac "$HOME/liquid-clip.wav"
 # src/scripts/liquidcodec/run_local_call.sh --inject-wav "$HOME/liquid-clip.wav" --duration 20
 
-# The flags below match the script. It generates the tone when you omit
-# --inject-wav. Headphones, so the mic
-# does not hear the speaker. AEC, AGC, noise suppression, and the high-pass
-# filter are off for this run.
+# A live mic uses AEC3, NS, and AGC unless you pass --aec=off. The script above
+# passes --aec=off. Headphones, so the mic does not hear the speaker.
 BIN=src/out/release/directcall
 MODELS=scripts/liquidcodec/models
 mkdir -p "$HOME/liquidcodec-record/callee" "$HOME/liquidcodec-record/caller"

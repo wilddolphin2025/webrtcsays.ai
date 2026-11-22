@@ -229,6 +229,14 @@ void TestManifest() {
          "mlmodelc path is unchanged");
   Expect(webrtc::liquid::CompiledModelPath("stream/not-a-model") == "stream/not-a-model",
          "other paths are unchanged");
+  webrtc::liquid::WirePack pack = webrtc::liquid::WirePack::kU16;
+  int fpp = 1;
+  std::string mismatch;
+  Expect(!webrtc::liquid::ApplyNegotiatedPack("tight", "2", &pack, &fpp, &mismatch),
+         "negotiated pack differs");
+  Expect(pack == webrtc::liquid::WirePack::kTight && fpp == 2,
+         "negotiated pack and fpp replace the local flags");
+  Expect(mismatch.find("using negotiated") != std::string::npos, "mismatch is logged");
 }
 
 void TestPaddedStrides() {

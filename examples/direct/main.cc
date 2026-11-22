@@ -883,15 +883,13 @@ int main(int argc, char* argv[]) {
 
       if (give_up) {
         fprintf(stderr, "Caller stopping. The callee is already in a call.\n");
-        break;
+      } else if (!g_shutdown) {
+        fprintf(stderr,
+                "Caller session ended. Not redialing. A dropped local call used to "
+                "start session #%d and look like a second caller.\n",
+                caller_session_count + 1);
       }
-      if (!g_shutdown) {
-        fprintf(stderr, "Preparing to restart caller in 2 seconds...\n");
-        // Check for shutdown during sleep as well
-        for (int i = 0; i < 20 && !g_shutdown; i++) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-      }
+      break;
     }
   }
 

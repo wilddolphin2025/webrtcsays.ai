@@ -123,6 +123,7 @@ struct Snapshot {
   double recv_bitrate = 0;
   double encode_ms = 0;
   double decode_ms = 0;
+  std::string audio_line;
   long long frames_dropped = 0;
   long long nack = 0;
   long long pli = 0;
@@ -234,6 +235,16 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     long long pli = 0;
     long long concealment = 0;
     double jitter_buffer_ms = -1;
+    double send_onwire_kbps = -1;
+    double recv_onwire_kbps = -1;
+    double send_payload_kbps = -1;
+    double recv_payload_kbps = -1;
+    long long send_packets = 0;
+    long long recv_packets = 0;
+    long long packets_lost = 0;
+    double jitter_ms = -1;
+    int algo_ms = -1;
+    double m2e_ms = -1;
 
     auto note_first_audio = [&](uint64_t packets) {
       if (packets == 0) return;
@@ -257,8 +268,27 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
           jitter_buffer_ms = (*in->jitter_buffer_delay / static_cast<double>(*in->jitter_buffer_emitted_count)) * 1000.0;
         }
         const auto* codec = CodecFor<webrtc::RTCCodecStats>(*report, in->codec_id);
-        audio_out.str("codec", codec && codec->mime_type ? *codec->mime_type : "");
+        const uint64_t recv_bytes = in->bytes_received.value_or(0);
+        const uint64_t recv_header = in->header_bytes_received.value_or(0);
+        const double recv_onwire_bps = Bitrate(audio_in_total_, recv_bytes + recv_header, dt);
+        const std::string mime = codec && codec->mime_type ? *codec->mime_type : "";
+        const int codec_algo_ms = mime.find("liquid") != std::string::npos ? 120 : 20;
+        const double half_rtt = rtt_ms >= 0 ? rtt_ms / 2.0 : 0;
+        const double jb = jitter_buffer_ms >= 0 ? jitter_buffer_ms : 0;
+        const double m2e = 10.0 + codec_algo_ms + half_rtt + jb + 10.0;
+        audio_out.str("codec", mime);
         audio_out.number("recv_bitrate_bps", bps, 0);
+        audio_out.number("recv_payload_kbps", bps / 1000.0, 3);
+        audio_out.number("recv_onwire_kbps", recv_onwire_bps / 1000.0, 3);
+        audio_out.integer("algorithmic_latency_ms", codec_algo_ms);
+        audio_out.number("mouth_to_ear_est_ms", m2e, 1);
+        recv_onwire_kbps = recv_onwire_bps / 1000.0;
+        recv_payload_kbps = bps / 1000.0;
+        recv_packets = static_cast<long long>(in->packets_received.value_or(0));
+        packets_lost = in->packets_lost.value_or(0);
+        jitter_ms = in->jitter ? *in->jitter * 1000.0 : -1;
+        algo_ms = codec_algo_ms;
+        m2e_ms = m2e;
         audio_out.integer("recv_bytes", static_cast<long long>(in->bytes_received.value_or(0)));
         audio_out.integer("recv_packets", static_cast<long long>(in->packets_received.value_or(0)));
         audio_out.integer("recv_header_bytes",
@@ -330,8 +360,17 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
             audio_codec_ = *codec->mime_type;
           }
         }
-        audio_out.number("send_bitrate_bps", bps, 0);
-        audio_out.integer("send_bytes", static_cast<long long>(outb->bytes_sent.value_or(0)));
+        const uint64_t send_bytes = outb->bytes_sent.value_or(0);
+        const uint64_t send_header = outb->header_bytes_sent.value_or(0);
+        const double send_payload_bps = bps;
+        const double send_onwire_bps = Bitrate(audio_out_total_, send_bytes + send_header, dt);
+        audio_out.number("send_bitrate_bps", send_payload_bps, 0);
+        audio_out.number("send_payload_kbps", send_payload_bps / 1000.0, 3);
+        audio_out.number("send_onwire_kbps", send_onwire_bps / 1000.0, 3);
+        send_onwire_kbps = send_onwire_bps / 1000.0;
+        send_payload_kbps = send_payload_bps / 1000.0;
+        send_packets = static_cast<long long>(outb->packets_sent.value_or(0));
+        audio_out.integer("send_bytes", static_cast<long long>(send_bytes));
         audio_out.integer("send_packets", static_cast<long long>(outb->packets_sent.value_or(0)));
         audio_out.integer("send_header_bytes",
                           static_cast<long long>(outb->header_bytes_sent.value_or(0)));
@@ -402,6 +441,18 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     root.integer("concealment_events", concealment);
     root.integer("nack", nack);
     root.integer("pli", pli);
+    if (have_audio) {
+      char line[512];
+      std::snprintf(line, sizeof(line),
+                    "audio send_onwire_kbps=%.3f send_payload_kbps=%.3f recv_onwire_kbps=%.3f "
+                    "recv_payload_kbps=%.3f send_packets=%lld recv_packets=%lld lost=%lld "
+                    "jitter_ms=%.2f jitter_buffer_ms=%.2f rtt_ms=%.1f algo_ms=%d "
+                    "mouth_to_ear_est_ms=%.1f\n",
+                    send_onwire_kbps, send_payload_kbps, recv_onwire_kbps, recv_payload_kbps,
+                    send_packets, recv_packets, packets_lost, jitter_ms, jitter_buffer_ms, rtt_ms,
+                    algo_ms, m2e_ms);
+      snap.audio_line = line;
+    }
     snap.ice = ice;
     snap.rtt_ms = rtt_ms;
     snap.nack = nack;
@@ -417,7 +468,9 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
   std::chrono::steady_clock::time_point last_sample_{};
   std::chrono::steady_clock::time_point first_audio_{};
   Counter audio_in_bytes_;
+  Counter audio_in_total_;
   Counter audio_out_bytes_;
+  Counter audio_out_total_;
   Counter video_in_bytes_;
   Counter video_out_bytes_;
   Counter video_enc_;
@@ -536,6 +589,7 @@ class DirectCallStatsImpl : public DirectCallStats {
                  snap.quality_limitation.empty() ? "none" : snap.quality_limitation.c_str(),
                  snap.recv_w, snap.recv_h, snap.recv_fps, snap.decode_ms,
                  static_cast<long long>(snap.frames_dropped));
+    if (!snap.audio_line.empty()) std::fputs(snap.audio_line.c_str(), stderr);
   }
 
  private:
@@ -585,6 +639,9 @@ class DirectCallStatsImpl : public DirectCallStats {
         std::fwrite(body.data(), 1, body.size(), stdout);
         std::fputc('\n', stdout);
         std::fflush(stdout);
+        if (!snap.audio_line.empty()) {
+          std::fputs(snap.audio_line.c_str(), stderr);
+        }
       }
     }
   }

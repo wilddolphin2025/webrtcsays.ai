@@ -10,6 +10,9 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <cstdio>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <thread>
@@ -45,6 +48,51 @@
 #include "test/platform_video_capturer.h"
 #include "test/vcm_capturer.h"
 #endif
+
+namespace {
+
+std::string MungeOpusFmtp(std::string sdp, int bitrate_bps, int ptime_ms, bool dtx) {
+  const std::string needle = " opus/48000";
+  const size_t map = sdp.find(needle);
+  if (map == std::string::npos) return sdp;
+  const size_t line = sdp.rfind('\n', map);
+  const size_t start = line == std::string::npos ? 0 : line + 1;
+  const size_t colon = sdp.find(':', start);
+  const size_t space = colon == std::string::npos ? std::string::npos : sdp.find(' ', colon);
+  if (colon == std::string::npos || space == std::string::npos || space < colon) return sdp;
+  const std::string pt = sdp.substr(colon + 1, space - colon - 1);
+  std::ostringstream params;
+  if (bitrate_bps > 0) params << "maxaveragebitrate=" << bitrate_bps << ";";
+  params << "stereo=0;sprop-stereo=0;usedtx=" << (dtx ? "1" : "0") << ";ptime=" << ptime_ms
+         << ";minptime=10;useinbandfec=0";
+  const std::string prefix = "a=fmtp:" + pt;
+  const size_t fmtp = sdp.find(prefix);
+  if (fmtp != std::string::npos) {
+    size_t end = sdp.find('\n', fmtp);
+    if (end == std::string::npos) end = sdp.size();
+    if (end > 0 && sdp[end - 1] == '\r') --end;
+    sdp.insert(end, ";" + params.str());
+    return sdp;
+  }
+  const size_t end = sdp.find('\n', start);
+  const std::string row = "a=fmtp:" + pt + " " + params.str() + "\r\n";
+  if (end == std::string::npos) return sdp + "\r\n" + row;
+  sdp.insert(end + 1, row);
+  return sdp;
+}
+
+void ApplyAndLogApm(webrtc::AudioOptions* options, bool aec) {
+  options->echo_cancellation = aec;
+  options->noise_suppression = aec;
+  options->auto_gain_control = aec;
+  options->highpass_filter = aec;
+  fprintf(stderr,
+          "APM echo_cancellation=%s noise_suppression=%s auto_gain_control=%s "
+          "highpass_filter=%s\n",
+          aec ? "on" : "off", aec ? "on" : "off", aec ? "on" : "off", aec ? "on" : "off");
+}
+
+}  // namespace
 
 // Helper sink that forwards captured frames to a FakeVideoTrackSource so that
 // the source can be used as a regular WebRTC VideoTrackSourceInterface.
@@ -506,13 +554,7 @@ void DirectPeer::Start() {
 
     if (is_caller()) {
         webrtc::AudioOptions audio_options;
-        if (opts_.llama || opts_.audio_codec == "liquidcodec" || opts_.audio_codec == "opus" ||
-            opts_.opus_bitrate_bps > 0 || !opts_.record_dir.empty() || !opts_.inject_wav.empty()) {
-            audio_options.echo_cancellation = false;
-            audio_options.auto_gain_control = false;
-            audio_options.noise_suppression = false;
-            audio_options.highpass_filter = false;
-        }
+        ApplyAndLogApm(&audio_options, opts_.aec);
 
         auto audio_source = peer_connection_factory_->CreateAudioSource(audio_options);
         RTC_DCHECK(audio_source.get());
@@ -545,7 +587,18 @@ void DirectPeer::Start() {
             [this](std::unique_ptr<webrtc::SessionDescriptionInterface> desc) {
                 std::string sdp;
                 desc->ToString(&sdp);
-                
+                if (opts_.audio_codec == "opus" || opts_.opus_bitrate_bps > 0) {
+                  sdp = MungeOpusFmtp(std::move(sdp), opts_.opus_bitrate_bps, opts_.opus_ptime_ms,
+                                      opts_.opus_dtx);
+                  webrtc::SdpParseError perr;
+                  auto patched = webrtc::CreateSessionDescription(desc->GetType(), sdp, &perr);
+                  if (!patched) {
+                    fprintf(stderr, "Opus fmtp munge failed: %s\n", perr.description.c_str());
+                  } else {
+                    desc = std::move(patched);
+                  }
+                }
+
                 // Store observer in a member variable to keep it alive
                 set_local_description_observer_ = webrtc::make_ref_counted<LambdaSetLocalDescriptionObserver>(
                     [this, sdp](webrtc::RTCError error) {
@@ -914,14 +967,7 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                     // SetLocalDescription fail.
 
                     webrtc::AudioOptions audio_options;
-                    if (opts_.llama || opts_.audio_codec == "liquidcodec" ||
-                        opts_.audio_codec == "opus" || opts_.opus_bitrate_bps > 0 ||
-                        !opts_.record_dir.empty() || !opts_.inject_wav.empty()) {
-                        audio_options.echo_cancellation = false;
-                        audio_options.auto_gain_control = false;
-                        audio_options.noise_suppression = false;
-                        audio_options.highpass_filter = false;
-                    }
+                    ApplyAndLogApm(&audio_options, opts_.aec);
                     auto audio_source = peer_connection_factory_->CreateAudioSource(audio_options);
                     RTC_DCHECK(audio_source.get());
 
@@ -1036,7 +1082,20 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                             fprintf(stderr, "[peer] CreateAnswer callback fired\n");
                             std::string sdp;
                             desc->ToString(&sdp);
-                            
+                            if (opts_.audio_codec == "opus" || opts_.opus_bitrate_bps > 0) {
+                              sdp = MungeOpusFmtp(std::move(sdp), opts_.opus_bitrate_bps,
+                                                  opts_.opus_ptime_ms, opts_.opus_dtx);
+                              webrtc::SdpParseError opus_err;
+                              auto opus_desc =
+                                  webrtc::CreateSessionDescription(desc->GetType(), sdp, &opus_err);
+                              if (!opus_desc) {
+                                fprintf(stderr, "Opus fmtp munge failed: %s\n",
+                                        opus_err.description.c_str());
+                              } else {
+                                desc = std::move(opus_desc);
+                              }
+                            }
+
                             // Ensure DTLS role is passive (server) on callee side to avoid role conflict.
                             #if 0
                             const std::string kActive = "a=setup:active";

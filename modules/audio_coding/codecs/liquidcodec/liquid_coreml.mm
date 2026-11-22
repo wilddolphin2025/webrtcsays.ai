@@ -564,6 +564,19 @@ class CoreMlBackend final : public LiquidBackend {
     }
     for (int i = 0; i < frames_out * chunk.codebooks; ++i) {
       if (codes_out[i] < 0 || codes_out[i] >= chunk.codebook_size) {
+        ++bad_codes_;
+        if (bad_codes_ == 1 || bad_codes_ % 50 == 0) {
+          fprintf(stderr,
+                  "LiquidCodec encoder: code outside the codebook (count=%d). "
+                  "State reset to zero; the call stays up.\n",
+                  bad_codes_);
+        }
+        for (const KeptState& state : states_) {
+          MLMultiArray* dest = (MLMultiArray*)ToId(state.array);
+          if (!dest) continue;
+          std::memset(dest.dataPointer, 0,
+                      static_cast<size_t>(dest.count) * ElementBytes(dest.dataType));
+        }
         if (error) *error = "encoder produced a code outside the codebook";
         return false;
       }
@@ -718,6 +731,7 @@ class CoreMlBackend final : public LiquidBackend {
   }
 
   std::mutex mu_;
+  int bad_codes_ = 0;
   ModelPaths paths_;
   ChunkConfig chunk_;
   void* encoder_ = nullptr;

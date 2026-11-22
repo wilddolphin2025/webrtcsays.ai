@@ -168,6 +168,13 @@ bool FileExists(const std::string& path);
 // (same directory, suffix replaced). Any other path is returned unchanged.
 std::string CompiledModelPath(const std::string& path);
 
+// Copy negotiated SDP fmtp onto pack and frames-per-packet. A difference is
+// written into `mismatch` and the negotiated value wins. Returns false when
+// the negotiated values differ or are invalid.
+bool ApplyNegotiatedPack(const std::string& pack, const std::string& fpp,
+                         WirePack* wire_pack, int* frames_per_packet,
+                         std::string* mismatch);
+
 // Elements a strided tensor occupies. `count` is the dense product of the
 // shape. ANE MLMultiArray strides are often padded, so the last index is
 // past `count`. extent = 1 + sum((shape[d] - 1) * strides[d]), and the

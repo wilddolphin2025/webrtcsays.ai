@@ -265,8 +265,8 @@ declare_args() {
   rtc_use_perfetto = false
 }
 
-assert(!rtc_use_liquidcodec || is_mac,
-       "rtc_use_liquidcodec is macOS-only and must stay off for Linux/Frame builds")
+assert(!rtc_use_liquidcodec || is_mac || is_ios,
+       "rtc_use_liquidcodec is Apple-only and must stay off for Linux/Frame builds")
 
 if (!build_with_mozilla) {
   import("//testing/test.gni")

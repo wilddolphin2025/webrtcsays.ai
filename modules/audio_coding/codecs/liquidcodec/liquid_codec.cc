@@ -355,6 +355,37 @@ bool FileExists(const std::string& path) {
   return stat(path.c_str(), &st) == 0;
 }
 
+bool ApplyNegotiatedPack(const std::string& pack, const std::string& fpp,
+                         WirePack* wire_pack, int* frames_per_packet,
+                         std::string* mismatch) {
+  if (!wire_pack || !frames_per_packet) return false;
+  std::string note;
+  if (!pack.empty() && pack != "u16" && pack != "tight") {
+    note = "negotiated pack \"" + pack + "\" is not u16 or tight";
+  } else if (!pack.empty()) {
+    const WirePack negotiated = pack == "tight" ? WirePack::kTight : WirePack::kU16;
+    if (negotiated != *wire_pack) {
+      note = std::string("pack local ") + (*wire_pack == WirePack::kTight ? "tight" : "u16") +
+             " negotiated " + pack + "; using negotiated";
+      *wire_pack = negotiated;
+    }
+  }
+  if (!fpp.empty()) {
+    const int n = std::atoi(fpp.c_str());
+    if (n != 1 && n != 2 && n != 4) {
+      if (!note.empty()) note += "; ";
+      note += "negotiated fpp \"" + fpp + "\" is not 1, 2, or 4";
+    } else if (n != *frames_per_packet) {
+      if (!note.empty()) note += "; ";
+      note += "fpp local " + std::to_string(*frames_per_packet) + " negotiated " +
+              std::to_string(n) + "; using negotiated";
+      *frames_per_packet = n;
+    }
+  }
+  if (mismatch) *mismatch = note;
+  return note.empty();
+}
+
 std::string CompiledModelPath(const std::string& path) {
   const std::string suffix = ".mlpackage";
   if (path.size() >= suffix.size() &&

@@ -6,7 +6,7 @@
 
 import("//webrtc.gni")
 
-if (is_mac && rtc_use_liquidcodec) {
+if ((is_mac || is_ios) && rtc_use_liquidcodec) {
 rtc_library("liquidcodec") {
   testonly = true
   visibility = [ "//examples:*" ]

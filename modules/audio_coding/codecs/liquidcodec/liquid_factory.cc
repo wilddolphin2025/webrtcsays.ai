@@ -4,7 +4,10 @@
 
 #include "modules/audio_coding/codecs/liquidcodec/liquid_factory.h"
 
+#include <algorithm>
+#include <cstdio>
 #include <memory>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -17,10 +20,33 @@
 namespace webrtc {
 namespace {
 
+SdpAudioFormat MakeLiquidFormat() {
+  SdpAudioFormat format(liquid::kPayloadName, liquid::kWebRtcClockHz, 1);
+  const liquid::RuntimeConfig& runtime = liquid::Runtime();
+  format.parameters["pack"] = runtime.pack == liquid::WirePack::kTight ? "tight" : "u16";
+  format.parameters["fpp"] = std::to_string(std::max(1, runtime.frames_per_packet));
+  return format;
+}
+
+liquid::RuntimeConfig ConfigFromFormat(const SdpAudioFormat& format) {
+  liquid::RuntimeConfig config = liquid::Runtime();
+  std::string mismatch;
+  const auto pack = format.parameters.find("pack");
+  const auto fpp = format.parameters.find("fpp");
+  liquid::ApplyNegotiatedPack(pack == format.parameters.end() ? "" : pack->second,
+                              fpp == format.parameters.end() ? "" : fpp->second,
+                              &config.pack, &config.frames_per_packet, &mismatch);
+  if (!mismatch.empty()) {
+    fprintf(stderr, "LiquidCodec negotiated fmtp: %s\n", mismatch.c_str());
+    RTC_LOG(LS_ERROR) << "LiquidCodec negotiated fmtp: " << mismatch;
+  }
+  return config;
+}
+
 class LiquidEncoderFactory : public AudioEncoderFactory {
  public:
   std::vector<AudioCodecSpec> GetSupportedEncoders() override {
-    SdpAudioFormat format(liquid::kPayloadName, liquid::kWebRtcClockHz, 1);
+    SdpAudioFormat format = MakeLiquidFormat();
     AudioCodecInfo info(liquid::kWebRtcClockHz, 1,
                         static_cast<int>(liquid::PayloadBitrateBps()));
     info.allow_comfort_noise = false;
@@ -45,14 +71,14 @@ class LiquidEncoderFactory : public AudioEncoderFactory {
                                       const SdpAudioFormat& format,
                                       Options options) override {
     if (!QueryAudioEncoder(format)) return nullptr;
-    return std::make_unique<AudioEncoderLiquid>(options.payload_type, liquid::Runtime());
+    return std::make_unique<AudioEncoderLiquid>(options.payload_type, ConfigFromFormat(format));
   }
 };
 
 class LiquidDecoderFactory : public AudioDecoderFactory {
  public:
   std::vector<AudioCodecSpec> GetSupportedDecoders() override {
-    SdpAudioFormat format(liquid::kPayloadName, liquid::kWebRtcClockHz, 1);
+    SdpAudioFormat format = MakeLiquidFormat();
     AudioCodecInfo info(liquid::kWebRtcClockHz, 1,
                         static_cast<int>(liquid::PayloadBitrateBps()));
     info.allow_comfort_noise = false;
@@ -68,7 +94,7 @@ class LiquidDecoderFactory : public AudioDecoderFactory {
       const Environment& /*env*/, const SdpAudioFormat& format,
       std::optional<AudioCodecPairId> /*codec_pair_id*/) override {
     if (!IsSupportedDecoder(format)) return nullptr;
-    return std::make_unique<AudioDecoderLiquid>(liquid::Runtime());
+    return std::make_unique<AudioDecoderLiquid>(ConfigFromFormat(format));
   }
 };
 

@@ -910,20 +910,12 @@ void DirectApplication::ConfigureOutgoingAudio() {
     for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     if (liquid) {
       if (name == "liquidcodec") {
-        codec.parameters["pack"] = opts_.liquid_pack;
-        codec.parameters["fpp"] = std::to_string(opts_.liquid_frames_per_packet);
+        // pack and fpp are already on the factory's SdpAudioFormat, so they
+        // are part of this capability. Adding them again is a different
+        // codec and SetCodecPreferences returns INVALID_MODIFICATION.
         preferred.push_back(std::move(codec));
       }
     } else if (name == "opus") {
-      if (opts_.opus_bitrate_bps > 0) {
-        codec.parameters["maxaveragebitrate"] = std::to_string(opts_.opus_bitrate_bps);
-      }
-      codec.parameters["stereo"] = "0";
-      codec.parameters["sprop-stereo"] = "0";
-      codec.parameters["usedtx"] = opts_.opus_dtx ? "1" : "0";
-      codec.parameters["ptime"] = std::to_string(opts_.opus_ptime_ms);
-      codec.parameters["minptime"] = "10";
-      codec.parameters["useinbandfec"] = "0";
       preferred.push_back(std::move(codec));
     }
   }

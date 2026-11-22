@@ -617,8 +617,8 @@ for arg in "$@"; do
     fi
 done
 if [[ "$ENABLE_LIQUIDCODEC" == "true" ]]; then
-    if [[ "$IOS_BUILD" == "true" || "$OSTYPE" != darwin* ]]; then
-        echo "ERROR: liquidcodec is macOS Apple Silicon only. Linux and iOS builds leave it off."
+    if [[ "$OSTYPE" != darwin* ]]; then
+        echo "ERROR: liquidcodec is Apple-only. Linux builds leave it off."
         exit 1
     fi
     EXTRA_ARGS="$EXTRA_ARGS rtc_use_liquidcodec=true"
@@ -751,6 +751,9 @@ if [ "$IOS_BUILD" = "true" ]; then
     else
         IOS_ARGS="$IOS_ARGS rtc_use_speech_audio_devices=false"
     fi
+    if [ "$ENABLE_LIQUIDCODEC" = "true" ]; then
+        IOS_ARGS="$IOS_ARGS rtc_use_liquidcodec=true"
+    fi
     
     # Clean iOS build directory
     echo "Cleaning iOS build directory..."
@@ -815,6 +818,18 @@ else
 fi
 
 if [ "$IOS_BUILD" = "true" ]; then
+    if [ "$ENABLE_LIQUIDCODEC" = "true" ]; then
+        FETCH="$REPO_ROOT/src/scripts/liquidcodec/fetch_models.sh"
+        [ -f "$FETCH" ] || FETCH="$REPO_ROOT/scripts/liquidcodec/fetch_models.sh"
+        echo "LiquidCodec: fetch and compile .mlmodelc for the iOS bundle inputs"
+        "$FETCH" --dest "$REPO_ROOT/scripts/liquidcodec/models"
+        echo "iOS LiquidCodec models: $REPO_ROOT/scripts/liquidcodec/models"
+        echo "This builds directcall for the device. It does not sign an app."
+        echo "Xcode project, still unsigned, Team WILDDOLPHIN LLC uploads it:"
+        echo "  (cd \"$REPO_ROOT/src\" && \"$GN_BIN\" gen out/ios_arm64 --ide=xcode --args=\"$IOS_ARGS\")"
+        echo "  open \"$REPO_ROOT/src/out/ios_arm64/all.xcworkspace\""
+        echo "AppRTCMobile has no LiquidCodec control or on-screen kbps in this branch."
+    fi
     echo "iOS build completed successfully!"
     echo "iOS binary location: $BINARY_PATH"
     echo "WebRTC framework location: $SRC_DIR/out/ios_arm64/WebRTC.framework"

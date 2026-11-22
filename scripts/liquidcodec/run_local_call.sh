@@ -40,12 +40,14 @@ fi
 
 COMMON=(
   --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama
-  --audio-codec=liquidcodec --liquid-decode=ane
+  --audio-codec=liquidcodec --liquid-decode=ane --aec=off
+  --stats=1
   --liquid-model-dir="${MODELS}"
+  --inject-wav="${INJECT}"
 )
 {
   echo "${BIN} --mode=callee --user_name=alice --room_name=liquid ${COMMON[*]} --record-dir=${RECORD}/callee 127.0.0.1:${PORT}"
-  echo "${BIN} --mode=caller --user_name=bob --target_name=alice --room_name=liquid ${COMMON[*]} --inject-wav=${INJECT} --record-dir=${RECORD}/caller --duration=${DURATION} 127.0.0.1:${PORT}"
+  echo "${BIN} --mode=caller --user_name=bob --target_name=alice --room_name=liquid ${COMMON[*]} --record-dir=${RECORD}/caller --duration=${DURATION} 127.0.0.1:${PORT}"
 } > "${RECORD}/commands.txt"
 
 if [[ "${PREPARE}" == "1" ]]; then
@@ -76,7 +78,6 @@ trap cleanup EXIT
 sleep 2
 "${BIN}" --mode=caller --user_name=bob --target_name=alice --room_name=liquid \
   "${COMMON[@]}" \
-  --inject-wav="${INJECT}" \
   --record-dir="${RECORD}/caller" \
   --duration="${DURATION}" \
   "127.0.0.1:${PORT}" >"${RECORD}/caller.log" 2>&1 || true
@@ -84,16 +85,41 @@ sleep 1
 cleanup
 trap - EXIT
 
-missing=0
-for f in "${RECORD}/caller/codec_in_24k.wav" "${RECORD}/callee/codec_out_24k.wav"; do
-  if [[ ! -f "${f}" ]]; then
-    echo "Missing ${f}" >&2
-    missing=1
-  fi
-done
-if [[ "${missing}" == "1" ]]; then
-  echo "Logs: ${RECORD}/callee.log ${RECORD}/caller.log" >&2
-  exit 1
-fi
-echo "codec in:  ${RECORD}/caller/codec_in_24k.wav"
-echo "codec out: ${RECORD}/callee/codec_out_24k.wav"
+python3 - "${RECORD}" "${DURATION}" <<'PY'
+import json, re, sys
+from pathlib import Path
+record = Path(sys.argv[1])
+duration = float(sys.argv[2])
+expected = duration * 1000.0 / 80.0
+bad = re.compile(r"Check failed|outside the codebook|session #[0-9]+ ended|SIGABRT")
+failed = False
+for name in ("callee.log", "caller.log"):
+    text = (record / name).read_text(errors="replace")
+    hit = bad.search(text)
+    if hit:
+        print(f"{name}: {hit.group(0)}", file=sys.stderr)
+        failed = True
+
+def packets(path):
+    if not path.is_file():
+        print(f"missing {path}", file=sys.stderr)
+        return None
+    return json.loads(path.read_text()).get("packets")
+
+pairs = [
+    (record / "caller" / "encoder_stats.json", record / "callee" / "decoder_stats.json"),
+    (record / "callee" / "encoder_stats.json", record / "caller" / "decoder_stats.json"),
+]
+for enc, dec in pairs:
+    ep, dp = packets(enc), packets(dec)
+    if ep is None or dp is None:
+        failed = True
+        continue
+    if ep < 0.9 * expected:
+        print(f"{enc}: packets {ep} < 90% of {expected:.0f}", file=sys.stderr)
+        failed = True
+    if ep != dp:
+        print(f"packet mismatch {enc}={ep} {dec}={dp}", file=sys.stderr)
+        failed = True
+sys.exit(1 if failed else 0)
+PY

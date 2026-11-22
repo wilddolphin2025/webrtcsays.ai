@@ -23,6 +23,16 @@ scoped_refptr<AudioDecoderFactory> CreateTappingAudioDecoderFactory(
     scoped_refptr<AudioDecoderFactory> inner, const std::string& record_dir, int voice_swap_udp = 0,
     bool voice_swap_mute = true);
 
+// Voice the voice-swap sidecar should speak for the current call: "" = no conversion (decoded audio is
+// played as is and not sent). Process-wide; the callee sets it from the caller's INVITE or its own
+// --voice-swap override. Tap decoders send "VOICE:<voice|none>" to the sidecar when it changes.
+void SetVoiceSwapVoice(const std::string& voice);
+std::string GetVoiceSwapVoice();
+// Callee policy: the voice to use given our --voice-swap option and the caller's INVITE "voice_swap" field.
+std::string ResolveVoiceSwap(const std::string& callee_option, const std::string& caller_request);
+// Keep [A-Za-z0-9_.-], at most 64 chars (the value travels in signaling JSON and to the sidecar).
+std::string SanitizeVoiceName(const std::string& voice);
+
 }  // namespace webrtc
 
 #endif

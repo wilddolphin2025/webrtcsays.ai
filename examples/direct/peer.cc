@@ -35,6 +35,7 @@
 #include "api/video/video_frame.h"
 #include "rtc_base/logging.h"
 #include "option.h"
+#include "audio_tap.h"
 #include "direct.h"
 #include "sdp_diag.h"
 #include "pc/test/fake_video_track_source.h"
@@ -699,6 +700,22 @@ void DirectPeer::HandleMessage(webrtc::AsyncPacketSocket* socket,
           }
         }
 
+        if (!is_caller()) {
+          // Voice swap for this call: the caller's INVITE "voice_swap" (absent = none) unless our
+          // --voice-swap overrides it. Only acts when --voice-swap-udp feeds a sidecar.
+          const std::string req = message.size() > kPrefixLen + 1
+              ? ExtractJsonStringField(message.substr(kPrefixLen + 1), "voice_swap") : std::string();
+          const std::string use = webrtc::ResolveVoiceSwap(opts_.voice_swap, req);
+          if (opts_.voice_swap_udp > 0) {
+            webrtc::SetVoiceSwapVoice(use);
+            RTC_LOG(LS_INFO) << "Voice swap: caller asked '" << req << "', using '" << use << "'";
+            fprintf(stderr, "Voice swap: caller asked '%s', using '%s'\n", req.c_str(),
+                    use.empty() ? "none" : use.c_str());
+          } else if (!req.empty()) {
+            fprintf(stderr, "Voice swap: caller asked '%s' but this callee has no --voice-swap-udp sidecar\n",
+                    req.c_str());
+          }
+        }
 #if defined(WEBRTC_SPEECH_DEVICES)
         if (message.size() > kPrefixLen + 1) {
           std::string voice = ExtractJsonStringField(message.substr(kPrefixLen + 1), "voice");

@@ -416,6 +416,9 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --record-dir=<path>                Write input/output WAVs and stats for a quality run\n"
       "  --voice-swap-udp=<port>            Send decoded far-end audio to 127.0.0.1:<port> (voice-swap sidecar)\n"
       "  --no-voice-swap-mute               With --voice-swap-udp, still play the original voice locally\n"
+      "  --voice-swap=<voice>               Caller: ask the callee to hear us in <voice> (female, male, or a Piper id;\n"
+      "                                     sent in the INVITE). Callee: auto (default, follow the caller), off,\n"
+      "                                     or a voice that overrides the caller\n"
       "  --inject-wav=<path>                Send this 16-bit PCM WAV instead of the microphone\n"
       "  --liquid-model-dir=<path>          Fetched Core ML models (default scripts/liquidcall/models)\n"
       "  --liquid-manifest=<path>           liquidcall.json from the model fetch\n"
@@ -465,6 +468,7 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--audio-codec", "--audio_codec", "--opus-bitrate", "--opus_bitrate",
     "--record-dir", "--record_dir", "--inject-wav", "--inject_wav",
     "--voice-swap-udp", "--voice_swap_udp", "--voice-swap-mute", "--no-voice-swap-mute",
+    "--voice-swap", "--voice_swap",
     "--liquid-model-dir", "--liquid_model_dir", "--liquid-manifest", "--liquid_manifest",
     "--liquid-ctx", "--liquid_ctx", "--liquid-new", "--liquid_new",
     "--liquid-decode", "--liquid_decode",
@@ -920,6 +924,8 @@ Options parseOptions(const std::vector<std::string>& args) {
         opts.record_dir = arg.substr(eq + 1);
     } else if (arg.find("--voice-swap-udp=") == 0 || arg.find("--voice_swap_udp=") == 0) {
         opts.voice_swap_udp = std::atoi(arg.substr(arg.find('=') + 1).c_str());
+    } else if (arg.find("--voice-swap=") == 0 || arg.find("--voice_swap=") == 0) {
+        opts.voice_swap = arg.substr(arg.find('=') + 1);
     } else if (arg == "--voice-swap-mute") {
         opts.voice_swap_mute = true;
     } else if (arg == "--no-voice-swap-mute") {

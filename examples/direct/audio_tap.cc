@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
+#include <cctype>
 #include <cstring>
 #include <sys/stat.h>
 #include <arpa/inet.h>
@@ -11,7 +12,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -23,6 +26,10 @@
 
 namespace webrtc {
 namespace {
+
+std::mutex g_voice_mu;
+std::string g_voice;              // guarded by g_voice_mu
+std::atomic<int> g_voice_gen{0};
 
 void EnsureDir(const std::string& dir) {
   if (dir.empty()) return;
@@ -297,6 +304,18 @@ class DecodedSink {
     if (!p || n == 0) return;
     wav_.Write(p, n);
     if (fd_ < 0) return;
+    const int gen = g_voice_gen.load(std::memory_order_acquire);
+    if (gen != seen_gen_ || ++since_ctl_ >= 100) {   // on change, and once a second so a restarted sidecar learns it
+      if (gen != seen_gen_) {
+        seen_gen_ = gen;
+        voice_ = GetVoiceSwapVoice();
+        std::fprintf(stderr, "voice swap: %s\n", voice_.empty() ? "off for this call" : ("converting to " + voice_).c_str());
+      }
+      since_ctl_ = 0;
+      const std::string ctl = "VOICE:" + (voice_.empty() ? std::string("none") : voice_);
+      sendto(fd_, ctl.data(), ctl.size(), 0, reinterpret_cast<const sockaddr*>(&addr_), sizeof(addr_));
+    }
+    if (voice_.empty()) return;   // no conversion: play the caller as is
     const size_t chunk = static_cast<size_t>(rate_ / 100);   // 10 ms per datagram
     uint8_t buf[4 + 2 * 960];
     const uint32_t rate = static_cast<uint32_t>(rate_);
@@ -315,6 +334,9 @@ class DecodedSink {
   int rate_;
   bool mute_;
   int fd_ = -1;
+  int seen_gen_ = -1;
+  int since_ctl_ = 0;
+  std::string voice_;
   sockaddr_in addr_{};
 };
 
@@ -441,6 +463,37 @@ scoped_refptr<AudioDecoderFactory> CreateTappingAudioDecoderFactory(
     scoped_refptr<AudioDecoderFactory> inner, const std::string& record_dir, int voice_swap_udp,
     bool voice_swap_mute) {
   return make_ref_counted<TapDecoderFactory>(std::move(inner), record_dir, voice_swap_udp, voice_swap_mute);
+}
+
+void SetVoiceSwapVoice(const std::string& voice) {
+  {
+    std::lock_guard<std::mutex> lock(g_voice_mu);
+    g_voice = SanitizeVoiceName(voice);
+  }
+  g_voice_gen.fetch_add(1, std::memory_order_release);
+}
+
+std::string GetVoiceSwapVoice() {
+  std::lock_guard<std::mutex> lock(g_voice_mu);
+  return g_voice;
+}
+
+std::string SanitizeVoiceName(const std::string& voice) {
+  std::string out;
+  for (char c : voice) {
+    if (out.size() >= 64) break;
+    if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.') out.push_back(c);
+  }
+  return out;
+}
+
+std::string ResolveVoiceSwap(const std::string& callee_option, const std::string& caller_request) {
+  const std::string opt = SanitizeVoiceName(callee_option);
+  if (opt == "off" || opt == "none") return "";
+  if (!opt.empty() && opt != "auto") return opt;
+  const std::string req = SanitizeVoiceName(caller_request);
+  if (req == "none" || req == "off" || req == "auto") return "";
+  return req;
 }
 
 }  // namespace webrtc

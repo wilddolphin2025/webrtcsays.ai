@@ -345,6 +345,13 @@ void DirectCaller::SendInvite() {
     if (!opts_.language.empty()) {
         oss << ",\"language\":\"" << opts_.language << "\"";
     }
+    {
+        // Voice swap request: older callees ignore unknown INVITE fields; no field = no conversion.
+        const std::string v = webrtc::SanitizeVoiceName(opts_.voice_swap);
+        if (!v.empty() && v != "none" && v != "off" && v != "auto") {
+            oss << ",\"voice_swap\":\"" << v << "\"";
+        }
+    }
     oss << "}";
     SendMessage(std::string(Msg::kInvitePrefix) + oss.str());
 }

@@ -143,6 +143,10 @@ struct Options {
     std::string inject_wav{};           // replace the mic with this 16-bit PCM wav
     int voice_swap_udp = 0;             // >0: send decoded far-end PCM to 127.0.0.1:<port> (voice-swap sidecar)
     bool voice_swap_mute = true;        // with voice_swap_udp: play silence locally (the sidecar plays)
+    // Voice swap choice. Caller: voice to ask the callee for, sent as "voice_swap" in the INVITE JSON
+    // ("" or "none": field omitted). Callee: "" / "auto" follows the caller's INVITE (missing = no conversion);
+    // "off" / "none" never converts; any other value converts every call to that voice, whatever the caller asked.
+    std::string voice_swap{};
     std::string liquid_model_dir{};
     std::string liquid_manifest{};
     int liquid_ctx = 0;                 // 0 = manifest default

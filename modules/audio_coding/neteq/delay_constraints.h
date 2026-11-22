@@ -30,6 +30,9 @@ class DelayConstraints {
   bool SetBaseMinimumDelay(int delay_ms);
   int GetBaseMinimumDelay() const;
 
+  // 0 when no maximum is set.
+  int maximum_delay_ms() const { return maximum_delay_ms_; }
+
   // These accessors are only intended for testing purposes.
   int effective_minimum_delay_ms_for_test() const {
     return effective_minimum_delay_ms_;

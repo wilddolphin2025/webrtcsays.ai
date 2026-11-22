@@ -156,6 +156,8 @@ class DecisionLogic : public NetEqController {
   DelayConstraints delay_constraints_;
   std::unique_ptr<BufferLevelFilter> buffer_level_filter_;
   std::unique_ptr<PacketArrivalHistory> packet_arrival_history_;
+  // Newest main timestamp seen by PacketArrived, to spot talkspurt starts.
+  std::optional<uint32_t> newest_arrival_timestamp_;
   const TickTimer* tick_timer_;
   int sample_rate_khz_;
   size_t output_size_samples_;

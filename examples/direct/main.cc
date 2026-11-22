@@ -39,6 +39,8 @@
 #include "direct.h"
 #include "option.h"
 #include "client.h"
+#include "quality.h"
+#include "signaling_log.h"
 //#include "room.h"
 
 static volatile sig_atomic_t g_shutdown = 0;
@@ -651,6 +653,24 @@ class DirectWebSocketProxy {
   std::vector<ClientThread> client_threads_;
 };
 
+// --print-sdp: print the full offer/answer SDP, ICE candidates and state
+// changes to stdout as they happen (unredacted; for a local terminal only).
+void PrintSignalingEvent(void*, const char* event, const char* text) {
+  const std::string kind = event ? event : "?";
+  const bool sdp = kind.size() > 6 &&
+      (kind.compare(kind.size() - 6, 6, "-offer") == 0 ||
+       (kind.size() > 7 && kind.compare(kind.size() - 7, 7, "-answer") == 0));
+  if (sdp) {
+    std::string body = text ? text : "";
+    body.erase(std::remove(body.begin(), body.end(), '\r'), body.end());
+    fprintf(stdout, "===== %s SDP =====\n%s%s===== end %s =====\n", kind.c_str(),
+            body.c_str(), (!body.empty() && body.back() == '\n') ? "" : "\n", kind.c_str());
+  } else {
+    fprintf(stdout, "[signaling] %s %s\n", kind.c_str(), text ? text : "");
+  }
+  fflush(stdout);
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -661,8 +681,13 @@ int main(int argc, char* argv[]) {
     opts.help = true;
   } else {
     std::vector<std::string> args(argv + 1, argv + argc);
-    for (const auto& piece : args)
+    for (const auto& piece : args) {
+      if (piece == "--print-sdp" || piece == "--print_sdp") {
+        DirectSetSignalingLogCallback(PrintSignalingEvent, nullptr);
+        continue;
+      }
       options += (piece + " ");
+    }
     opts = parseOptions(options.c_str());
   }
 
@@ -675,6 +700,35 @@ int main(int argc, char* argv[]) {
   if (!opts.parse_error.empty()) {
     fprintf(stderr, "%s\n", opts.parse_error.c_str());
     return 1;
+  }
+
+  if (!opts.quality.empty()) {
+    if (opts.inject_wav.empty() || opts.record_dir.empty()) {
+      fprintf(stderr, "--quality needs --inject-wav and --record-dir\n");
+      return 1;
+    }
+    if (opts.quality == "aec") {
+      return DirectAecSelfTest(opts.inject_wav.c_str(), opts.record_dir.c_str());
+    }
+    DirectApplication::rtcInitialize();
+    const std::string wav_out = opts.record_dir + "/quality_out.wav";
+    const std::string stats_path = opts.record_dir + "/quality_stats.json";
+    const char* codec = opts.audio_codec.empty() ? "liquidcall" : opts.audio_codec.c_str();
+    {
+      // Same jitter buffer as a live call: 80 ms low-latency cap for
+      // liquidcall unless --jitter-max-ms says otherwise.
+      const bool liquid_jb = std::string(codec) == "liquidcall";
+      const int jitter_max = opts.jitter_max_ms < 0 ? (liquid_jb ? kLiquidJitterMaxMs : -1) : opts.jitter_max_ms;
+      const int fast = opts.jitter_fast_accelerate < 0 ? (jitter_max > 0 ? 1 : 0)
+                                                       : opts.jitter_fast_accelerate;
+      DirectQualitySetJitterBuffer(jitter_max, fast);
+    }
+    const int rc = DirectQualityRun(
+        opts.quality.c_str(), opts.inject_wav.c_str(), wav_out.c_str(), stats_path.c_str(), codec,
+        opts.liquid_model_dir.c_str(), opts.liquid_decode.c_str(), opts.liquid_encoder.c_str(),
+        opts.opus_bitrate_bps, opts.impair_loss_pct, opts.impair_jitter_ms);
+    DirectApplication::rtcCleanup();
+    return rc;
   }
 
   InstallSignalHandlers();
@@ -847,12 +901,18 @@ int main(int argc, char* argv[]) {
       }
       caller->RunOnBackgroundThread();
       fprintf(stderr, "Caller connected to room %s\n", room_name.c_str());
-      
+
+      bool give_up = false;
       // Wait for connection to close or shutdown signal
       while (!g_shutdown) {
         // Check shutdown more frequently with shorter timeout
         if (caller->WaitUntilConnectionClosed(200)) {
-          fprintf(stderr, "Caller session #%d ended (connection closed/failed), restarting connection\n", caller_session_count);
+          give_up = caller->GiveUp();
+          if (give_up) {
+            fprintf(stderr, "Caller session #%d ended: callee rejected the call\n", caller_session_count);
+          } else {
+            fprintf(stderr, "Caller session #%d ended (connection closed/failed), restarting connection\n", caller_session_count);
+          }
           break;
         }
         
@@ -874,14 +934,16 @@ int main(int argc, char* argv[]) {
       }
 
       caller.reset();
-      
-      if (!g_shutdown) {
-        fprintf(stderr, "Preparing to restart caller in 2 seconds...\n");
-        // Check for shutdown during sleep as well
-        for (int i = 0; i < 20 && !g_shutdown; i++) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
+
+      if (give_up) {
+        fprintf(stderr, "Caller stopping. The callee is already in a call.\n");
+      } else if (!g_shutdown) {
+        fprintf(stderr,
+                "Caller session ended. Not redialing. A dropped local call used to "
+                "start session #%d and look like a second caller.\n",
+                caller_session_count + 1);
       }
+      break;
     }
   }
 

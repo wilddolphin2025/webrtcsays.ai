@@ -74,6 +74,10 @@ enum LoggingSeverity {
 
 #endif // DIRECT_EXPORT_H 
 
+// Default jitter buffer cap for liquidcall (low-latency mode): one 80 ms
+// packet of target plus NetEq's 20 ms window before it accelerates.
+inline constexpr int kLiquidJitterMaxMs = 80;
+
 // Command line options
 struct Options {
     std::string mode{}; // default to empty, set in parseOptions
@@ -127,10 +131,46 @@ struct Options {
     int video_width = 0;
     int video_height = 0;
     int video_fps = 0;                  // 1..60, 30 if video is on and unset
-    int stats_interval_sec = 0;
+    int stats_interval_sec = 1;
     int call_duration_sec = 0;
     std::string audio{};                // "dummy" forces the fake audio device
+    // These fields are the iOS direct.framework API the RobotPhone app sets.
+    std::string audio_codec{};          // empty = built-in default; opus; liquidcall
+    int opus_bitrate_bps = 0;           // 0 = Opus default; else maxaveragebitrate
+    int opus_ptime_ms = 20;             // 20, 40, or 60
+    bool opus_dtx = false;
+    std::string record_dir{};           // WAV + stats for a quality run
+    std::string inject_wav{};           // replace the mic with this 16-bit PCM wav
+    std::string liquid_model_dir{};
+    std::string liquid_manifest{};
+    int liquid_ctx = 0;                 // 0 = manifest default
+    int liquid_new = 0;                 // 0 = manifest default
+    std::string liquid_decode{"ane"};   // ane, cpu, all
+    std::string liquid_encoder{"int8"};  // int8 or fp16 Core ML encoder package
+    std::string liquid_pack{"tight"};   // tight (17 bytes/frame, default) or u16 (28 bytes/frame)
+    int liquid_frames_per_packet = 1;   // 1-4 (80-320 ms per packet)
+    bool liquid_dtx = false;            // skip LiquidCall packets during silence
+    int srtp_tag32 = -1;                // AES_CM_128_HMAC_SHA1_32 (4-byte tag): -1 auto (on for liquidcall), 0, 1
+    int audio_rtcp_ms = -1;             // audio RTCP report interval: -1 auto (10000 liquidcall, else 5000)
+    int rtp_header_extensions = -1;     // -1 auto (off for liquidcall), 0 off, 1 on (audio)
+    // Receive jitter buffer (NetEq). jitter_max_ms caps the target delay and
+    // the playout delay NetEq accelerates down to: -1 auto (80 ms for
+    // liquidcall, the low-latency mode; unlimited otherwise), 0 unlimited
+    // (stock NetEq), else 20..1000 ms. Below the cap NetEq still adapts.
+    int jitter_max_ms = -1;
+    int jitter_fast_accelerate = -1;    // -1 auto (on when jitter_max_ms caps), 0, 1
+    bool aec = true;                    // AEC3, NS, and AGC in the platform ADM
+    // Quality ladder. Empty means a normal call. offline = codec only.
+    // factory = AudioEncoder/AudioDecoder plus NetEq, no network.
+    std::string quality{};
+    int impair_loss_pct = 0;            // deterministic, packet_index % 100 < pct
+    int impair_jitter_ms = 0;           // delay cycles 0, half, full
     std::string parse_error{};
+    // Echo canceller when aec is on. "" = platform default: macOS uses the
+    // Voice Processing I/O unit (Apple's canceller), iOS always uses VPIO.
+    // "vpio" forces it, "aec3" = CoreAudio HAL + WebRTC software AEC3 (the
+    // pre-fix macOS path).
+    std::string aec_mode{};
 };
 
 struct SignalEndpoint {

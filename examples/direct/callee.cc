@@ -24,6 +24,7 @@
 #include <thread>
 #include <vector>
 
+#include "signaling_log.h"
 #include "direct.h"
 #include "status.h"
 #include "sdp_diag.h"
@@ -170,9 +171,14 @@ bool DirectCallee::StartListening() {
       if (opts_.bonjour && !opts_.bonjour_name.empty()) {
           if (AdvertiseBonjourService(opts_.bonjour_name, local_port_)) {
               RTC_LOG(LS_INFO) << "Bonjour advertised as '" << opts_.bonjour_name << "' on port " << local_port_;
+              fprintf(stdout, "Bonjour: advertising '%s' as _webrtcsays._tcp on port %d\n",
+                      opts_.bonjour_name.c_str(), local_port_);
           } else {
               RTC_LOG(LS_WARNING) << "Bonjour advertisement failed for '" << opts_.bonjour_name << "'";
+              fprintf(stdout, "Bonjour: advertisement FAILED for '%s' (port %d)\n",
+                      opts_.bonjour_name.c_str(), local_port_);
           }
+          fflush(stdout);
       }
       #endif // #if TARGET_OS_IOS || TARGET_OS_OSX
       return true;
@@ -240,12 +246,18 @@ void DirectCallee::OnNewConnection(webrtc::AsyncListenSocket* listen_socket,
       });
 }
 
+static bool IsSignalingControl(const std::string& m) {
+  return m.rfind("OFFER:", 0) != 0 && m.rfind("ANSWER:", 0) != 0 &&
+         m.rfind("ICE:", 0) != 0;
+}
+
 void DirectCallee::OnMessage(webrtc::AsyncPacketSocket* socket,
                              const unsigned char* data,
                              size_t len,
                              const webrtc::SocketAddress& remote_addr) {
   std::string message(reinterpret_cast<const char*>(data), len);
   RTC_LOG(LS_INFO) << "Callee received: " << RedactedSignalingLine(message);
+    if (IsSignalingControl(message)) DirectSignalingLog("message-in", message);
 
   if (message.rfind(Msg::kHello, 0) == 0) {
     SendMessage(InCall() ? StatusCodes::kBusyHere : StatusCodes::kOk);

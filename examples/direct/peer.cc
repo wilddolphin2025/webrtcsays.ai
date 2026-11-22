@@ -10,6 +10,9 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <cstdio>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <thread>
@@ -18,6 +21,7 @@
 #include <memory>
 #include <utility>
 
+#include "signaling_log.h"
 #include "api/peer_connection_interface.h"
 #include "api/rtc_event_log/rtc_event_log.h"
 #include "api/task_queue/default_task_queue_factory.h"
@@ -25,6 +29,7 @@
 #include "media/engine/internal_encoder_factory.h"
 #include "modules/audio_device/include/audio_device.h"
 #include "modules/audio_processing/include/audio_processing.h"
+#include "echo_stats.h"
 #include "modules/video_capture/video_capture_factory.h"
 #include "pc/video_track_source.h"
 #include "rtc_base/ref_counted_object.h"
@@ -45,6 +50,55 @@
 #include "test/platform_video_capturer.h"
 #include "test/vcm_capturer.h"
 #endif
+
+namespace {
+
+std::string MungeOpusFmtp(std::string sdp, int bitrate_bps, int ptime_ms, bool dtx) {
+  const std::string needle = " opus/48000";
+  const size_t map = sdp.find(needle);
+  if (map == std::string::npos) return sdp;
+  const size_t line = sdp.rfind('\n', map);
+  const size_t start = line == std::string::npos ? 0 : line + 1;
+  const size_t colon = sdp.find(':', start);
+  const size_t space = colon == std::string::npos ? std::string::npos : sdp.find(' ', colon);
+  if (colon == std::string::npos || space == std::string::npos || space < colon) return sdp;
+  const std::string pt = sdp.substr(colon + 1, space - colon - 1);
+  std::ostringstream params;
+  if (bitrate_bps > 0) params << "maxaveragebitrate=" << bitrate_bps << ";";
+  params << "stereo=0;sprop-stereo=0;usedtx=" << (dtx ? "1" : "0") << ";ptime=" << ptime_ms
+         << ";minptime=10;useinbandfec=0";
+  const std::string prefix = "a=fmtp:" + pt;
+  const size_t fmtp = sdp.find(prefix);
+  if (fmtp != std::string::npos) {
+    size_t end = sdp.find('\n', fmtp);
+    if (end == std::string::npos) end = sdp.size();
+    if (end > 0 && sdp[end - 1] == '\r') --end;
+    sdp.insert(end, ";" + params.str());
+    return sdp;
+  }
+  const size_t end = sdp.find('\n', start);
+  const std::string row = "a=fmtp:" + pt + " " + params.str() + "\r\n";
+  if (end == std::string::npos) return sdp + "\r\n" + row;
+  sdp.insert(end + 1, row);
+  return sdp;
+}
+
+void ApplyAndLogApm(webrtc::AudioOptions* options, bool aec) {
+  options->echo_cancellation = aec;
+  options->noise_suppression = aec;
+  options->auto_gain_control = aec;
+  options->highpass_filter = aec;
+  fprintf(stderr,
+          "APM echo_cancellation=%s noise_suppression=%s auto_gain_control=%s "
+          "highpass_filter=%s\n",
+          aec ? "on" : "off", aec ? "on" : "off", aec ? "on" : "off", aec ? "on" : "off");
+  const std::string path = DirectEchoPath();
+  fprintf(stderr, "Echo canceller: %s\n",
+          path == "vpio" ? "Voice Processing I/O (Apple, built in; WebRTC AEC3 and AGC off)"
+          : path == "aec3" ? "WebRTC AEC3 (software)" : "off");
+}
+
+}  // namespace
 
 // Helper sink that forwards captured frames to a FakeVideoTrackSource so that
 // the source can be used as a regular WebRTC VideoTrackSourceInterface.
@@ -335,6 +389,32 @@ DirectPeer::~DirectPeer() {
   Cleanup();
 }
 
+// LiquidCall packets carry 28 bytes of payload; the default audio RTP header
+// extensions (audio level, abs-send-time, transport-wide CC, ...) added 16
+// bytes to every packet, and transport-cc also triggers transport feedback
+// RTCP. Keep only MID (sent in the first packets of a call) unless asked.
+static void TrimAudioHeaderExtensions(webrtc::PeerConnectionInterface* pc, const Options& o) {
+  if (!pc) return;
+  const bool keep = o.rtp_header_extensions < 0 ? o.audio_codec != "liquidcall"
+                                                : o.rtp_header_extensions != 0;
+  if (keep) return;
+  for (const auto& t : pc->GetTransceivers()) {
+    if (t->media_type() != webrtc::MediaType::AUDIO) continue;
+    auto exts = t->GetHeaderExtensionsToNegotiate();
+    int stopped = 0;
+    for (auto& e : exts) {
+      if (e.uri == webrtc::RtpExtension::kMidUri) continue;
+      if (e.direction != webrtc::RtpTransceiverDirection::kStopped) {
+        e.direction = webrtc::RtpTransceiverDirection::kStopped;
+        ++stopped;
+      }
+    }
+    auto err = t->SetHeaderExtensionsToNegotiate(exts);
+    fprintf(stderr, "Audio RTP header extensions: stopped %d (MID kept)%s\n", stopped,
+            err.ok() ? "" : " - failed");
+  }
+}
+
 void DirectPeer::ShutdownInternal() {
     if (call_stats_) call_stats_->Summarize();
     if (video_pump_) {
@@ -373,7 +453,7 @@ void DirectPeer::StartCallStatsIfEnabled() {
     MarkSessionStart();
     call_stats_ = DirectCallStats::Create(
         opts_.stats_interval_sec, session_origin_, signaling_thread(),
-        [this] { return peer_connection_.get(); });
+        [this] { return peer_connection_.get(); }, opts_.encryption);
 }
 
 void DirectPeer::EnsureLocalVideoSource() {
@@ -447,6 +527,7 @@ void DirectPeer::OnConnectionChange(
     webrtc::PeerConnectionInterface::PeerConnectionState new_state) {
     using State = webrtc::PeerConnectionInterface::PeerConnectionState;
     pc_state_ = new_state;
+    DirectSignalingLog("pc-state", std::string(webrtc::PeerConnectionInterface::AsString(new_state)));
     RTC_LOG(LS_INFO) << "PeerConnectionState -> "
                      << webrtc::PeerConnectionInterface::AsString(new_state);
     switch (new_state) {
@@ -506,12 +587,7 @@ void DirectPeer::Start() {
 
     if (is_caller()) {
         webrtc::AudioOptions audio_options;
-        if (opts_.llama) {
-            audio_options.echo_cancellation = false;
-            audio_options.auto_gain_control = false;
-            audio_options.noise_suppression = false;
-            audio_options.highpass_filter = false;
-        }
+        ApplyAndLogApm(&audio_options, opts_.aec);
 
         auto audio_source = peer_connection_factory_->CreateAudioSource(audio_options);
         RTC_DCHECK(audio_source.get());
@@ -535,15 +611,28 @@ void DirectPeer::Start() {
         if (opts_.video) {
             ConfigureOutgoingVideo();
         }
+        ConfigureOutgoingAudio();
 
         webrtc::PeerConnectionInterface::RTCOfferAnswerOptions offer_options;
+        TrimAudioHeaderExtensions(peer_connection_.get(), opts_);
 
         // Store observer in a member variable to keep it alive
         create_session_observer_ = webrtc::make_ref_counted<LambdaCreateSessionDescriptionObserver>(
             [this](std::unique_ptr<webrtc::SessionDescriptionInterface> desc) {
                 std::string sdp;
                 desc->ToString(&sdp);
-                
+                if (opts_.audio_codec == "opus" || opts_.opus_bitrate_bps > 0) {
+                  sdp = MungeOpusFmtp(std::move(sdp), opts_.opus_bitrate_bps, opts_.opus_ptime_ms,
+                                      opts_.opus_dtx);
+                  webrtc::SdpParseError perr;
+                  auto patched = webrtc::CreateSessionDescription(desc->GetType(), sdp, &perr);
+                  if (!patched) {
+                    fprintf(stderr, "Opus fmtp munge failed: %s\n", perr.description.c_str());
+                  } else {
+                    desc = std::move(patched);
+                  }
+                }
+
                 // Store observer in a member variable to keep it alive
                 set_local_description_observer_ = webrtc::make_ref_counted<LambdaSetLocalDescriptionObserver>(
                     [this, sdp](webrtc::RTCError error) {
@@ -557,6 +646,7 @@ void DirectPeer::Start() {
                         fprintf(stderr, "%s\n", RedactedSignalingLine(std::string(Msg::kOfferPrefix) + sdp).c_str());
                         // Now that both descriptions may be in place, process any queued ICE candidates.
                         DrainPendingIceCandidates();
+                        DirectSignalingLog("local-offer", sdp);
                         SendMessage(std::string(Msg::kOfferPrefix) + sdp);
                     });
 
@@ -707,6 +797,7 @@ void DirectPeer::OnIceCandidate(const webrtc::IceCandidateInterface* candidate) 
     }
 
     int mline_index = candidate->sdp_mline_index();
+    DirectSignalingLog("local-ice", std::to_string(mline_index) + ":" + sdp);
 
     RTC_LOG(LS_INFO) << "New ICE candidate: " << sdp 
                      << " mid: " << candidate->sdp_mid()
@@ -724,6 +815,7 @@ void DirectPeer::OnIceCandidate(const webrtc::IceCandidateInterface* candidate) 
 }
 
 void DirectPeer::SetRemoteDescription(const std::string& sdp) {
+    DirectSignalingLog(is_caller() ? "remote-answer" : "remote-offer", sdp);
     signaling_thread()->PostTask([this, sdp]() {
         fprintf(stderr, "[peer] SetRemoteDescription enter (caller=%d) sdp_len=%zu\n",
                 is_caller() ? 1 : 0, sdp.size());
@@ -912,12 +1004,7 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                     // SetLocalDescription fail.
 
                     webrtc::AudioOptions audio_options;
-                    if (opts_.llama) {
-                        audio_options.echo_cancellation = false;
-                        audio_options.auto_gain_control = false;
-                        audio_options.noise_suppression = false;
-                        audio_options.highpass_filter = false;
-                    }
+                    ApplyAndLogApm(&audio_options, opts_.aec);
                     auto audio_source = peer_connection_factory_->CreateAudioSource(audio_options);
                     RTC_DCHECK(audio_source.get());
 
@@ -1025,13 +1112,28 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                         }
                         RTC_LOG(LS_INFO) << "Video source configured for callee.";
                     }
+                    ConfigureOutgoingAudio();
+                    TrimAudioHeaderExtensions(peer_connection_.get(), opts_);
 
                     create_session_observer_ = webrtc::make_ref_counted<LambdaCreateSessionDescriptionObserver>(
                         [this](std::unique_ptr<webrtc::SessionDescriptionInterface> desc) {
                             fprintf(stderr, "[peer] CreateAnswer callback fired\n");
                             std::string sdp;
                             desc->ToString(&sdp);
-                            
+                            if (opts_.audio_codec == "opus" || opts_.opus_bitrate_bps > 0) {
+                              sdp = MungeOpusFmtp(std::move(sdp), opts_.opus_bitrate_bps,
+                                                  opts_.opus_ptime_ms, opts_.opus_dtx);
+                              webrtc::SdpParseError opus_err;
+                              auto opus_desc =
+                                  webrtc::CreateSessionDescription(desc->GetType(), sdp, &opus_err);
+                              if (!opus_desc) {
+                                fprintf(stderr, "Opus fmtp munge failed: %s\n",
+                                        opus_err.description.c_str());
+                              } else {
+                                desc = std::move(opus_desc);
+                              }
+                            }
+
                             // Ensure DTLS role is passive (server) on callee side to avoid role conflict.
                             #if 0
                             const std::string kActive = "a=setup:active";
@@ -1069,6 +1171,7 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                                     // Both descriptions should now be set on callee side as well.
                                     DrainPendingIceCandidates();
                                     fprintf(stderr, "[peer] sending ANSWER len=%zu\n", sdp.size());
+                                    DirectSignalingLog("local-answer", sdp);
                                     SendMessage(std::string(Msg::kAnswerPrefix) + sdp);
                             });
                             peer_connection_->SetLocalDescription(std::move(patched_desc), set_local_description_observer_);
@@ -1085,6 +1188,7 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
 }
 
 void DirectPeer::AddIceCandidate(const std::string& candidate_sdp, int mline_index) {
+    DirectSignalingLog("remote-ice", std::to_string(mline_index) + ":" + candidate_sdp);
     signaling_thread()->PostTask([this, candidate_sdp, mline_index]() {
         // Queue until the PeerConnection exists and both descriptions are set.
         if (!peer_connection_ || !peer_connection_->remote_description() ||
@@ -1115,6 +1219,7 @@ void DirectPeer::OnSignalingChange(webrtc::PeerConnectionInterface::SignalingSta
         "Stable", "HaveLocalOffer", "HaveLocalPrAnswer", "HaveRemoteOffer", "HaveRemotePrAnswer", "Closed"
     };
     const char* state_name = (new_state < 6) ? state_names[new_state] : "Unknown";
+    DirectSignalingLog("signaling-state", state_name);
     
     RTC_LOG(LS_INFO) << "PeerConnection SignalingState changed to: " 
                      << static_cast<int>(new_state) << " (" << state_name << ")";
@@ -1128,6 +1233,7 @@ void DirectPeer::OnIceConnectionChange(webrtc::PeerConnectionInterface::IceConne
         "New", "Checking", "Connected", "Completed", "Failed", "Disconnected", "Closed", "Max"
     };
     const char* state_name = (new_state < 7) ? state_names[new_state] : "Unknown";
+    DirectSignalingLog("ice-state", state_name);
     
     RTC_LOG(LS_INFO) << "PeerConnection IceConnectionState changed to: " 
                      << static_cast<int>(new_state) << " (" << state_name << ")";

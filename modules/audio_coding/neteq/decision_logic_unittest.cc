@@ -137,6 +137,82 @@ TEST_F(DecisionLogicTest, FastAccelerate) {
   EXPECT_FALSE(reset_decoder);
 }
 
+// One late packet in the arrival history raises the accelerate threshold to
+// target + that delay; without a maximum delay NetEq keeps the buffer.
+TEST_F(DecisionLogicTest, LateArrivalHistoryDefersAccelerate) {
+  EXPECT_CALL(*mock_delay_manager_, TargetDelayMs())
+      .WillRepeatedly(Return(60));
+  EXPECT_CALL(*mock_packet_arrival_history_, GetDelayMs(_))
+      .WillRepeatedly(Return(150));
+  EXPECT_CALL(*mock_packet_arrival_history_, GetMaxDelayMs())
+      .WillRepeatedly(Return(100));
+
+  bool reset_decoder = false;
+  tick_timer_.Increment(kMinTimescaleInterval + 1);
+  EXPECT_EQ(decision_logic_->GetDecision(
+                CreateNetEqStatus(NetEq::Mode::kNormal, 100), &reset_decoder),
+            NetEq::Operation::kNormal);
+}
+
+// With a maximum delay (low-latency mode) the playout delay is bounded by
+// max(target, maximum) + 20 ms, so the same buffer is accelerated.
+TEST_F(DecisionLogicTest, MaximumDelayBoundsPlayoutDelay) {
+  ASSERT_TRUE(decision_logic_->SetMaximumDelay(80));
+  EXPECT_CALL(*mock_delay_manager_, TargetDelayMs())
+      .WillRepeatedly(Return(60));
+  EXPECT_CALL(*mock_packet_arrival_history_, GetDelayMs(_))
+      .WillRepeatedly(Return(150));
+  EXPECT_CALL(*mock_packet_arrival_history_, GetMaxDelayMs())
+      .WillRepeatedly(Return(100));
+
+  bool reset_decoder = false;
+  tick_timer_.Increment(kMinTimescaleInterval + 1);
+  EXPECT_EQ(decision_logic_->GetDecision(
+                CreateNetEqStatus(NetEq::Mode::kNormal, 100), &reset_decoder),
+            NetEq::Operation::kAccelerate);
+}
+
+// The cap clamps the target too: a 300 ms target becomes 80 ms.
+TEST_F(DecisionLogicTest, MaximumDelayClampsTarget) {
+  ASSERT_TRUE(decision_logic_->SetMaximumDelay(80));
+  EXPECT_CALL(*mock_delay_manager_, TargetDelayMs())
+      .WillRepeatedly(Return(300));
+  EXPECT_EQ(decision_logic_->TargetLevelMs(), 80);
+}
+
+// With a cap, the first packet after a DTX gap doesn't feed the delay
+// estimate; the packets that follow it do. Without a cap nothing changes.
+TEST(DecisionLogicDtxTest, TalkspurtStartSkipsDelayEstimateWhenCapped) {
+  TickTimer tick_timer;
+  NetEqController::Config config;
+  config.tick_timer = &tick_timer;
+  config.allow_time_stretching = true;
+  config.max_packets_in_buffer = 200;
+  config.base_min_delay_ms = 0;
+  auto delay_manager = std::make_unique<::testing::NiceMock<MockDelayManager>>(
+      DelayManager::Config(CreateTestFieldTrials()), &tick_timer);
+  DecisionLogic logic(config, std::move(delay_manager),
+                      std::make_unique<::testing::NiceMock<MockBufferLevelFilter>>(),
+                      std::make_unique<PacketArrivalHistory>(&tick_timer, 2000));
+  logic.SetSampleRate(kSampleRate, kOutputSizeSamples);
+  const size_t len = 20 * kSamplesPerMs;
+  auto arrive = [&](uint32_t ts) {
+    NetEqController::PacketArrivedInfo info = {};
+    info.packet_length_samples = len;
+    info.main_timestamp = ts;
+    tick_timer.Increment(2);
+    return logic.PacketArrived(kSampleRate, true, info);
+  };
+  ASSERT_TRUE(logic.SetMaximumDelay(80));
+  arrive(0);
+  EXPECT_TRUE(arrive(len).has_value());
+  EXPECT_FALSE(arrive(len * 20).has_value());  // talkspurt after 360 ms of DTX
+  EXPECT_TRUE(arrive(len * 21).has_value());
+
+  ASSERT_TRUE(logic.SetMaximumDelay(0));
+  EXPECT_TRUE(arrive(len * 40).has_value());  // uncapped: stock behavior
+}
+
 TEST_F(DecisionLogicTest, PreemptiveExpand) {
   EXPECT_CALL(*mock_delay_manager_, TargetDelayMs())
       .WillRepeatedly(Return(100));

@@ -24,6 +24,28 @@ jobs:
         test -f DEPS || (echo "DEPS not found" && exit 1)
         echo "All required files are present"
 
+    # A full `gn gen` / macOS ninja of directcall needs the synced WebRTC tree
+    # and is not run here (the opt-in macOS job only samples build.sh). This
+    # check catches the LiquidCall GN mistakes Linux never compiles: relative
+    # paths from modules/audio_coding/codecs/liquidcall resolve under //modules,
+    # and rtc_source_set rejects .cc files.
+    - name: Check LiquidCall GN labels
+      run: |
+        f=modules/audio_coding/codecs/liquidcall/BUILD.gn
+        grep -q 'import("//webrtc.gni")' "$f"
+        grep -q 'rtc_library("liquidcall")' "$f"
+        if grep -nE '\.\./' "$f" | grep -vE '^[^:]+:[[:space:]]*#'; then
+          echo "relative GN path in $f (use //webrtc.gni, //api, //rtc_base)" >&2
+          exit 1
+        fi
+        echo "LiquidCall GN labels are absolute and the target is rtc_library"
+
+    # liquid_coreml.mm is Objective-C++ and is not in the Linux ninja. Apple
+    # clang builds it with -Wshadow -Werror. This scan catches a nested local
+    # that shadows an outer one, which is what failed the Mac build.
+    - name: Check LiquidCall for shadowed locals
+      run: python3 scripts/liquidcall/check_shadow.py
+
   quick-build-test:
     runs-on: ubuntu-latest
     needs: validate-build-script

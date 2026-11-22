@@ -641,6 +641,9 @@ if (rtc_use_speech_audio_devices) {
     if (is_ios) {
       # Platform TTS is Objective-C. Compile it here so std::string matches
       # the libc++ WebRTC uses; the prebuilt whillats.framework does not.
+      # WhisperTranscriber and LlamaDeviceBase are inside that framework.
+      # all_dependent_configs puts -framework whillats on WebRTC.framework.
+      all_dependent_configs = [ "//sdk:whillats_framework_config" ]
       sources += [
         "//modules/third_party/whillats/src/whillats_synth.mm",
         "//modules/third_party/whillats/src/whillats_ios.mm",

@@ -61,7 +61,9 @@ fi
 
 # WebRTC top-level directories that may appear at the gclient parent alongside
 # `src/` as stray checkouts. Remove only when nothing under them is tracked in
-# git (avoids deleting the real working tree or folders like models/).
+# git. A gitlink such as modules/third_party/whillats counts as tracked: deleting
+# modules/ makes the next outer `git checkout` abort with
+# "Could not access submodule 'modules/third_party/whillats'".
 WEBRTC_SPILL_DIRNAMES=(
   api audio base build build_overrides buildtools call common_audio common_video
   data docs examples experiments g3doc infra ios logging media modules mojo net
@@ -70,10 +72,15 @@ WEBRTC_SPILL_DIRNAMES=(
 )
 
 remove_webrtc_spill_at_root() {
-  local d
+  local d tracked
   for d in "${WEBRTC_SPILL_DIRNAMES[@]}"; do
     [ -d "$REPO_ROOT/$d" ] || continue
-    echo "Removing WebRTC spill directory at repo root (duplicate of src/): $d"
+    tracked=$(git -C "$REPO_ROOT" ls-files -- "$d" | head -n 1 || true)
+    if [ -n "$tracked" ]; then
+      echo "Keeping $REPO_ROOT/$d (tracked in the outer repo: $tracked)"
+      continue
+    fi
+    echo "Removing untracked WebRTC spill directory at repo root (duplicate of src/): $d"
     rm -rf "$REPO_ROOT/$d"
   done
 }
@@ -106,10 +113,23 @@ if [ -f ".gclient" ]; then
     rm -f .gclient
 fi
 
-# Ensure we're on the correct branch/commit
-echo "Switching to $CURRENT_BRANCH..."
-git fetch origin
-git checkout "$CURRENT_BRANCH"
+# The outer repo is the gclient parent. src/ is checked out later to SRC_GIT_REF.
+# Do not recurse into submodules: a previous spill cleanup may have removed
+# modules/third_party/whillats, and `git checkout` would then abort under set -e.
+echo "Updating outer repo..."
+git fetch origin || echo "WARNING: git fetch origin failed; continuing with the local outer checkout"
+OUTER_HEAD=$(git rev-parse HEAD)
+OUTER_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$OUTER_BRANCH" = "$CURRENT_BRANCH" ] || [ "$OUTER_HEAD" = "$CURRENT_BRANCH" ]; then
+  echo "Outer repo already at $CURRENT_BRANCH ($OUTER_HEAD); skipping checkout"
+else
+  echo "Switching outer repo to $CURRENT_BRANCH (no submodule recursion)..."
+  if ! git -c submodule.recurse=false checkout --no-recurse-submodules "$CURRENT_BRANCH"; then
+    echo "WARNING: outer checkout of $CURRENT_BRANCH failed."
+    echo "This is usually a missing modules/third_party/whillats gitlink."
+    echo "Continuing. The WebRTC tree is src/, checked out separately to $SRC_GIT_REF."
+  fi
+fi
 
 # Verify we're on the correct branch
 echo "Current commit: $(git rev-parse HEAD)"
@@ -207,8 +227,12 @@ gclient sync -D --force --nohooks --no-history --shallow -j "$(getconf _NPROCESS
 # Hooks, gn and ninja must use the depot_tools this DEPS pins: an older
 # ~/depot_tools cannot parse newer vpython.toml files ("requires-python").
 if [ -x "src/third_party/depot_tools/gclient" ]; then
+    # A stale gn earlier on PATH fails M156 with
+    # "No value named expand_directory_allowlist". The copy DEPS pins must be first.
     PATH="$REPO_ROOT/src/third_party/depot_tools:$PATH"
-    echo "Using pinned depot_tools from src/third_party/depot_tools"
+    export PATH
+    hash -r 2>/dev/null || true
+    echo "Using pinned depot_tools from src/third_party/depot_tools ($(command -v gn 2>/dev/null || echo 'gn missing'))"
     # DEPOT_TOOLS_UPDATE=0 skips this, and gn then fails with
     # "python3_bin_reldir.txt not found".
     if [ ! -f "src/third_party/depot_tools/python3_bin_reldir.txt" ]; then
@@ -515,6 +539,7 @@ fi
 # Parse script parameters
 BUILD_TYPE="debug"
 ENABLE_WHILLATS="false"
+ENABLE_LIQUIDCALL="false"
 IOS_BUILD="false"
 if [ $# -ge 1 ]; then
     if [[ "$1" == "debug" || "$1" == "release" ]]; then
@@ -542,6 +567,7 @@ if [ $# -ge 1 ]; then
         echo ""
         echo "Options:"
         echo "  whillats    Enable whillats speech/AI features"
+        echo "  liquidcall macOS only: LiquidCall Core ML in directcall (off on Linux)"
         echo ""
         echo "iOS-specific usage:"
         echo "  $0 [-b REF] ios [debug|release] [whillats]"
@@ -585,17 +611,49 @@ if [ $# -ge 3 ]; then
         ENABLE_WHILLATS="true"
     fi
 fi
+for arg in "$@"; do
+    # "liquidcodec" is the pre-rename spelling, kept as an alias.
+    if [[ "$arg" == "liquidcall" || "$arg" == "liquidcodec" ]]; then
+        ENABLE_LIQUIDCALL="true"
+    fi
+done
+if [[ "$ENABLE_LIQUIDCALL" == "true" ]]; then
+    if [[ "$OSTYPE" != darwin* ]]; then
+        echo "ERROR: liquidcall is Apple-only. Linux builds leave it off."
+        exit 1
+    fi
+    EXTRA_ARGS="$EXTRA_ARGS rtc_use_liquidcall=true"
+    echo "LiquidCall Core ML will be compiled into directcall (rtc_use_liquidcall=true)."
+fi
 
 # Handle whillats building
 if [[ "$ENABLE_WHILLATS" == "true" ]]; then
-    # Clean up previous iOS build artifacts before building whillats
+    # Clean up previous iOS build artifacts before building whillats.
+    # A prebuilt framework passed in WHILLATS_IOS_FRAMEWORK is left alone.
     if [ "$IOS_BUILD" = "true" ]; then
         echo "Cleaning previous iOS build directories..."
-        rm -rf "$WHILLATS_DIR/build-ios" "$SRC_DIR/out/ios_arm64"
+        if [ -n "${WHILLATS_IOS_FRAMEWORK:-}" ]; then
+            rm -rf "$SRC_DIR/out/ios_arm64"
+        else
+            rm -rf "$WHILLATS_DIR/build-ios" "$SRC_DIR/out/ios_arm64"
+        fi
     fi
     echo "Whillats option enabled: building whillats..."
-    if [ "$IOS_BUILD" = "true" ]; then
+    if [ "$IOS_BUILD" = "true" ] && [ -n "${WHILLATS_IOS_FRAMEWORK:-}" ]; then
+        if [ ! -d "$WHILLATS_IOS_FRAMEWORK" ]; then
+            echo "ERROR: WHILLATS_IOS_FRAMEWORK is not a directory: $WHILLATS_IOS_FRAMEWORK"
+            exit 1
+        fi
+        echo "Using prebuilt whillats.framework: $WHILLATS_IOS_FRAMEWORK"
+        mkdir -p "$WHILLATS_DIR/build-ios/bin/${BUILD_TYPE}"
+        ln -sfn "$WHILLATS_IOS_FRAMEWORK" "$WHILLATS_DIR/build-ios/bin/${BUILD_TYPE}/whillats.framework"
+        WHILLATS_BUILD_DIR="Release"
+    elif [ "$IOS_BUILD" = "true" ]; then
         echo "Building whillats for iOS ($BUILD_TYPE)..."
+        echo "make ios on Xcode 27 fails two ways: cmake/ios.toolchain.cmake defaults"
+        echo "DEPLOYMENT_TARGET to 13.0, which that SDK rejects, and a dependency"
+        echo "downloads onnxruntime 1.17.3 osx-arm64, which 404s. Pass a prebuilt"
+        echo "framework instead: WHILLATS_IOS_FRAMEWORK=/path/to/whillats.framework"
         if [ ! -d "$WHILLATS_DIR" ] || [ -z "$(ls -A "$WHILLATS_DIR" 2>/dev/null)" ]; then
             echo "Initializing parent submodule: modules/third_party/whillats"
             pushd .
@@ -609,6 +667,12 @@ if [[ "$ENABLE_WHILLATS" == "true" ]]; then
             echo "Submodule exists; skipping update to preserve local edits."
         fi
         
+        # The toolchain file defaults iOS to 13.0 unless DEPLOYMENT_TARGET is set.
+        # Xcode 27 rejects 13.0. Raise that default before make reads it.
+        if [ -f "$WHILLATS_DIR/cmake/ios.toolchain.cmake" ]; then
+            perl -pi -e 's/set\(DEPLOYMENT_TARGET "13\.0"\)/set(DEPLOYMENT_TARGET "16.4")/' \
+                "$WHILLATS_DIR/cmake/ios.toolchain.cmake"
+        fi
         # Build iOS whillats with the specified build type
         if [ "$BUILD_TYPE" = "debug" ]; then
             (cd "$WHILLATS_DIR" && make ios-debug)
@@ -669,6 +733,20 @@ if [ -f "../$LAST_BUILD_COMMIT_FILE" ]; then
     LAST_BUILD_COMMIT=$(cat ../$LAST_BUILD_COMMIT_FILE)
 fi
 
+# gn gen must use the gn from the depot_tools this DEPS pins, not a stale gn
+# that happens to be earlier on PATH.
+GN_BIN="gn"
+PINNED_DEPOT="$REPO_ROOT/src/third_party/depot_tools"
+if [ -d "$PINNED_DEPOT" ]; then
+    PATH="$PINNED_DEPOT:$PATH"
+    export PATH
+    hash -r 2>/dev/null || true
+fi
+if [ -x "$PINNED_DEPOT/gn" ]; then
+    GN_BIN="$PINNED_DEPOT/gn"
+fi
+echo "gn for this build: $GN_BIN"
+
 # Check if binary exists and is executable
 if [ -f "$BINARY_PATH" ] && [ -x "$BINARY_PATH" ]; then
     # Test if binary can run (e.g., by checking version or help output)
@@ -692,11 +770,19 @@ if [ "$IOS_BUILD" = "true" ]; then
     else
         IOS_DEBUG_FLAG="false"
     fi
-    IOS_ARGS="target_environment=\"device\" target_os=\"ios\" target_cpu=\"arm64\" ios_deployment_target=\"16.4.0\" is_debug=$IOS_DEBUG_FLAG rtc_include_opus=true rtc_build_examples=true rtc_enable_symbol_export=true mac_deployment_target=\"15.0\" mac_min_system_version=\"15.0\""
+    # use_custom_libcxx=false: the app links Xcode libc++ (std::__1); Chromium libc++
+    # (std::__Cr) breaks webrtc::Options across parseOptions, so DirectCaller refuses to init.
+    # treat_warnings_as_errors=false: system libc++ trips -Wunsafe-buffer-usage in aec3/agc2/opus.
+    # ios_enable_code_signing=false: a Mac with two signing identities makes gn fail
+    # with "could not find exactly one codesigning identity".
+    IOS_ARGS="target_environment=\"device\" target_os=\"ios\" target_cpu=\"arm64\" ios_deployment_target=\"16.4.0\" ios_enable_code_signing=false use_custom_libcxx=false treat_warnings_as_errors=false is_debug=$IOS_DEBUG_FLAG rtc_include_opus=true rtc_build_examples=true rtc_enable_symbol_export=true mac_deployment_target=\"15.0\" mac_min_system_version=\"15.0\""
     if [ "$ENABLE_WHILLATS" = "true" ]; then
         IOS_ARGS="$IOS_ARGS rtc_use_speech_audio_devices=true"
     else
         IOS_ARGS="$IOS_ARGS rtc_use_speech_audio_devices=false"
+    fi
+    if [ "$ENABLE_LIQUIDCALL" = "true" ]; then
+        IOS_ARGS="$IOS_ARGS rtc_use_liquidcall=true"
     fi
     
     # Clean iOS build directory
@@ -704,7 +790,7 @@ if [ "$IOS_BUILD" = "true" ]; then
     (cd $SRC_DIR && rm -rf out/ios_arm64)
     
     echo "Generating iOS build configuration..."
-    (cd $SRC_DIR && gn gen out/ios_arm64 --args="$IOS_ARGS")
+    (cd $SRC_DIR && "$GN_BIN" gen out/ios_arm64 --args="$IOS_ARGS")
     
     # Ensure whillats framework is available before WebRTC build if enabled
     if [ "$ENABLE_WHILLATS" = "true" ]; then
@@ -721,9 +807,8 @@ if [ "$IOS_BUILD" = "true" ]; then
         fi
     fi
     
-    echo "Building WebRTC framework and directcall for iOS (single job to avoid toolchain races)..."
-    # Build both the WebRTC framework and directcall binary
-    (cd $SRC_DIR && ninja -C out/ios_arm64 -j1 sdk:framework_objc directcall)
+    echo "Building WebRTC.framework, direct.framework, and directcall for iOS..."
+    (cd $SRC_DIR && ninja -C out/ios_arm64 -j"${IOS_NINJA_JOBS:-1}" sdk:framework_objc examples:direct_framework directcall)
     echo "iOS build completed."
     
     # Verify both framework and binary were built
@@ -740,12 +825,12 @@ if [ "$IOS_BUILD" = "true" ]; then
     
 elif [ "$BUILD_TYPE" = "debug" ]; then
     echo "Building WebRTC project (debug, whillats: $ENABLE_WHILLATS)..."
-    (cd $SRC_DIR && gn gen out/debug --args="is_debug=true rtc_include_opus=true rtc_enable_symbol_export=true rtc_build_examples=true rtc_use_speech_audio_devices=$ENABLE_WHILLATS $EXTRA_ARGS")
+    (cd $SRC_DIR && "$GN_BIN" gen out/debug --args="is_debug=true rtc_include_opus=true rtc_enable_symbol_export=true rtc_build_examples=true rtc_use_speech_audio_devices=$ENABLE_WHILLATS $EXTRA_ARGS")
     (cd $SRC_DIR && ninja -C out/$BUILD_TYPE directcall)
     echo "Debug build completed."
 else
     echo "Building WebRTC project (release, whillats: $ENABLE_WHILLATS)..."
-    (cd $SRC_DIR && gn gen out/release --args="is_debug=false symbol_level=0 rtc_include_opus=true rtc_enable_symbol_export=true rtc_build_examples=true rtc_use_speech_audio_devices=$ENABLE_WHILLATS $EXTRA_ARGS")
+    (cd $SRC_DIR && "$GN_BIN" gen out/release --args="is_debug=false symbol_level=0 rtc_include_opus=true rtc_enable_symbol_export=true rtc_build_examples=true rtc_use_speech_audio_devices=$ENABLE_WHILLATS $EXTRA_ARGS")
     (cd $SRC_DIR && ninja -C out/$BUILD_TYPE directcall)
     echo "Release build completed."
 fi
@@ -762,6 +847,48 @@ else
 fi
 
 if [ "$IOS_BUILD" = "true" ]; then
+    IOS_DROP="$REPO_ROOT/out/ios-arm64"
+    rm -rf "$IOS_DROP"
+    mkdir -p "$IOS_DROP"
+    WEBRTC_FW="$REPO_ROOT/src/out/ios_arm64/WebRTC.framework"
+    DIRECT_FW="$REPO_ROOT/src/out/ios_arm64/direct.framework"
+    if [ ! -d "$DIRECT_FW" ]; then
+        DIRECT_FW="$(find "$REPO_ROOT/src/out/ios_arm64" -name direct.framework -type d | head -n 1)"
+    fi
+    if [ ! -d "$WEBRTC_FW" ]; then
+        echo "ERROR: missing $WEBRTC_FW"
+        exit 1
+    fi
+    cp -R "$WEBRTC_FW" "$IOS_DROP/"
+    if [ -n "$DIRECT_FW" ] && [ -d "$DIRECT_FW" ]; then
+        cp -R "$DIRECT_FW" "$IOS_DROP/"
+    else
+        echo "ERROR: direct.framework was not produced"
+        exit 1
+    fi
+    if [ "$ENABLE_WHILLATS" = "true" ]; then
+        WHILLATS_FW="$WHILLATS_DIR/build-ios/bin/${BUILD_TYPE}/whillats.framework"
+        if [ -d "$WHILLATS_FW" ]; then
+            cp -R "$WHILLATS_FW" "$IOS_DROP/"
+        else
+            echo "WARNING: whillats was requested but $WHILLATS_FW is missing"
+        fi
+    else
+        echo "whillats.framework is not part of 'ios release liquidcall'."
+        echo "RobotPhone already vendors that prebuilt. Add the whillats argument to build one here."
+    fi
+    if [ "$ENABLE_LIQUIDCALL" = "true" ]; then
+        FETCH="$REPO_ROOT/src/scripts/liquidcall/fetch_models.sh"
+        [ -f "$FETCH" ] || FETCH="$REPO_ROOT/scripts/liquidcall/fetch_models.sh"
+        echo "LiquidCall: fetch and compile .mlmodelc"
+        "$FETCH" --dest "$REPO_ROOT/scripts/liquidcall/models"
+        mkdir -p "$IOS_DROP/models"
+        cp -R "$REPO_ROOT/scripts/liquidcall/models/." "$IOS_DROP/models/"
+        echo "direct.framework exports Options: audio_codec, liquid_model_dir, liquid_pack,"
+        echo "  liquid_frames_per_packet, aec, stats_interval_sec, liquid_decode, liquid_encoder."
+    fi
+    echo "iOS drop for RobotPhone (unsigned): $IOS_DROP"
+    ls -la "$IOS_DROP"
     echo "iOS build completed successfully!"
     echo "iOS binary location: $BINARY_PATH"
     echo "WebRTC framework location: $SRC_DIR/out/ios_arm64/WebRTC.framework"
@@ -781,6 +908,41 @@ if [ "$IOS_BUILD" = "true" ]; then
         echo "❌ WebRTC.framework not found at expected location"
     fi
 else
+    if [ "$ENABLE_LIQUIDCALL" = "true" ]; then
+        FETCH="$REPO_ROOT/src/scripts/liquidcall/fetch_models.sh"
+        RUNNER="$REPO_ROOT/src/scripts/liquidcall/run_local_call.sh"
+        TONE_PY="$REPO_ROOT/src/scripts/liquidcall/tone_wav.py"
+        if [ ! -f "$FETCH" ]; then
+            FETCH="$REPO_ROOT/scripts/liquidcall/fetch_models.sh"
+            RUNNER="$REPO_ROOT/scripts/liquidcall/run_local_call.sh"
+            TONE_PY="$REPO_ROOT/scripts/liquidcall/tone_wav.py"
+        fi
+        echo "LiquidCall: fetch models if needed, compile every .mlpackage, point liquidcall.json at .mlmodelc"
+        "$FETCH" --dest "$REPO_ROOT/scripts/liquidcall/models"
+        LIQUID_MODELS="$REPO_ROOT/scripts/liquidcall/models"
+        if [ ! -f "$LIQUID_MODELS/liquidcall.json" ]; then
+            echo "ERROR: fetch did not write $LIQUID_MODELS/liquidcall.json" >&2
+            exit 1
+        fi
+        if grep -q '\.mlpackage' "$LIQUID_MODELS/liquidcall.json"; then
+            echo "ERROR: $LIQUID_MODELS/liquidcall.json still names a .mlpackage." >&2
+            echo "xcrun coremlcompiler did not compile the packages. Install the Xcode command line tools and rerun." >&2
+            exit 1
+        fi
+        CALL_OUT="$(cd "$(dirname "$RUNNER")" && pwd)/out/local-call"
+        TONE="$CALL_OUT/inject.wav"
+        mkdir -p "$CALL_OUT"
+        python3 "$TONE_PY" "$TONE" 3
+        LIQUID_BIN="$REPO_ROOT/src/out/$BUILD_TYPE/directcall"
+        echo ""
+        echo "LiquidCall is ready. One local call, no extra setup:"
+        echo "  $RUNNER"
+        echo ""
+        echo "The same callee, then caller:"
+        echo "  $LIQUID_BIN --mode=callee --user_name=alice --room_name=liquid --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama --audio-codec=liquidcall --liquid-decode=ane --liquid-model-dir=$LIQUID_MODELS --record-dir=$CALL_OUT/callee 127.0.0.1:3456"
+        echo "  $LIQUID_BIN --mode=caller --user_name=bob --target_name=alice --room_name=liquid --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama --audio-codec=liquidcall --liquid-decode=ane --liquid-model-dir=$LIQUID_MODELS --inject-wav=$TONE --record-dir=$CALL_OUT/caller --duration=8 127.0.0.1:3456"
+        echo ""
+    fi
     # Regular macOS/Linux binary execution
     LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$REPO_ROOT/src/modules/third_party/whillats/build/lib/$BUILD_TYPE"
     if [ "$ENABLE_WHILLATS" = "true" ]; then

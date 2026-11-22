@@ -233,6 +233,8 @@ class DIRECT_API DirectApplication : public webrtc::PeerConnectionObserver {
   void EnsureVideoSendActive();
   // H.264 first (or forced), resolution and frame rate on the video sender.
   void ConfigureOutgoingVideo();
+  // Opus (optional bitrate) or LiquidCall, when the caller asked for one.
+  void ConfigureOutgoingAudio();
 
 #if defined(WEBRTC_IOS) && defined(__OBJC__)
   // Getter methods for video tracks (iOS only)
@@ -608,6 +610,10 @@ class DIRECT_API DirectCaller : public DirectPeer {
   // Getter for current remote address
   webrtc::SocketAddress GetRemoteAddress() const { return remote_addr_; }
 
+  // Set when the callee answers with a status such as 486 Busy Here.
+  // The process should stop instead of dialing again.
+  bool GiveUp() const { return give_up_; }
+
   // === State-change C callback API ===
   using StateChangeCB = void (*)(State new_state, void *ctx);
   void SetStateChangeCallback(StateChangeCB cb, void *ctx);
@@ -644,6 +650,9 @@ class DIRECT_API DirectCaller : public DirectPeer {
   // Retry logic for HELLO handshake in case the very first packet is lost
   void SendHelloWithRetry();        // Sends HELLO and schedules retries
   void SendInvite();
+
+  // Callee rejected the invite (busy, or another status). Do not redial.
+  bool give_up_ = false;
 
   // Tracks whether WELCOME has been received so we can stop retrying
   bool welcome_received_ = false;

@@ -10,6 +10,8 @@
 
 #include "modules/audio_coding/neteq/decision_logic.h"
 
+#include <algorithm>
+
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -180,8 +182,31 @@ std::optional<int> DecisionLogic::PacketArrived(int fs_hz,
     delay_constraints_.SetPacketAudioLength(packet_length_samples_ * 1000 /
                                             fs_hz);
   }
+  // With a delay cap (the low-latency mode) the first packet after a gap,
+  // i.e. the start of a talkspurt after DTX silence, doesn't feed the delay
+  // estimate. The sender's radio and the access point often hold that packet
+  // while waking from power save, so it arrives tens of ms late although the
+  // packets after it are on time; counting it raised the target to the cap in
+  // a live DTX call (jitter 10-48 ms vs 1 ms without DTX). There is nothing
+  // to protect at a talkspurt start: NetEq is in comfort noise or expand and
+  // simply starts the packet when it arrives.
+  bool talkspurt_start = false;
+  if (newest_arrival_timestamp_ && info.packet_length_samples > 0 &&
+      delay_constraints_.maximum_delay_ms() > 0) {
+    const int32_t step =
+        static_cast<int32_t>(info.main_timestamp - *newest_arrival_timestamp_);
+    talkspurt_start =
+        step > 2 * static_cast<int32_t>(info.packet_length_samples);
+  }
+  if (!newest_arrival_timestamp_ ||
+      static_cast<int32_t>(info.main_timestamp - *newest_arrival_timestamp_) > 0) {
+    newest_arrival_timestamp_ = info.main_timestamp;
+  }
   bool inserted = packet_arrival_history_->Insert(info.main_timestamp,
                                                   info.packet_length_samples);
+  if (talkspurt_start) {
+    return std::nullopt;
+  }
   if (!inserted || packet_arrival_history_->size() < 2) {
     // No meaningful delay estimate unless at least 2 packets have arrived.
     return std::nullopt;
@@ -267,9 +292,19 @@ NetEq::Operation DecisionLogic::ExpectedPacketAvailable(
       !status.play_dtmf) {
     const int playout_delay_ms = GetPlayoutDelayMs(status);
     const int64_t low_limit = TargetLevelMs();
-    const int64_t high_limit = low_limit +
-                               packet_arrival_history_->GetMaxDelayMs() +
-                               kDelayAdjustmentGranularityMs;
+    int64_t high_limit = low_limit +
+                         packet_arrival_history_->GetMaxDelayMs() +
+                         kDelayAdjustmentGranularityMs;
+    // With a maximum delay set (low-latency mode), the cap bounds the
+    // playout delay too, not just the target: otherwise one delayed packet
+    // in the 2 s arrival history lets the buffer float at target + that
+    // delay for 2 s before NetEq accelerates.
+    const int max_delay_ms = delay_constraints_.maximum_delay_ms();
+    if (max_delay_ms > 0) {
+      high_limit = std::min<int64_t>(
+          high_limit, std::max<int64_t>(low_limit, max_delay_ms) +
+                          kDelayAdjustmentGranularityMs);
+    }
     if (playout_delay_ms >= high_limit * 4) {
       return NetEq::Operation::kFastAccelerate;
     }

@@ -4,8 +4,10 @@
  */
 
 #include "call_stats.h"
+#include "echo_stats.h"
 
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -31,6 +33,27 @@ int64_t ElapsedMs(std::chrono::steady_clock::time_point origin,
     return -1;
   }
   return std::chrono::duration_cast<std::chrono::milliseconds>(when - origin).count();
+}
+
+uint64_t RtpHeaderForOnWire(uint64_t reported, uint64_t packets) {
+  if (packets == 0) return reported;
+  const double per = static_cast<double>(reported) / static_cast<double>(packets);
+  // 12-byte fixed header plus any header extensions (one-byte form: 4-byte
+  // block header + elements, padded to 4). Earlier this capped at 20 bytes and
+  // hid extension overhead.
+  if (per >= 12.0 && per <= 80.0) return reported;
+  return packets * 12;
+}
+
+// payload + RTP header + packets * (20 IPv4 + 8 UDP + SRTP tag [+ 20 IPv6]).
+// SRTP tag: 10 bytes (AES_CM_128_HMAC_SHA1_80), 4 (_32), 16 (AEAD GCM), 0 plain.
+double OnWireKbps(uint64_t payload, uint64_t header, uint64_t packets, double seconds,
+                  int srtp_tag, bool ipv6) {
+  if (seconds <= 0) return 0;
+  uint64_t extra = 28 + static_cast<uint64_t>(std::max(0, srtp_tag));
+  if (ipv6) extra += 20;
+  const uint64_t total = payload + RtpHeaderForOnWire(header, packets) + packets * extra;
+  return static_cast<double>(total) * 8.0 / seconds / 1000.0;
 }
 
 std::string ProfileLevelId(const std::string& fmtp) {
@@ -107,6 +130,28 @@ struct Counter {
   bool seen = false;
 };
 
+constexpr double kNoLevel = -999.0;
+
+// totalAudioEnergy / totalSamplesDuration deltas give the mean power of the
+// interval; reported in dB relative to full scale.
+struct EnergyCounter {
+  double energy = 0;
+  double duration = 0;
+  bool seen = false;
+};
+
+double LevelDbfs(EnergyCounter& prev, double energy, double duration) {
+  double dbfs = kNoLevel;
+  if (prev.seen && duration > prev.duration + 1e-6 && energy >= prev.energy) {
+    const double power = (energy - prev.energy) / (duration - prev.duration);
+    dbfs = power > 1e-12 ? 10.0 * std::log10(power) : -120.0;
+  }
+  prev.energy = energy;
+  prev.duration = duration;
+  prev.seen = true;
+  return dbfs;
+}
+
 struct Snapshot {
   std::string json;
   std::string ice;
@@ -123,6 +168,8 @@ struct Snapshot {
   double recv_bitrate = 0;
   double encode_ms = 0;
   double decode_ms = 0;
+  std::string audio_line;
+  std::string echo_line;
   long long frames_dropped = 0;
   long long nack = 0;
   long long pli = 0;
@@ -139,6 +186,8 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     has_last_ = true;
     samples_.fetch_add(1);
   }
+
+  void set_encrypted(bool encrypted) { encrypted_ = encrypted; }
 
   int samples() const { return samples_.load(); }
 
@@ -168,6 +217,31 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     prev.bytes = bytes;
     prev.seen = true;
     return bps;
+  }
+
+  // bytes/header/packets from RTCStats are totals since the call began; the
+  // rate over the last interval needs their deltas. Dividing the totals by dt
+  // grew the "on-wire" figure with call length (hundreds of kbps for a
+  // ~7 kbps LiquidCall stream).
+  struct WireCounter {
+    uint64_t bytes = 0;
+    uint64_t header = 0;
+    uint64_t packets = 0;
+    bool seen = false;
+  };
+  static double WireDeltaKbps(WireCounter& prev, uint64_t bytes, uint64_t header,
+                              uint64_t packets, double dt, int srtp_tag, bool ipv6) {
+    double kbps = 0;
+    if (prev.seen && dt > 0 && bytes >= prev.bytes && header >= prev.header &&
+        packets >= prev.packets) {
+      kbps = OnWireKbps(bytes - prev.bytes, header - prev.header, packets - prev.packets, dt,
+                        srtp_tag, ipv6);
+    }
+    prev.bytes = bytes;
+    prev.header = header;
+    prev.packets = packets;
+    prev.seen = true;
+    return kbps;
   }
 
   static double PerFrameMs(Counter& prev, double total_s, uint64_t frames, bool* have) {
@@ -214,12 +288,26 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         }
       }
     }
+    // Real SRTP auth tag from the negotiated cipher.
+    int srtp_tag = encrypted_ ? 10 : 0;
+    std::string srtp_cipher = encrypted_ ? "unknown" : "none";
+    for (const auto* transport : report->GetStatsOfType<webrtc::RTCTransportStats>()) {
+      if (!transport->srtp_cipher) continue;
+      srtp_cipher = *transport->srtp_cipher;
+      if (srtp_cipher.find("_32") != std::string::npos) srtp_tag = 4;
+      else if (srtp_cipher.find("GCM") != std::string::npos) srtp_tag = 16;
+      else if (srtp_cipher.find("_80") != std::string::npos) srtp_tag = 10;
+      break;
+    }
+    bool ipv6 = false;
     if (pair) {
       if (pair->current_round_trip_time) rtt_ms = *pair->current_round_trip_time * 1000.0;
       if (pair->local_candidate_id) {
         if (const auto* local =
                 report->GetAs<webrtc::RTCLocalIceCandidateStats>(*pair->local_candidate_id)) {
           if (local->candidate_type) ice = *local->candidate_type;
+          const std::string addr = local->address.value_or(local->ip.value_or(""));
+          ipv6 = addr.find(':') != std::string::npos;
         }
       }
     }
@@ -233,7 +321,20 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     long long nack = 0;
     long long pli = 0;
     long long concealment = 0;
-    double jitter_buffer_ms = -1;
+    double jitter_buffer_ms = -1;      // this interval
+    double jitter_buffer_avg_ms = -1;  // whole call
+    double jitter_target_ms = -1;      // NetEq target, this interval
+    double send_onwire_kbps = -1;
+    double recv_onwire_kbps = -1;
+    double send_payload_kbps = -1;
+    double recv_payload_kbps = -1;
+    long long send_packets = 0;
+    long long recv_packets = 0;
+    long long packets_lost = 0;
+    double jitter_ms = -1;
+    int algo_ms = -1;
+    double m2e_ms = -1;
+    double recv_dbfs = kNoLevel;
 
     auto note_first_audio = [&](uint64_t packets) {
       if (packets == 0) return;
@@ -252,13 +353,73 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         have_audio = true;
         note_first_audio(in->packets_received.value_or(0));
         concealment += static_cast<long long>(in->concealment_events.value_or(0));
+        if (in->total_audio_energy && in->total_samples_duration) {
+          recv_dbfs = LevelDbfs(recv_energy_, *in->total_audio_energy,
+                                *in->total_samples_duration);
+        }
+        // jitterBufferDelay and jitterBufferTargetDelay are sums since the
+        // call began; the buffer "now" is their delta over this interval.
+        // The cumulative average lagged real changes by tens of seconds.
         if (in->jitter_buffer_delay && in->jitter_buffer_emitted_count &&
             *in->jitter_buffer_emitted_count > 0) {
-          jitter_buffer_ms = (*in->jitter_buffer_delay / static_cast<double>(*in->jitter_buffer_emitted_count)) * 1000.0;
+          const uint64_t emitted = *in->jitter_buffer_emitted_count;
+          const double delay = *in->jitter_buffer_delay;
+          const double target = in->jitter_buffer_target_delay.value_or(0);
+          jitter_buffer_avg_ms = delay / static_cast<double>(emitted) * 1000.0;
+          jitter_buffer_ms = jitter_buffer_avg_ms;
+          if (in->jitter_buffer_target_delay) {
+            jitter_target_ms = target / static_cast<double>(emitted) * 1000.0;
+          }
+          if (jb_prev_.seen && emitted > jb_prev_.emitted && delay >= jb_prev_.delay) {
+            const double n = static_cast<double>(emitted - jb_prev_.emitted);
+            jitter_buffer_ms = (delay - jb_prev_.delay) / n * 1000.0;
+            if (in->jitter_buffer_target_delay && target >= jb_prev_.target) {
+              jitter_target_ms = (target - jb_prev_.target) / n * 1000.0;
+            }
+          }
+          jb_prev_.delay = delay;
+          jb_prev_.target = target;
+          jb_prev_.emitted = emitted;
+          jb_prev_.seen = true;
         }
         const auto* codec = CodecFor<webrtc::RTCCodecStats>(*report, in->codec_id);
-        audio_out.str("codec", codec && codec->mime_type ? *codec->mime_type : "");
+        const uint64_t recv_bytes = in->bytes_received.value_or(0);
+        const uint64_t recv_header = in->header_bytes_received.value_or(0);
+        const double recv_onwire_kbps_now =
+            WireDeltaKbps(audio_in_wire_, recv_bytes, recv_header,
+                          in->packets_received.value_or(0), dt, srtp_tag, ipv6);
+        std::string mime = codec && codec->mime_type ? *codec->mime_type : audio_codec_;
+        for (char& ch : mime) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        const int codec_algo_ms = mime.find("liquid") != std::string::npos ? 120 : 20;
+        const double half_rtt = rtt_ms >= 0 ? rtt_ms / 2.0 : 0;
+        const double jb = jitter_buffer_ms >= 0 ? jitter_buffer_ms : 0;
+        const double m2e = 10.0 + codec_algo_ms + half_rtt + jb + 10.0;
+        audio_out.str("codec", mime);
+        audio_out.str("srtp_cipher", srtp_cipher);
+        audio_out.integer("srtp_tag_bytes", srtp_tag);
+        if (const uint64_t rp = in->packets_received.value_or(0)) {
+          audio_out.number("recv_rtp_header_bytes_per_packet",
+                           static_cast<double>(recv_header) / static_cast<double>(rp), 1);
+        }
         audio_out.number("recv_bitrate_bps", bps, 0);
+        audio_out.number("recv_payload_kbps", bps / 1000.0, 3);
+        audio_out.number("recv_onwire_ipv4_udp_rtp_kbps", recv_onwire_kbps_now, 3);
+        audio_out.integer("algorithmic_latency_ms", codec_algo_ms);
+        audio_out.number("mouth_to_ear_est_ms", m2e, 1);
+        if (jitter_buffer_ms >= 0) audio_out.number("jitter_buffer_ms", jitter_buffer_ms, 1);
+        if (jitter_buffer_avg_ms >= 0) audio_out.number("jitter_buffer_avg_ms", jitter_buffer_avg_ms, 1);
+        if (jitter_target_ms >= 0) audio_out.number("jitter_buffer_target_ms", jitter_target_ms, 1);
+        recv_onwire_kbps = recv_onwire_kbps_now;
+        recv_payload_kbps = bps / 1000.0;
+        recv_packets = static_cast<long long>(in->packets_received.value_or(0));
+        packets_lost = in->packets_lost.value_or(0);
+        jitter_ms = in->jitter ? *in->jitter * 1000.0 : -1;
+        algo_ms = codec_algo_ms;
+        m2e_ms = m2e;
+        audio_out.integer("recv_bytes", static_cast<long long>(in->bytes_received.value_or(0)));
+        audio_out.integer("recv_packets", static_cast<long long>(in->packets_received.value_or(0)));
+        audio_out.integer("recv_header_bytes",
+                          static_cast<long long>(in->header_bytes_received.value_or(0)));
         audio_out.number("recv_jitter_ms", in->jitter ? *in->jitter * 1000.0 : -1, 2);
         audio_out.integer("recv_packets_lost", in->packets_lost.value_or(0));
         audio_out.integer("recv_packets", in->packets_received.value_or(0));
@@ -326,7 +487,62 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
             audio_codec_ = *codec->mime_type;
           }
         }
-        audio_out.number("send_bitrate_bps", bps, 0);
+        const uint64_t send_bytes = outb->bytes_sent.value_or(0);
+        const uint64_t send_header = outb->header_bytes_sent.value_or(0);
+        const double send_payload_bps = bps;
+        const uint64_t send_pk = outb->packets_sent.value_or(0);
+        if (audio_out_wire_.seen && dt > 0 && send_pk >= audio_out_wire_.packets) {
+          const uint64_t dp = send_pk - audio_out_wire_.packets;
+          audio_out.number("send_packets_per_s", static_cast<double>(dp) / dt, 2);
+          if (dp > 0) {
+            const double pay = static_cast<double>(send_bytes - audio_out_wire_.bytes) / dp;
+            const double hdr = static_cast<double>(send_header - audio_out_wire_.header) / dp;
+            audio_out.number("send_payload_bytes_per_packet", pay, 1);
+            audio_out.number("send_rtp_header_bytes_per_packet", hdr, 1);
+            // LiquidCall payload sizes identify pack and frames per packet.
+            int fpp = 0;
+            const int ipay = static_cast<int>(pay + 0.5);
+            const int tight[] = {17, 33, 50, 66};
+            const int u16[] = {28, 52, 76, 100};
+            for (int i = 0; i < 4; ++i) {
+              if (ipay == tight[i] || ipay == u16[i]) fpp = i + 1;
+            }
+            if (fpp > 0 && !onwire_printed_ && srtp_cipher != "unknown" && hdr < 16.0) {
+              // Negotiated transport, once per call. The encoder's startup
+              // line cannot know the SRTP cipher; this one uses it.
+              onwire_printed_ = true;
+              const int rtp = static_cast<int>(hdr + 0.5);
+              const int ip = ipv6 ? 48 : 28;
+              const int total = ipay + rtp + ip + srtp_tag;
+              std::fprintf(stderr,
+                           "On-wire (negotiated): payload %d B + RTP %d B + %s %d B + SRTP tag %d B "
+                           "(%s) = %d B x %.1f pkt/s = %.0f bps\n",
+                           ipay, rtp, ipv6 ? "IPv6/UDP" : "IPv4/UDP", ip, srtp_tag,
+                           srtp_cipher.c_str(), total, 12.5 / fpp, total * 8.0 * 12.5 / fpp);
+            }
+            if (fpp > 0) {
+              audio_out.integer("send_frames_per_packet", fpp);
+              audio_out.integer("send_ptime_ms", fpp * 80);
+              const double expected = 12.5 / fpp;
+              const double active = std::min(1.0, static_cast<double>(dp) / dt / expected);
+              audio_out.number("send_dtx_pct", (1.0 - active) * 100.0, 0);
+            }
+          } else {
+            audio_out.number("send_dtx_pct", 100.0, 0);
+          }
+        }
+        const double send_onwire_kbps_now =
+            WireDeltaKbps(audio_out_wire_, send_bytes, send_header, send_pk, dt, srtp_tag, ipv6);
+        audio_out.number("send_bitrate_bps", send_payload_bps, 0);
+        audio_out.number("send_payload_kbps", send_payload_bps / 1000.0, 3);
+        audio_out.number("send_onwire_ipv4_udp_rtp_kbps", send_onwire_kbps_now, 3);
+        send_onwire_kbps = send_onwire_kbps_now;
+        send_payload_kbps = send_payload_bps / 1000.0;
+        send_packets = static_cast<long long>(outb->packets_sent.value_or(0));
+        audio_out.integer("send_bytes", static_cast<long long>(send_bytes));
+        audio_out.integer("send_packets", static_cast<long long>(outb->packets_sent.value_or(0)));
+        audio_out.integer("send_header_bytes",
+                          static_cast<long long>(outb->header_bytes_sent.value_or(0)));
         audio_out.integer("send_packets_lost", remote && remote->packets_lost ? *remote->packets_lost : 0);
         audio_out.number("send_jitter_ms", remote && remote->jitter ? *remote->jitter * 1000.0 : -1, 2);
         audio_out.integer("nack", outb->nack_count.value_or(0));
@@ -372,6 +588,58 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
       // rewriting only when we stored one from outbound and inbound was empty.
     }
 
+    // Echo: the level we send (after the echo canceller) next to the level we
+    // play. When the far end talks and nobody talks here, send should stay
+    // near the noise floor; a send level that follows recv is echo leaking.
+    double send_dbfs = kNoLevel;
+    double erl_db = kNoLevel;
+    double erle_db = kNoLevel;
+    const auto audio_sources = report->GetStatsOfType<webrtc::RTCAudioSourceStats>();
+    if (!audio_sources.empty()) {
+      const auto* src = audio_sources.front();
+      if (src->total_audio_energy && src->total_samples_duration) {
+        send_dbfs = LevelDbfs(send_energy_, *src->total_audio_energy,
+                              *src->total_samples_duration);
+      }
+      if (src->echo_return_loss) erl_db = *src->echo_return_loss;
+      if (src->echo_return_loss_enhancement) erle_db = *src->echo_return_loss_enhancement;
+    }
+    const std::string echo_path = DirectEchoPath();
+    webrtc::AudioProcessingStats apm;
+    const bool have_apm = echo_path == "aec3" && DirectApmStats(&apm);
+    if (have_apm) {
+      if (erl_db == kNoLevel && apm.echo_return_loss) erl_db = *apm.echo_return_loss;
+      if (erle_db == kNoLevel && apm.echo_return_loss_enhancement)
+        erle_db = *apm.echo_return_loss_enhancement;
+    }
+    if (have_audio) {
+      audio_out.str("aec", echo_path);
+      if (send_dbfs != kNoLevel) audio_out.number("send_level_dbfs", send_dbfs, 1);
+      if (recv_dbfs != kNoLevel) audio_out.number("recv_level_dbfs", recv_dbfs, 1);
+      if (erl_db != kNoLevel) audio_out.number("echo_return_loss_db", erl_db, 1);
+      if (erle_db != kNoLevel) audio_out.number("echo_return_loss_enhancement_db", erle_db, 1);
+      if (have_apm && apm.delay_ms) audio_out.integer("aec_delay_ms", *apm.delay_ms);
+      if (have_apm && apm.divergent_filter_fraction)
+        audio_out.number("aec_divergent_filter_fraction", *apm.divergent_filter_fraction, 3);
+      char eline[384];
+      auto fmt = [](double v, char* buf, size_t n) {
+        if (v == kNoLevel) std::snprintf(buf, n, "na");
+        else std::snprintf(buf, n, "%.1f", v);
+      };
+      char sb[16], rb[16], lb[16], eb[16];
+      fmt(send_dbfs, sb, sizeof(sb));
+      fmt(recv_dbfs, rb, sizeof(rb));
+      fmt(erl_db, lb, sizeof(lb));
+      fmt(erle_db, eb, sizeof(eb));
+      std::snprintf(eline, sizeof(eline),
+                    "echo aec=%s send_dbfs=%s recv_dbfs=%s erl_db=%s erle_db=%s "
+                    "aec_delay_ms=%d divergent=%.3f\n",
+                    echo_path.c_str(), sb, rb, lb, eb,
+                    have_apm && apm.delay_ms ? *apm.delay_ms : -1,
+                    have_apm && apm.divergent_filter_fraction ? *apm.divergent_filter_fraction : -1.0);
+      snap.echo_line = eline;
+    }
+
     Json root;
     root.begin();
     root.str("event", "stats");
@@ -391,9 +659,23 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     else root.nul("video");
     if (jitter_buffer_ms >= 0) root.number("jitter_buffer_ms", jitter_buffer_ms, 2);
     else root.nul("jitter_buffer_ms");
+    if (jitter_target_ms >= 0) root.number("jitter_buffer_target_ms", jitter_target_ms, 2);
     root.integer("concealment_events", concealment);
     root.integer("nack", nack);
     root.integer("pli", pli);
+    if (have_audio) {
+      char line[512];
+      std::snprintf(line, sizeof(line),
+                    "audio onwire=payload+rtp+ip/udp send_ipv4_udp_rtp_kbps=%.3f send_payload_kbps=%.3f "
+                    "recv_ipv4_udp_rtp_kbps=%.3f "
+                    "recv_payload_kbps=%.3f send_packets=%lld recv_packets=%lld lost=%lld "
+                    "jitter_ms=%.2f jitter_buffer_ms=%.2f jitter_target_ms=%.1f rtt_ms=%.1f algo_ms=%d "
+                    "mouth_to_ear_est_ms=%.1f\n",
+                    send_onwire_kbps, send_payload_kbps, recv_onwire_kbps, recv_payload_kbps,
+                    send_packets, recv_packets, packets_lost, jitter_ms, jitter_buffer_ms,
+                    jitter_target_ms, rtt_ms, algo_ms, m2e_ms);
+      snap.audio_line = line;
+    }
     snap.ice = ice;
     snap.rtt_ms = rtt_ms;
     snap.nack = nack;
@@ -409,13 +691,28 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
   std::chrono::steady_clock::time_point last_sample_{};
   std::chrono::steady_clock::time_point first_audio_{};
   Counter audio_in_bytes_;
+  Counter audio_in_total_;
   Counter audio_out_bytes_;
+  Counter audio_out_total_;
+  struct JitterCounter {
+    double delay = 0;
+    double target = 0;
+    uint64_t emitted = 0;
+    bool seen = false;
+  };
+  JitterCounter jb_prev_;
+  EnergyCounter send_energy_;
+  EnergyCounter recv_energy_;
+  bool onwire_printed_ = false;
+  WireCounter audio_in_wire_;
+  WireCounter audio_out_wire_;
   Counter video_in_bytes_;
   Counter video_out_bytes_;
   Counter video_enc_;
   Counter video_dec_;
   std::string audio_codec_;
   bool audio_out_has_codec_ = false;
+  bool encrypted_ = false;
 
   friend class DirectCallStatsImpl;
   std::chrono::steady_clock::time_point FirstAudio() const {
@@ -442,12 +739,14 @@ class DirectCallStatsImpl : public DirectCallStats {
   DirectCallStatsImpl(int interval_sec,
                       std::chrono::steady_clock::time_point origin,
                       webrtc::Thread* signaling_thread,
-                      std::function<webrtc::PeerConnectionInterface*()> peer_connection)
+                      std::function<webrtc::PeerConnectionInterface*()> peer_connection,
+                      bool encrypted)
       : interval_sec_(interval_sec),
         origin_(origin),
         signaling_thread_(signaling_thread),
         peer_connection_(std::move(peer_connection)),
         collector_(webrtc::make_ref_counted<StatsCollector>()) {
+    collector_->set_encrypted(encrypted);
     if (interval_sec_ > 0) {
       thread_ = std::thread([this] { Loop(); });
     }
@@ -528,6 +827,8 @@ class DirectCallStatsImpl : public DirectCallStats {
                  snap.quality_limitation.empty() ? "none" : snap.quality_limitation.c_str(),
                  snap.recv_w, snap.recv_h, snap.recv_fps, snap.decode_ms,
                  static_cast<long long>(snap.frames_dropped));
+    if (!snap.audio_line.empty()) std::fputs(snap.audio_line.c_str(), stderr);
+    if (!snap.echo_line.empty()) std::fputs(snap.echo_line.c_str(), stderr);
   }
 
  private:
@@ -577,6 +878,12 @@ class DirectCallStatsImpl : public DirectCallStats {
         std::fwrite(body.data(), 1, body.size(), stdout);
         std::fputc('\n', stdout);
         std::fflush(stdout);
+        if (!snap.audio_line.empty()) {
+          std::fputs(snap.audio_line.c_str(), stderr);
+        }
+        if (!snap.echo_line.empty()) {
+          std::fputs(snap.echo_line.c_str(), stderr);
+        }
       }
     }
   }
@@ -599,7 +906,8 @@ std::unique_ptr<DirectCallStats> DirectCallStats::Create(
     int interval_sec,
     std::chrono::steady_clock::time_point origin,
     webrtc::Thread* signaling_thread,
-    std::function<webrtc::PeerConnectionInterface*()> peer_connection) {
+    std::function<webrtc::PeerConnectionInterface*()> peer_connection,
+    bool encrypted) {
   return std::make_unique<DirectCallStatsImpl>(interval_sec, origin, signaling_thread,
-                                               std::move(peer_connection));
+                                               std::move(peer_connection), encrypted);
 }

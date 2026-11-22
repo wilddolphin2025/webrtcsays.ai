@@ -10,6 +10,7 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
+#include "signaling_log.h"
 #include "rtc_base/network.h"
 #include "rtc_base/ip_address.h"
 #include <unistd.h> // For usleep
@@ -34,10 +35,50 @@
 #include "api/video_codecs/video_encoder_factory_template_libvpx_vp9_adapter.h"
 #include "api/video_codecs/video_encoder_factory_template_open_h264_adapter.h"
 
+#include "api/neteq/default_neteq_factory.h"
 #include "direct.h"
+#include "echo_stats.h"
+#if defined(WEBRTC_MAC) && !defined(WEBRTC_IOS)
+#include "mac_vpio_audio_device.h"
+#endif
 #include "option.h"
+#include "audio_tap.h"
+#include "impair.h"
+#if defined(WEBRTC_USE_LIQUIDCALL)
+#include "modules/audio_coding/codecs/liquidcall/liquid_factory.h"
+#endif
 #include "video.h"
 #include "status.h"
+
+namespace {
+
+// Low-latency jitter buffer (kLiquidJitterMaxMs in option.h): caps NetEq's
+// target delay and (see DecisionLogic::ExpectedPacketAvailable) the playout
+// delay it accelerates down to. Below the cap NetEq still adapts to jitter.
+class CappedNetEqFactory : public webrtc::NetEqFactory {
+ public:
+  CappedNetEqFactory(int max_delay_ms, bool fast_accelerate)
+      : max_delay_ms_(max_delay_ms), fast_accelerate_(fast_accelerate) {}
+  std::unique_ptr<webrtc::NetEq> Create(
+      const webrtc::Environment& env,
+      const webrtc::NetEq::Config& config,
+      webrtc::scoped_refptr<webrtc::AudioDecoderFactory> decoder_factory) const override {
+    webrtc::NetEq::Config capped = config;
+    if (max_delay_ms_ > 0 &&
+        (capped.max_delay_ms <= 0 || capped.max_delay_ms > max_delay_ms_)) {
+      capped.max_delay_ms = max_delay_ms_;
+    }
+    capped.enable_fast_accelerate = capped.enable_fast_accelerate || fast_accelerate_;
+    return inner_.Create(env, capped, std::move(decoder_factory));
+  }
+
+ private:
+  webrtc::DefaultNetEqFactory inner_;
+  const int max_delay_ms_;
+  const bool fast_accelerate_;
+};
+
+}  // namespace
 
 // String split from option.cc
 std::vector<std::string> stringSplit(std::string input, std::string delimiter);
@@ -305,6 +346,29 @@ bool DirectApplication::CreatePeerConnection() {
     if (audio_device_module_) {
       return;
     }
+    DirectSetEchoPath(opts_.aec ? "aec3" : "off");
+#if defined(WEBRTC_MAC) && !defined(WEBRTC_IOS)
+    // The HAL ADM has no canceller of its own, and AEC3 on a MacBook's
+    // speaker-to-mic path leaked echo in live calls. Apple's Voice Processing
+    // I/O unit cancels against the exact speaker signal; use it unless asked
+    // for the old path.
+    if (opts_.aec && opts_.aec_mode != "aec3" &&
+        audio_layer == webrtc::AudioDeviceModule::kPlatformDefaultAudio) {
+      audio_device_module_ = CreateMacVoiceProcessingAudioDeviceModule(*env_);
+      if (audio_device_module_) {
+        DirectSetEchoPath("vpio");
+        return;
+      }
+      fprintf(stderr, "Audio device: Voice Processing I/O unavailable, falling back to "
+                      "CoreAudio HAL + WebRTC AEC3\n");
+    }
+    if (audio_layer == webrtc::AudioDeviceModule::kPlatformDefaultAudio) {
+      fprintf(stderr, "Audio device: CoreAudio HAL%s\n",
+              opts_.aec ? " + WebRTC AEC3 (software echo canceller)" : ", echo cancel off");
+    }
+#elif defined(WEBRTC_IOS)
+    if (opts_.aec) DirectSetEchoPath("vpio");
+#endif
     audio_device_module_ = webrtc::CreateAudioDeviceModule(*env_, audio_layer);
     if (!audio_device_module_ || audio_device_module_->Init() != 0) {
       RTC_LOG(LS_ERROR) << "Audio layer " << audio_layer
@@ -342,11 +406,109 @@ bool DirectApplication::CreatePeerConnection() {
     deps.env = *env_;
     deps.socket_factory = pss();
     deps.network_manager = std::move(network_manager);
+    {
+      const bool liquid_jb = opts_.audio_codec == "liquidcall";
+      const int jitter_max = opts_.jitter_max_ms < 0 ? (liquid_jb ? kLiquidJitterMaxMs : 0)
+                                                     : opts_.jitter_max_ms;
+      const bool fast_accelerate = opts_.jitter_fast_accelerate < 0
+                                       ? jitter_max > 0
+                                       : opts_.jitter_fast_accelerate != 0;
+      if (jitter_max > 0 || fast_accelerate) {
+        deps.neteq_factory =
+            std::make_unique<CappedNetEqFactory>(jitter_max, fast_accelerate);
+      }
+      if (jitter_max > 0) {
+        fprintf(stderr,
+                "Jitter buffer: low-latency, max %d ms (NetEq adapts below it), "
+                "fast_accelerate=%s\n",
+                jitter_max, fast_accelerate ? "on" : "off");
+      } else {
+        fprintf(stderr, "Jitter buffer: stock NetEq (no cap), fast_accelerate=%s\n",
+                fast_accelerate ? "on" : "off");
+      }
+    }
     deps.adm = audio_device_module_;
-    deps.audio_encoder_factory = webrtc::CreateBuiltinAudioEncoderFactory();
-    deps.audio_decoder_factory = webrtc::CreateBuiltinAudioDecoderFactory();
-    deps.audio_processing_builder =
-        std::make_unique<webrtc::BuiltinAudioProcessingBuilder>();
+    webrtc::scoped_refptr<webrtc::AudioEncoderFactory> audio_encoder_factory =
+        webrtc::CreateBuiltinAudioEncoderFactory();
+    webrtc::scoped_refptr<webrtc::AudioDecoderFactory> audio_decoder_factory =
+        webrtc::CreateBuiltinAudioDecoderFactory();
+    if (opts_.audio_codec == "liquidcall") {
+#if defined(WEBRTC_USE_LIQUIDCALL)
+      webrtc::liquid::RuntimeConfig liquid;
+      std::string model_dir = opts_.liquid_model_dir;
+      if (model_dir.empty()) {
+        const char* candidates[] = {
+            "scripts/liquidcall/models",
+            "../scripts/liquidcall/models",
+        };
+        model_dir = candidates[0];
+        for (const char* candidate : candidates) {
+          if (webrtc::liquid::FileExists(webrtc::liquid::ManifestPath(candidate))) {
+            model_dir = candidate;
+            break;
+          }
+        }
+      }
+      liquid.paths.model_dir = model_dir;
+      liquid.paths.compute = opts_.liquid_decode.empty() ? "ane" : opts_.liquid_decode;
+      liquid.record_dir = opts_.record_dir;
+      liquid.inject_wav = opts_.inject_wav;
+      const std::string manifest = opts_.liquid_manifest.empty()
+                                       ? webrtc::liquid::ManifestPath(liquid.paths.model_dir)
+                                       : opts_.liquid_manifest;
+      std::string manifest_error;
+      if (webrtc::liquid::FileExists(manifest)) {
+        if (!webrtc::liquid::LoadManifestFile(manifest, &liquid.paths, &liquid.chunk,
+                                              &manifest_error)) {
+          fprintf(stderr, "LiquidCall manifest: %s\n", manifest_error.c_str());
+          return false;
+        }
+      } else {
+        fprintf(stderr,
+                "LiquidCall manifest %s not found; assuming ctx=20 new=20 "
+                "(published decoder geometry) until the fork ships liquidcall.json\n",
+                manifest.c_str());
+      }
+      liquid.paths.encoder_model = webrtc::liquid::EncoderModelForPrecision(
+          liquid.paths.encoder_model, opts_.liquid_encoder);
+      if (opts_.liquid_ctx > 0) liquid.chunk.ctx_frames = opts_.liquid_ctx;
+      if (opts_.liquid_new > 0) liquid.chunk.new_frames = opts_.liquid_new;
+      liquid.pack = opts_.liquid_pack == "tight" ? webrtc::liquid::WirePack::kTight
+                                                 : webrtc::liquid::WirePack::kU16;
+      liquid.frames_per_packet = opts_.liquid_frames_per_packet;
+      liquid.dtx = opts_.liquid_dtx;
+      // Expected SRTP tag for the startup on-wire estimate (SHA1_32 is
+      // offered for liquidcall unless --no-srtp-tag32).
+      liquid.srtp_tag_bytes = !opts_.encryption ? 0 : (opts_.srtp_tag32 != 0 ? 4 : 10);
+      liquid.paths.model_dir = model_dir;
+      std::string liquid_error;
+      if (!webrtc::ConfigureLiquidRuntime(liquid, &liquid_error)) {
+        fprintf(stderr, "%s\n", liquid_error.c_str());
+        return false;
+      }
+      audio_encoder_factory = webrtc::CreateLiquidAudioEncoderFactory();
+      audio_decoder_factory = webrtc::CreateLiquidAudioDecoderFactory();
+#else
+      fprintf(stderr,
+              "LiquidCall is not in this build. On Apple Silicon run "
+              "./build.sh release liquidcall\n");
+      return false;
+#endif
+    }
+    if (!opts_.record_dir.empty() || !opts_.inject_wav.empty()) {
+      audio_encoder_factory = webrtc::CreateTappingAudioEncoderFactory(
+          audio_encoder_factory, opts_.record_dir, opts_.inject_wav);
+      audio_decoder_factory = webrtc::CreateTappingAudioDecoderFactory(
+          audio_decoder_factory, opts_.record_dir);
+    }
+    if (opts_.impair_loss_pct > 0 || opts_.impair_jitter_ms > 0) {
+      audio_encoder_factory = webrtc::CreateImpairingAudioEncoderFactory(
+          audio_encoder_factory, opts_.impair_loss_pct, opts_.impair_jitter_ms);
+    }
+    deps.audio_encoder_factory = audio_encoder_factory;
+    deps.audio_decoder_factory = audio_decoder_factory;
+    deps.audio_processing_builder = DirectWrapApmBuilder(
+        std::make_unique<webrtc::BuiltinAudioProcessingBuilder>());
     // H.264 first, then VP8 and VP9. AV1 and HEVC are not offered.
     deps.video_encoder_factory = std::make_unique<webrtc::VideoEncoderFactoryTemplate<
         webrtc::OpenH264EncoderTemplateAdapter,
@@ -382,6 +544,22 @@ bool DirectApplication::CreatePeerConnection() {
     webrtc::PeerConnectionFactoryInterface::Options options;
     options.disable_encryption = true;
     peer_connection_factory_->SetOptions(options);
+  }
+
+  // Low-bitrate transport for LiquidCall (none of these add latency):
+  // the 4-byte SRTP tag (used only when both peers allow it; otherwise
+  // SHA1_80's 10 bytes) and a slower audio RTCP report interval.
+  {
+    const bool liquid = opts_.audio_codec == "liquidcall";
+    const bool tag32 = opts_.srtp_tag32 < 0 ? liquid : opts_.srtp_tag32 != 0;
+    if (opts_.encryption && tag32) {
+      webrtc::CryptoOptions crypto;
+      crypto.srtp.enable_aes128_sha1_32_crypto_cipher = true;
+      config.crypto_options = crypto;
+    }
+    const int rtcp_ms = opts_.audio_rtcp_ms > 0 ? opts_.audio_rtcp_ms : (liquid ? 10000 : 5000);
+    config.set_audio_rtcp_report_interval_ms(rtcp_ms);
+    fprintf(stderr, "Transport: srtp_tag32=%s audio_rtcp=%d ms\n", tag32 ? "on" : "off", rtcp_ms);
   }
 
   // Host, srflx and relay candidates so LAN calls connect directly.
@@ -531,6 +709,12 @@ void DirectApplication::HandleMessage(webrtc::AsyncPacketSocket* socket,
   }
 }
 
+// OFFER/ANSWER/ICE are reported with their own events by DirectPeer.
+static bool IsControlMessage(const std::string& m) {
+  return m.rfind("OFFER:", 0) != 0 && m.rfind("ANSWER:", 0) != 0 &&
+         m.rfind("ICE:", 0) != 0;
+}
+
 bool DirectApplication::SendMessage(const std::string& message) {
   // The signaling socket lives on the network thread; hop there so sends from
   // observer callbacks stay ordered and never race with socket teardown.
@@ -544,6 +728,7 @@ bool DirectApplication::SendMessage(const std::string& message) {
     return false;
   }
   RTC_LOG(LS_INFO) << "Sending message: " << message.substr(0, 120);
+  if (IsControlMessage(message)) DirectSignalingLog("message-out", message);
   int sent = tcp_socket_->Send(message.c_str(), message.length(),
                                webrtc::AsyncSocketPacketOptions());
   if (sent <= 0) {
@@ -823,6 +1008,49 @@ void DirectApplication::ConfigureOutgoingVideo() {
               width, height, fps, max_bps);
     }
   }
+}
+
+void DirectApplication::ConfigureOutgoingAudio() {
+  if (!peer_connection_ || !peer_connection_factory_) return;
+  const bool liquid = opts_.audio_codec == "liquidcall";
+  const bool opus = opts_.audio_codec == "opus" || opts_.opus_bitrate_bps > 0;
+  if (!liquid && !opus) return;
+  const auto caps =
+      peer_connection_factory_->GetRtpSenderCapabilities(webrtc::MediaType::AUDIO).codecs;
+  std::vector<webrtc::RtpCodecCapability> preferred;
+  for (auto codec : caps) {
+    std::string name = codec.name;
+    for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (liquid) {
+      if (name == "liquidcall") {
+        // pack and fpp are already on the factory's SdpAudioFormat, so they
+        // are part of this capability. Adding them again is a different
+        // codec and SetCodecPreferences returns INVALID_MODIFICATION.
+        preferred.push_back(std::move(codec));
+      }
+    } else if (name == "opus") {
+      preferred.push_back(std::move(codec));
+    }
+  }
+  if (preferred.empty()) {
+    fprintf(stderr, "audio codec %s is not available in this build\n",
+            liquid ? "liquidcall" : "opus");
+    RTC_LOG(LS_ERROR) << "Requested audio codec is not available";
+    return;
+  }
+  for (const auto& transceiver : peer_connection_->GetTransceivers()) {
+    if (!transceiver || transceiver->media_type() != webrtc::MediaType::AUDIO) continue;
+    std::span<webrtc::RtpCodecCapability> codec_span(preferred.data(), preferred.size());
+    auto err = transceiver->SetCodecPreferences(codec_span);
+    if (!err.ok()) {
+      RTC_LOG(LS_ERROR) << "Audio SetCodecPreferences failed: " << err.message();
+      fprintf(stderr, "audio SetCodecPreferences failed: %s\n", err.message());
+    }
+  }
+  fprintf(stderr, "audio codec: %s%s\n", preferred.front().name.c_str(),
+          opts_.opus_bitrate_bps > 0
+              ? (" maxaveragebitrate=" + std::to_string(opts_.opus_bitrate_bps)).c_str()
+              : "");
 }
 
 // New method to ensure video send is active with the current source

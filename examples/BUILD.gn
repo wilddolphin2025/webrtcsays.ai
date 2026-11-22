@@ -872,13 +872,25 @@ if (is_android) {
 
 if (!build_with_chromium) {
   if (is_ios) {
+    # //sdk:common_config_objc turns missing-field-initializers back into an
+    # error. This config has to come after that one.
+    config("direct_framework_warnings") {
+      cflags = [ "-Wno-error=missing-designated-field-initializers" ]
+    }
+
     action_foreach("create_bracket_include_headers_direct_framework") {
       script = "//tools_webrtc/apple/copy_framework_header.py"
       sources = [
         "direct/direct.h",
         "direct/option.h",
         "direct/client.h",
-        "direct/wsock.h"
+        "direct/wsock.h",
+        "direct/quality.h",
+        "direct/signaling_log.h",
+        "direct/video.h",
+        "direct/bonjour.h",
+        "direct/parser.h",
+        "direct/status.h",
       ]
       outputs = [
         "$target_gen_dir/direct.framework/Headers/{{source_file_part}}",
@@ -901,6 +913,10 @@ if (!build_with_chromium) {
       }
       configs += rtc_library_impl_config
       configs -= rtc_remove_configs
+      configs += [
+        "//sdk:common_config_objc",
+        ":direct_framework_warnings",
+      ]
 
       testonly = true
       defines = [ "WEBRTC_LIBRARY_IMPL" ]
@@ -918,6 +934,21 @@ if (!build_with_chromium) {
         "direct/wsock.cc",
         "direct/wsock.h",
         "direct/client.h",
+        "direct/pattern_video.cc",
+        "direct/pattern_video.h",
+        "direct/call_stats.cc",
+        "direct/call_stats.h",
+        "direct/audio_tap.cc",
+        "direct/audio_tap.h",
+        "direct/impair.cc",
+        "direct/impair.h",
+        "direct/quality.cc",
+        "direct/quality.h",
+        "direct/signaling_log.cc",
+        "direct/signaling_log.h",
+        "direct/echo_stats.cc",
+        "direct/echo_stats.h",
+        "direct/aec_selftest.cc",
       ]
 
       # Use the output of the action_foreach target for public headers
@@ -936,15 +967,30 @@ if (!build_with_chromium) {
       if (rtc_use_speech_audio_devices) {
         defines += [ "WEBRTC_SPEECH_DEVICES" ]
       }
+      if (rtc_use_liquidcall) {
+        defines += [ "WEBRTC_USE_LIQUIDCALL" ]
+      }
 
+      # Same deps as directlib. sigslot, absl/types:optional,
+      # libjingle_peerconnection_api, media:video_common, and
+      # system_wrappers:field_trial are not targets in this tree.
       deps = [
         ":create_bracket_include_headers_direct_framework",
         "//sdk:native_video",
         "//sdk:framework_objc_signed_bundle",
         "//api:async_dns_resolver",
         "//api:audio_options_api",
-        "//api:create_peerconnection_factory",
-        "//api:libjingle_peerconnection_api",
+        "//api:create_modular_peer_connection_factory",
+        "//api:rtc_stats_api",
+        "//api:enable_media",
+        "//api/audio:builtin_audio_processing_builder",
+        "//api/audio:create_audio_device_module",
+        "//api/environment",
+        "//api/environment:environment_factory",
+        "//api/video:video_broadcaster",
+        "//rtc_base:base64",
+        "//rtc_base:network",
+        "//p2p:basic_port_allocator",
         "//api:media_stream_interface",
         "//api:rtp_sender_interface",
         "//api:scoped_refptr",
@@ -954,13 +1000,26 @@ if (!build_with_chromium) {
         "//api/audio_codecs:audio_codecs_api",
         "//api/audio_codecs:builtin_audio_decoder_factory",
         "//api/audio_codecs:builtin_audio_encoder_factory",
+        "//api/neteq:default_neteq_factory",
+        "//system_wrappers:system_wrappers",
+        "//common_audio",
+        "//api/video_codecs:video_decoder_factory_template",
+        "//api/video_codecs:video_decoder_factory_template_dav1d_adapter",
+        "//api/video_codecs:video_decoder_factory_template_libvpx_vp8_adapter",
+        "//api/video_codecs:video_decoder_factory_template_libvpx_vp9_adapter",
+        "//api/video_codecs:video_decoder_factory_template_open_h264_adapter",
+        "//api/video_codecs:video_encoder_factory_template",
+        "//api/video_codecs:video_encoder_factory_template_libaom_av1_adapter",
+        "//api/video_codecs:video_encoder_factory_template_libvpx_vp8_adapter",
+        "//api/video_codecs:video_encoder_factory_template_libvpx_vp9_adapter",
+        "//api/video_codecs:video_encoder_factory_template_open_h264_adapter",
+        "//modules/video_coding:webrtc_vp8",
         "//api/task_queue:pending_task_safety_flag",
         "//api/units:time_delta",
         "//api/video:video_frame",
         "//api/video:video_rtp_headers",
         "//api/video_codecs:video_codecs_api",
         "//media:media_channel",
-        "//media:video_common",
         "//p2p:connection",
         "//p2p:port_allocator",
         "//pc:video_track_source",
@@ -976,13 +1035,15 @@ if (!build_with_chromium) {
         "//rtc_base:ssl_adapter",
         "//rtc_base:stringutils",
         "//rtc_base:threading",
-        "//rtc_base/third_party/sigslot",
-        "//system_wrappers:field_trial",
+        "//test:platform_video_capturer",
+        "//test:rtp_test_utils",
+        "//test:test_video_capturer",
         "//third_party/abseil-cpp/absl/memory",
         "//third_party/jsoncpp:jsoncpp",
-        "//pc:pc_test_utils",
-        "//third_party/abseil-cpp/absl/types:optional",
       ]
+      if (rtc_use_liquidcall) {
+        deps += [ "//modules/audio_coding/codecs/liquidcall:liquidcall" ]
+      }
 
       frameworks = [
         "Foundation.framework",
@@ -993,6 +1054,9 @@ if (!build_with_chromium) {
         "AudioToolbox.framework",
         "VideoToolbox.framework",
       ]
+      if (rtc_use_liquidcall) {
+        frameworks += [ "CoreML.framework" ]
+      }
 
       # Conditionally add the whillats config for direct_framework
       if (rtc_use_speech_audio_devices) {
@@ -1031,7 +1095,28 @@ if (!build_with_chromium) {
         "direct/pattern_video.h",
         "direct/call_stats.cc",
         "direct/call_stats.h",
+        "direct/audio_tap.cc",
+        "direct/audio_tap.h",
+        "direct/impair.cc",
+        "direct/impair.h",
+        "direct/quality.cc",
+        "direct/quality.h",
+        "direct/signaling_log.cc",
+        "direct/signaling_log.h",
+        "direct/echo_stats.cc",
+        "direct/echo_stats.h",
+        "direct/aec_selftest.cc",
       ]
+      if (is_mac) {
+        sources += [
+          "direct/mac_vpio_audio_device.cc",
+          "direct/mac_vpio_audio_device.h",
+        ]
+      }
+
+      if ((is_mac || is_ios) && rtc_use_liquidcall) {
+        defines += [ "WEBRTC_USE_LIQUIDCALL" ]
+      }
 
       if (rtc_use_speech_audio_devices) {
         defines += [ "WEBRTC_SPEECH_DEVICES", "LLAMA_NOTIFICATION_ENABLED" ]
@@ -1064,6 +1149,7 @@ if (!build_with_chromium) {
         "../api:enable_media",
         "../api/audio:builtin_audio_processing_builder",
         "../api/audio:create_audio_device_module",
+        "../modules/audio_device:audio_device_impl",
         "../api/environment",
         "../api/environment:environment_factory",
         "../api/video:video_broadcaster",
@@ -1079,6 +1165,9 @@ if (!build_with_chromium) {
         "../api/audio_codecs:audio_codecs_api",
         "../api/audio_codecs:builtin_audio_decoder_factory",
         "../api/audio_codecs:builtin_audio_encoder_factory",
+        "../api/neteq:default_neteq_factory",
+        "../system_wrappers:system_wrappers",
+        "../common_audio",
         "../api/video_codecs:video_decoder_factory_template",
         "../api/video_codecs:video_decoder_factory_template_dav1d_adapter",
         "../api/video_codecs:video_decoder_factory_template_libvpx_vp8_adapter",
@@ -1118,6 +1207,10 @@ if (!build_with_chromium) {
         "//third_party/jsoncpp:jsoncpp",
       ]
 
+      if ((is_mac || is_ios) && rtc_use_liquidcall) {
+        deps += [ "//modules/audio_coding/codecs/liquidcall:liquidcall" ]
+      }
+
       if (rtc_use_speech_audio_devices) {
         if (is_mac) {
           frameworks = [ "CoreAudio.framework" ]
@@ -1134,7 +1227,24 @@ if (!build_with_chromium) {
         }
       }
 
+      if ((is_mac || is_ios) && rtc_use_liquidcall) {
+        if (!defined(frameworks)) {
+          frameworks = []
+        }
+        frameworks += [
+          "CoreML.framework",
+          "Foundation.framework",
+        ]
+      }
+
       if (is_mac) {
+        if (!defined(frameworks)) {
+          frameworks = []
+        }
+        frameworks += [
+          "AudioToolbox.framework",
+          "CoreAudio.framework",
+        ]
         if (!defined(ldflags)) { ldflags = [] }
         ldflags += [ "-mmacosx-version-min=15.0.0", "-install_name", "@rpath/libdirect.dylib" ]
         ldflags += [ "-Wl,-rpath,@loader_path/../Default" ] # Adjust rpath if needed

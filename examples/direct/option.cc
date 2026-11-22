@@ -409,6 +409,32 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --fps=30                           Send frame rate, 1..60 (default 30)\n"
       "  --video-source=pattern|camera|screen  pattern if no camera; screen falls back to pattern\n"
       "  --audio=dummy                      Use a fake audio device (no Pulse/PipeWire)\n"
+      "  --audio-codec=opus|liquidcall     Opus is the default. liquidcall is macOS-only.\n"
+      "  --opus-bitrate=<bps>               Opus maxaveragebitrate (6000..510000)\n"
+      "  --opus-ptime=<ms>                 Opus frame size 20, 40, or 60\n"
+      "  --opus-dtx / --no-opus-dtx        Opus discontinuous transmission\n"
+      "  --record-dir=<path>                Write input/output WAVs and stats for a quality run\n"
+      "  --inject-wav=<path>                Send this 16-bit PCM WAV instead of the microphone\n"
+      "  --liquid-model-dir=<path>          Fetched Core ML models (default scripts/liquidcall/models)\n"
+      "  --liquid-manifest=<path>           liquidcall.json from the model fetch\n"
+      "  --liquid-ctx=<frames>              Left-context frames (0 = manifest)\n"
+      "  --liquid-new=<frames>              New frames per Core ML call (0 = manifest)\n"
+      "  --liquid-decode=ane|cpu|all        Core ML compute units\n"
+      "  --liquid-pack=tight|u16           tight (default) is 17 bytes/frame, no header; u16 is 28\n"
+      "  --liquid-frames-per-packet=<n>    1-4 codec frames (80-320 ms) in each RTP packet\n"
+      "  --liquid-dtx / --no-liquid-dtx    Send nothing during silence (default off)\n"
+      "  --srtp-tag32 / --no-srtp-tag32    4-byte SRTP auth tag (AES_CM_128_HMAC_SHA1_32); default on for liquidcall\n"
+      "  --audio-rtcp-ms=<ms>              Audio RTCP report interval (default 10000 liquidcall, 5000 otherwise)\n"
+      "  --rtp-extensions / --no-rtp-extensions  Audio RTP header extensions (default off for liquidcall)\n"
+      "  --jitter-max-ms=<ms>              Jitter buffer cap: low-latency mode (default 80 for liquidcall;\n"
+      "                                    0 = stock NetEq, unlimited). NetEq adapts below the cap.\n"
+      "  --jitter-fast-accelerate / --no-jitter-fast-accelerate  Drain buffer spikes quickly (default on when capped)\n"
+      "  --aec=on|off|vpio|aec3            Echo cancel, NS, AGC (default on: macOS Voice\n"
+      "                                    Processing I/O; aec3 = HAL + WebRTC AEC3)\n"
+      "  --quality=offline|factory|aec     Codec or NetEq loop, or echo-canceller loop; no call\n"
+      "  --impair-loss=<0-100>             Drop that percent of packets, no sudo\n"
+      "  --impair-jitter-ms=<ms>           Delay packets by 0, half, then full\n"
+      "  --liquid-encoder=int8|fp16        Core ML encoder package (default int8)\n"
       "  --stats=<seconds>                  Log a GetStats JSON line on this interval\n"
       "  --duration=<seconds>               Hang up and exit after this many seconds\n"
       "  --help                             Show this help message\n\n"
@@ -435,6 +461,18 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--token-env", "--token_env", "--ca-file", "--ca_file", "--stun",
     "--codec", "--res", "--fps", "--video-source", "--video_source",
     "--audio", "--stats", "--duration",
+    "--audio-codec", "--audio_codec", "--opus-bitrate", "--opus_bitrate",
+    "--record-dir", "--record_dir", "--inject-wav", "--inject_wav",
+    "--liquid-model-dir", "--liquid_model_dir", "--liquid-manifest", "--liquid_manifest",
+    "--liquid-ctx", "--liquid_ctx", "--liquid-new", "--liquid_new",
+    "--liquid-decode", "--liquid_decode",
+    "--liquid-pack", "--liquid_pack", "--liquid-frames-per-packet", "--liquid_frames_per_packet",
+    "--aec", "--liquid-encoder", "--liquid_encoder",
+    "--quality", "--impair-loss", "--impair_loss", "--impair-jitter-ms", "--impair_jitter_ms",
+    "--opus-ptime", "--opus_ptime", "--opus-dtx", "--no-opus-dtx",
+    "--liquid-dtx", "--no-liquid-dtx", "--srtp-tag32", "--no-srtp-tag32",
+    "--rtp-extensions", "--no-rtp-extensions", "--audio-rtcp-ms", "--audio_rtcp_ms",
+    "--jitter-max-ms", "--jitter_max_ms", "--jitter-fast-accelerate", "--no-jitter-fast-accelerate",
     "--help"
   };
 
@@ -524,6 +562,48 @@ Options parseOptions(const std::vector<std::string>& args) {
         if (config_json.isMember("address") && config_json["address"].isString()) {
              RTC_LOG(LS_INFO) << "Config address: " << config_json["address"].asString(); // Log value
              opts.address = config_json["address"].asString();
+        }
+        if (config_json.isMember("audio_codec") && config_json["audio_codec"].isString()) {
+             opts.audio_codec = config_json["audio_codec"].asString();
+        }
+        if (config_json.isMember("opus_bitrate") && config_json["opus_bitrate"].isInt()) {
+             opts.opus_bitrate_bps = config_json["opus_bitrate"].asInt();
+        }
+        if (config_json.isMember("record_dir") && config_json["record_dir"].isString()) {
+             opts.record_dir = expandHomePath(config_json["record_dir"].asString());
+        }
+        if (config_json.isMember("inject_wav") && config_json["inject_wav"].isString()) {
+             opts.inject_wav = expandHomePath(config_json["inject_wav"].asString());
+        }
+        if (config_json.isMember("liquid_model_dir") && config_json["liquid_model_dir"].isString()) {
+             opts.liquid_model_dir = expandHomePath(config_json["liquid_model_dir"].asString());
+        }
+        if (config_json.isMember("liquid_manifest") && config_json["liquid_manifest"].isString()) {
+             opts.liquid_manifest = expandHomePath(config_json["liquid_manifest"].asString());
+        }
+        if (config_json.isMember("liquid_ctx") && config_json["liquid_ctx"].isInt()) {
+             opts.liquid_ctx = config_json["liquid_ctx"].asInt();
+        }
+        if (config_json.isMember("liquid_new") && config_json["liquid_new"].isInt()) {
+             opts.liquid_new = config_json["liquid_new"].asInt();
+        }
+        if (config_json.isMember("liquid_decode") && config_json["liquid_decode"].isString()) {
+             opts.liquid_decode = config_json["liquid_decode"].asString();
+        }
+        if (config_json.isMember("liquid_pack") && config_json["liquid_pack"].isString()) {
+             opts.liquid_pack = config_json["liquid_pack"].asString();
+        }
+        if (config_json.isMember("liquid_frames_per_packet") && config_json["liquid_frames_per_packet"].isInt()) {
+             opts.liquid_frames_per_packet = config_json["liquid_frames_per_packet"].asInt();
+        }
+        if (config_json.isMember("jitter_max_ms") && config_json["jitter_max_ms"].isInt()) {
+             opts.jitter_max_ms = config_json["jitter_max_ms"].asInt();
+        }
+        if (config_json.isMember("opus_ptime") && config_json["opus_ptime"].isInt()) {
+             opts.opus_ptime_ms = config_json["opus_ptime"].asInt();
+        }
+        if (config_json.isMember("opus_dtx") && config_json["opus_dtx"].isBool()) {
+             opts.opus_dtx = config_json["opus_dtx"].asBool();
         }
         if (config_json.isMember("turns")) {
             const Json::Value& t = config_json["turns"];
@@ -800,6 +880,84 @@ Options parseOptions(const std::vector<std::string>& args) {
         const auto eq = arg.find('=');
         opts.video_source = arg.substr(eq + 1);
         opts.video = true;
+    } else if (arg.find("--audio-codec=") == 0 || arg.find("--audio_codec=") == 0) {
+        const auto eq = arg.find('=');
+        opts.audio_codec = arg.substr(eq + 1);
+    } else if (arg.find("--opus-bitrate=") == 0 || arg.find("--opus_bitrate=") == 0) {
+        const auto eq = arg.find('=');
+        opts.opus_bitrate_bps = std::atoi(arg.substr(eq + 1).c_str());
+    } else if (arg.find("--opus-ptime=") == 0 || arg.find("--opus_ptime=") == 0) {
+        const auto eq = arg.find('=');
+        opts.opus_ptime_ms = std::atoi(arg.substr(eq + 1).c_str());
+    } else if (arg == "--liquid-dtx" || arg == "--liquid_dtx") {
+        opts.liquid_dtx = true;
+    } else if (arg == "--no-liquid-dtx" || arg == "--no-liquid_dtx") {
+        opts.liquid_dtx = false;
+    } else if (arg == "--srtp-tag32" || arg == "--srtp_tag32") {
+        opts.srtp_tag32 = 1;
+    } else if (arg == "--no-srtp-tag32" || arg == "--no-srtp_tag32") {
+        opts.srtp_tag32 = 0;
+    } else if (arg.find("--jitter-max-ms=") == 0 || arg.find("--jitter_max_ms=") == 0) {
+        opts.jitter_max_ms = std::atoi(arg.substr(arg.find('=') + 1).c_str());
+    } else if (arg == "--jitter-fast-accelerate" || arg == "--jitter_fast_accelerate") {
+        opts.jitter_fast_accelerate = 1;
+    } else if (arg == "--no-jitter-fast-accelerate" || arg == "--no-jitter_fast_accelerate") {
+        opts.jitter_fast_accelerate = 0;
+    } else if (arg.find("--audio-rtcp-ms=") == 0 || arg.find("--audio_rtcp_ms=") == 0) {
+        opts.audio_rtcp_ms = std::atoi(arg.substr(arg.find('=') + 1).c_str());
+    } else if (arg == "--rtp-extensions" || arg == "--rtp_extensions") {
+        opts.rtp_header_extensions = 1;
+    } else if (arg == "--no-rtp-extensions" || arg == "--no-rtp_extensions") {
+        opts.rtp_header_extensions = 0;
+    } else if (arg == "--opus-dtx" || arg == "--opus_dtx") {
+        opts.opus_dtx = true;
+    } else if (arg == "--no-opus-dtx" || arg == "--no-opus_dtx") {
+        opts.opus_dtx = false;
+    } else if (arg.find("--record-dir=") == 0 || arg.find("--record_dir=") == 0) {
+        const auto eq = arg.find('=');
+        opts.record_dir = arg.substr(eq + 1);
+    } else if (arg.find("--inject-wav=") == 0 || arg.find("--inject_wav=") == 0) {
+        const auto eq = arg.find('=');
+        opts.inject_wav = arg.substr(eq + 1);
+    } else if (arg.find("--liquid-model-dir=") == 0 || arg.find("--liquid_model_dir=") == 0) {
+        const auto eq = arg.find('=');
+        opts.liquid_model_dir = arg.substr(eq + 1);
+    } else if (arg.find("--liquid-manifest=") == 0 || arg.find("--liquid_manifest=") == 0) {
+        const auto eq = arg.find('=');
+        opts.liquid_manifest = arg.substr(eq + 1);
+    } else if (arg.find("--liquid-ctx=") == 0 || arg.find("--liquid_ctx=") == 0) {
+        const auto eq = arg.find('=');
+        opts.liquid_ctx = std::atoi(arg.substr(eq + 1).c_str());
+    } else if (arg.find("--liquid-new=") == 0 || arg.find("--liquid_new=") == 0) {
+        const auto eq = arg.find('=');
+        opts.liquid_new = std::atoi(arg.substr(eq + 1).c_str());
+    } else if (arg.find("--liquid-decode=") == 0 || arg.find("--liquid_decode=") == 0) {
+        const auto eq = arg.find('=');
+        opts.liquid_decode = arg.substr(eq + 1);
+    } else if (arg.find("--liquid-encoder=") == 0 || arg.find("--liquid_encoder=") == 0) {
+        const auto eq = arg.find('=');
+        opts.liquid_encoder = arg.substr(eq + 1);
+    } else if (arg.find("--quality=") == 0) {
+        opts.quality = arg.substr(10);
+    } else if (arg.find("--impair-loss=") == 0 || arg.find("--impair_loss=") == 0) {
+        const auto eq = arg.find('=');
+        opts.impair_loss_pct = std::atoi(arg.substr(eq + 1).c_str());
+    } else if (arg.find("--impair-jitter-ms=") == 0 || arg.find("--impair_jitter_ms=") == 0) {
+        const auto eq = arg.find('=');
+        opts.impair_jitter_ms = std::atoi(arg.substr(eq + 1).c_str());
+    } else if (arg.find("--aec=") == 0) {
+        const std::string value = arg.substr(6);
+        if (value == "on" || value == "1" || value == "true") opts.aec = true;
+        else if (value == "off" || value == "0" || value == "false") opts.aec = false;
+        else if (value == "vpio" || value == "aec3") { opts.aec = true; opts.aec_mode = value; }
+        else opts.parse_error = "aec must be on, off, vpio, or aec3";
+    } else if (arg.find("--liquid-pack=") == 0 || arg.find("--liquid_pack=") == 0) {
+        const auto eq = arg.find('=');
+        opts.liquid_pack = arg.substr(eq + 1);
+    } else if (arg.find("--liquid-frames-per-packet=") == 0 ||
+               arg.find("--liquid_frames_per_packet=") == 0) {
+        const auto eq = arg.find('=');
+        opts.liquid_frames_per_packet = std::atoi(arg.substr(eq + 1).c_str());
     } else if (arg.find("--audio=") == 0) {
         opts.audio = arg.substr(8);
     } else if (arg.find("--stats=") == 0) {
@@ -842,10 +1000,10 @@ Options parseOptions(const std::vector<std::string>& args) {
       opts.websocket_signaling = false;
     } else if (arg == "--bonjour") { 
       RTC_LOG(LS_INFO) << "Args set bonjour on";
-      opts.video = true;
+      opts.bonjour = true;
     } else if (arg == "--no-bonjour") { 
       RTC_LOG(LS_INFO) << "Args set bonjour off";
-      opts.video = false;
+      opts.bonjour = false;
     }
     // Handle address in any position (must not be another known flag/option)
     else if (arg.rfind("--", 0) != 0 && isAddress(arg)) {
@@ -996,6 +1154,62 @@ Options parseOptions(const std::vector<std::string>& args) {
       codec.clear();
     }
     opts.video_codec = codec;
+  }
+
+  for (char& c : opts.audio_codec) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  // "liquid" and the pre-rename "liquidcodec" are aliases.
+  if (opts.audio_codec == "liquid" || opts.audio_codec == "liquidcodec") {
+    opts.audio_codec = "liquidcall";
+  }
+  if (!opts.audio_codec.empty() && opts.audio_codec != "opus" &&
+      opts.audio_codec != "liquidcall") {
+    opts.parse_error = "audio-codec must be opus or liquidcall";
+  }
+  for (char& c : opts.liquid_decode) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  for (char& c : opts.liquid_encoder) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  if (opts.liquid_encoder != "int8" && opts.liquid_encoder != "fp16" &&
+      opts.liquid_encoder != "fp32") {
+    opts.parse_error = "liquid-encoder must be int8, fp16, or fp32";
+  }
+  if (!opts.quality.empty() && opts.quality != "offline" && opts.quality != "factory" &&
+      opts.quality != "aec") {
+    opts.parse_error = "quality must be offline, factory, or aec";
+  }
+  if (opts.impair_loss_pct < 0 || opts.impair_loss_pct > 100) {
+    opts.parse_error = "impair-loss must be 0..100";
+  }
+  if (opts.jitter_max_ms != -1 && opts.jitter_max_ms != 0 &&
+      (opts.jitter_max_ms < 20 || opts.jitter_max_ms > 1000)) {
+    opts.parse_error = "jitter-max-ms must be 0 (unlimited) or 20..1000";
+  }
+  if (opts.impair_jitter_ms < 0 || opts.impair_jitter_ms > 500) {
+    opts.parse_error = "impair-jitter-ms must be 0..500";
+  }
+  if (opts.liquid_decode != "ane" && opts.liquid_decode != "cpu" &&
+      opts.liquid_decode != "all") {
+    opts.parse_error = "liquid-decode must be ane, cpu, or all";
+  }
+  if (opts.opus_bitrate_bps != 0 &&
+      (opts.opus_bitrate_bps < 6000 || opts.opus_bitrate_bps > 510000)) {
+    opts.parse_error = "opus-bitrate must be 6000..510000";
+  }
+  if (opts.opus_ptime_ms != 20 && opts.opus_ptime_ms != 40 && opts.opus_ptime_ms != 60) {
+    opts.parse_error = "opus-ptime must be 20, 40, or 60";
+  }
+  for (char& c : opts.liquid_pack) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  if (opts.liquid_pack != "u16" && opts.liquid_pack != "tight") {
+    opts.parse_error = "liquid-pack must be u16 or tight";
+  }
+  if (opts.liquid_frames_per_packet < 1 || opts.liquid_frames_per_packet > 4) {
+    opts.parse_error = "liquid-frames-per-packet must be 1, 2, 3, or 4";
   }
 
   RTC_LOG(LS_INFO) << "Mode used " << opts.mode; // Log final mode value

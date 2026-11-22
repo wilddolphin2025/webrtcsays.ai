@@ -418,6 +418,10 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
     stats->detail = "encoder factory returned null";
     return 1;
   }
+  // Opus is negotiated as opus/48000/2; with stereo=0 the encoder is mono.
+  // Feed the channel count the encoder reports, or Encode() fails its
+  // RTC_CHECK on the frame size (960 vs. 480) and aborts the app.
+  channels = static_cast<int>(encoder->NumChannels());
   if (!liquid && opus_bps > 0) encoder->OnReceivedTargetAudioBitrate(opus_bps);
 
   webrtc::NetEq::Config neteq_config;

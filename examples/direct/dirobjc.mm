@@ -24,12 +24,16 @@
 // Convenience shim: take an Obj-C RTCVideoCapturer and wrap it into WebRTC's
 // ObjCVideoTrackSource, then inject into DirectApplication.
 void DirectApplication::SetVideoCapturer(RTCVideoCapturer* capturer) {
+  if (!env_) {
+    RTC_LOG(LS_ERROR) << "SetVideoCapturer: Environment is not set";
+    return;
+  }
   // Create adapter that implements RTCVideoCapturerDelegate
   RTCObjCVideoSourceAdapter* adapter = [[RTCObjCVideoSourceAdapter alloc] init];
   // Point capturer at our adapter
   capturer.delegate = adapter;
   // Wrap adapter in a native VideoTrackSource
-  auto native_source = webrtc::make_ref_counted<webrtc::ObjCVideoTrackSource>(adapter);
+  auto native_source = webrtc::make_ref_counted<webrtc::ObjCVideoTrackSource>(*env_, adapter);
   // Hand it to the C++ engine
   RTC_LOG(LS_INFO) << "SetVideoCapturer:: SetVideoSource by ObjCVideoTrackSource";
   SetVideoSource(native_source);

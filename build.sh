@@ -627,14 +627,32 @@ fi
 
 # Handle whillats building
 if [[ "$ENABLE_WHILLATS" == "true" ]]; then
-    # Clean up previous iOS build artifacts before building whillats
+    # Clean up previous iOS build artifacts before building whillats.
+    # A prebuilt framework passed in WHILLATS_IOS_FRAMEWORK is left alone.
     if [ "$IOS_BUILD" = "true" ]; then
         echo "Cleaning previous iOS build directories..."
-        rm -rf "$WHILLATS_DIR/build-ios" "$SRC_DIR/out/ios_arm64"
+        if [ -n "${WHILLATS_IOS_FRAMEWORK:-}" ]; then
+            rm -rf "$SRC_DIR/out/ios_arm64"
+        else
+            rm -rf "$WHILLATS_DIR/build-ios" "$SRC_DIR/out/ios_arm64"
+        fi
     fi
     echo "Whillats option enabled: building whillats..."
-    if [ "$IOS_BUILD" = "true" ]; then
+    if [ "$IOS_BUILD" = "true" ] && [ -n "${WHILLATS_IOS_FRAMEWORK:-}" ]; then
+        if [ ! -d "$WHILLATS_IOS_FRAMEWORK" ]; then
+            echo "ERROR: WHILLATS_IOS_FRAMEWORK is not a directory: $WHILLATS_IOS_FRAMEWORK"
+            exit 1
+        fi
+        echo "Using prebuilt whillats.framework: $WHILLATS_IOS_FRAMEWORK"
+        mkdir -p "$WHILLATS_DIR/build-ios/bin/${BUILD_TYPE}"
+        ln -sfn "$WHILLATS_IOS_FRAMEWORK" "$WHILLATS_DIR/build-ios/bin/${BUILD_TYPE}/whillats.framework"
+        WHILLATS_BUILD_DIR="Release"
+    elif [ "$IOS_BUILD" = "true" ]; then
         echo "Building whillats for iOS ($BUILD_TYPE)..."
+        echo "make ios on Xcode 27 fails two ways: cmake/ios.toolchain.cmake defaults"
+        echo "DEPLOYMENT_TARGET to 13.0, which that SDK rejects, and a dependency"
+        echo "downloads onnxruntime 1.17.3 osx-arm64, which 404s. Pass a prebuilt"
+        echo "framework instead: WHILLATS_IOS_FRAMEWORK=/path/to/whillats.framework"
         if [ ! -d "$WHILLATS_DIR" ] || [ -z "$(ls -A "$WHILLATS_DIR" 2>/dev/null)" ]; then
             echo "Initializing parent submodule: modules/third_party/whillats"
             pushd .
@@ -648,6 +666,12 @@ if [[ "$ENABLE_WHILLATS" == "true" ]]; then
             echo "Submodule exists; skipping update to preserve local edits."
         fi
         
+        # The toolchain file defaults iOS to 13.0 unless DEPLOYMENT_TARGET is set.
+        # Xcode 27 rejects 13.0. Raise that default before make reads it.
+        if [ -f "$WHILLATS_DIR/cmake/ios.toolchain.cmake" ]; then
+            perl -pi -e 's/set\(DEPLOYMENT_TARGET "13\.0"\)/set(DEPLOYMENT_TARGET "16.4")/' \
+                "$WHILLATS_DIR/cmake/ios.toolchain.cmake"
+        fi
         # Build iOS whillats with the specified build type
         if [ "$BUILD_TYPE" = "debug" ]; then
             (cd "$WHILLATS_DIR" && make ios-debug)
@@ -745,7 +769,9 @@ if [ "$IOS_BUILD" = "true" ]; then
     else
         IOS_DEBUG_FLAG="false"
     fi
-    IOS_ARGS="target_environment=\"device\" target_os=\"ios\" target_cpu=\"arm64\" ios_deployment_target=\"16.4.0\" is_debug=$IOS_DEBUG_FLAG rtc_include_opus=true rtc_build_examples=true rtc_enable_symbol_export=true mac_deployment_target=\"15.0\" mac_min_system_version=\"15.0\""
+    # ios_enable_code_signing=false: a Mac with two signing identities makes gn fail
+    # with "could not find exactly one codesigning identity".
+    IOS_ARGS="target_environment=\"device\" target_os=\"ios\" target_cpu=\"arm64\" ios_deployment_target=\"16.4.0\" ios_enable_code_signing=false is_debug=$IOS_DEBUG_FLAG rtc_include_opus=true rtc_build_examples=true rtc_enable_symbol_export=true mac_deployment_target=\"15.0\" mac_min_system_version=\"15.0\""
     if [ "$ENABLE_WHILLATS" = "true" ]; then
         IOS_ARGS="$IOS_ARGS rtc_use_speech_audio_devices=true"
     else
@@ -778,7 +804,7 @@ if [ "$IOS_BUILD" = "true" ]; then
     fi
     
     echo "Building WebRTC.framework, direct.framework, and directcall for iOS..."
-    (cd $SRC_DIR && ninja -C out/ios_arm64 -j1 sdk:framework_objc examples:direct_framework directcall)
+    (cd $SRC_DIR && ninja -C out/ios_arm64 -j"${IOS_NINJA_JOBS:-1}" sdk:framework_objc examples:direct_framework directcall)
     echo "iOS build completed."
     
     # Verify both framework and binary were built

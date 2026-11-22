@@ -263,7 +263,7 @@ int RunOffline(const Pcm& in, const char* wav_out, const char* model_dir, const 
   cfg.paths.encoder_model =
       webrtc::liquid::EncoderModelForPrecision(cfg.paths.encoder_model, precision ? precision : "int8");
   cfg.paths.model_dir = model_dir;
-  if (!webrtc::liquid::ConfigureLiquidRuntime(cfg, &error)) {
+  if (!webrtc::ConfigureLiquidRuntime(cfg, &error)) {
     stats->detail = error;
     if (precision && std::strcmp(precision, "fp32") == 0) return 3;
     return 1;
@@ -365,7 +365,7 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
     cfg.paths.encoder_model = webrtc::liquid::EncoderModelForPrecision(
         cfg.paths.encoder_model, precision ? precision : "int8");
     cfg.paths.model_dir = model_dir;
-    if (!webrtc::liquid::ConfigureLiquidRuntime(cfg, &error)) {
+    if (!webrtc::ConfigureLiquidRuntime(cfg, &error)) {
       stats->detail = error;
       if (precision && std::strcmp(precision, "fp32") == 0) return 3;
       return 1;

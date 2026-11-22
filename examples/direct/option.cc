@@ -901,6 +901,7 @@ Options parseOptions(const std::vector<std::string>& args) {
         const auto eq = arg.find('=');
         opts.liquid_decode = arg.substr(eq + 1);
     } else if (arg.find("--liquid-encoder=") == 0 || arg.find("--liquid_encoder=") == 0) {
+        const auto eq = arg.find('=');
         opts.liquid_encoder = arg.substr(eq + 1);
     } else if (arg.find("--quality=") == 0) {
         opts.quality = arg.substr(10);

@@ -345,6 +345,9 @@ On the Mac, after the LiquidCodec build:
 
 ```bash
 # Fork samples, plus one longer clip that contains pauses.
+# From the gclient parent, both scripts/liquidcodec/bench_bandwidth.sh and
+# src/scripts/liquidcodec/bench_bandwidth.sh use src/out/release/directcall
+# and <parent>/scripts/liquidcodec/models.
 scripts/liquidcodec/bench_bandwidth.sh --theoretical
 scripts/liquidcodec/bench_bandwidth.sh \
   --samples "$HOME/liquidcodec-ane/samples" \

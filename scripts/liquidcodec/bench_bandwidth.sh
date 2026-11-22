@@ -4,8 +4,27 @@
 # --theoretical needs no models and no directcall.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-BIN="${BIN:-${ROOT}/src/out/release/directcall}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# build.sh writes the host binary at src/out/release/directcall when this repo
+# is the gclient parent, and at out/release/directcall when this directory is
+# the WebRTC tree (including src/scripts/... launched from the parent).
+if [[ "$(basename "${ROOT}")" == "src" ]]; then
+  DEFAULT_BIN="${ROOT}/out/release/directcall"
+  if [[ -e "${ROOT}/../.git" ]]; then
+    DEFAULT_MODELS="$(cd "${ROOT}/.." && pwd)/scripts/liquidcodec/models"
+  else
+    DEFAULT_MODELS="${SCRIPT_DIR}/models"
+  fi
+elif [[ -d "${ROOT}/src/.git" || -d "${ROOT}/src/out" ]]; then
+  DEFAULT_BIN="${ROOT}/src/out/release/directcall"
+  DEFAULT_MODELS="${SCRIPT_DIR}/models"
+else
+  DEFAULT_BIN="${ROOT}/out/release/directcall"
+  DEFAULT_MODELS="${SCRIPT_DIR}/models"
+fi
+BIN="${BIN:-${DEFAULT_BIN}}"
+MODEL_DIR="${LIQUIDCODEC_DEST:-${DEFAULT_MODELS}}"
 OUT="${OUT:-${ROOT}/scripts/liquidcodec/out/bandwidth}"
 SAMPLES="${LIQUIDCODEC_SAMPLES:-}"
 CONVERSATION="${LIQUIDCODEC_CONVERSATION:-}"
@@ -145,6 +164,7 @@ for clip in "${clips[@]}"; do
         name="liquid_${pack}_fpp${fpp}_${decode}_${base}"
         run_pair "${name}" "${clip}" \
           --audio-codec=liquidcodec --liquid-decode="${decode}" \
+          --liquid-model-dir="${MODEL_DIR}" \
           --liquid-pack="${pack}" --liquid-frames-per-packet="${fpp}"
         # Streaming encoder: first packet waits 80+20 ms, then (fpp-1) more
         # frames, plus 20 ms of decoder overlap-add.

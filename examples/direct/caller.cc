@@ -252,13 +252,26 @@ void DirectCaller::OnMessage(webrtc::AsyncPacketSocket* socket,
     }
 
     if (StatusCodes::IsStatusCode(message)) {
+        // A second caller gets 486 while the callee is in a call. This
+        // packet is delivered inside the socket read callback. Destroying
+        // tcp_socket_ here destroys that callback list during Send and
+        // aborts with "Check failed: !send_in_progress_".
+        fprintf(stderr, "Callee rejected the call (%s). Not retrying.\n", message.c_str());
         RTC_LOG(LS_WARNING) << "Received error status from callee: " << message;
         welcome_received_ = false;
-        hello_attempts_ = kMaxHelloAttempts;  // disable further retries
-        if (InCall()) {
-            EndCall("callee rejected", /*notify_remote=*/false);
+        hello_attempts_ = kMaxHelloAttempts;
+        give_up_ = true;
+        auto hangup = [this] {
+            if (InCall()) {
+                EndCall("callee rejected", /*notify_remote=*/false);
+            } else {
+                FinishHangup();
+            }
+        };
+        if (network_thread() && network_thread()->IsCurrent()) {
+            network_thread()->PostTask(std::move(hangup));
         } else {
-            FinishHangup();
+            hangup();
         }
         return;
     }

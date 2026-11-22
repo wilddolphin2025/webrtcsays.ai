@@ -847,12 +847,18 @@ int main(int argc, char* argv[]) {
       }
       caller->RunOnBackgroundThread();
       fprintf(stderr, "Caller connected to room %s\n", room_name.c_str());
-      
+
+      bool give_up = false;
       // Wait for connection to close or shutdown signal
       while (!g_shutdown) {
         // Check shutdown more frequently with shorter timeout
         if (caller->WaitUntilConnectionClosed(200)) {
-          fprintf(stderr, "Caller session #%d ended (connection closed/failed), restarting connection\n", caller_session_count);
+          give_up = caller->GiveUp();
+          if (give_up) {
+            fprintf(stderr, "Caller session #%d ended: callee rejected the call\n", caller_session_count);
+          } else {
+            fprintf(stderr, "Caller session #%d ended (connection closed/failed), restarting connection\n", caller_session_count);
+          }
           break;
         }
         
@@ -874,7 +880,11 @@ int main(int argc, char* argv[]) {
       }
 
       caller.reset();
-      
+
+      if (give_up) {
+        fprintf(stderr, "Caller stopping. The callee is already in a call.\n");
+        break;
+      }
       if (!g_shutdown) {
         fprintf(stderr, "Preparing to restart caller in 2 seconds...\n");
         // Check for shutdown during sleep as well

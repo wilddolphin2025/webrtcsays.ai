@@ -546,15 +546,17 @@ class CoreMlBackend final : public LiquidBackend {
         if (error) *error = "encoder state \"" + state.out_name + "\" did not match the stored tensor";
         return false;
       }
-      const std::vector<int> shape = ShapeOfArray(updated);
-      const std::vector<int> strides = StridesOf(updated);
+      const std::vector<int> state_shape = ShapeOfArray(updated);
+      const std::vector<int> state_strides = StridesOf(updated);
       // The stored state is dense. An ANE state output is often padded, so a
       // memcpy of `count` elements keeps the wrong bytes and later frames
       // emit codes outside the codebook. The encode call then fails on every
       // tick and the callee sends nothing more.
-      if (shape.empty() || strides.size() != shape.size() ||
-          !GatherStrided(updated.dataPointer, shape.data(), strides.data(),
-                         static_cast<int>(shape.size()), ElementBytes(updated.dataType),
+      // Names are not `shape`/`strides`: this function already has `shape`
+      // for the audio input, and -Wshadow is an error on Apple clang.
+      if (state_shape.empty() || state_strides.size() != state_shape.size() ||
+          !GatherStrided(updated.dataPointer, state_shape.data(), state_strides.data(),
+                         static_cast<int>(state_shape.size()), ElementBytes(updated.dataType),
                          dest.dataPointer, static_cast<int>(dest.count))) {
         if (error) *error = "encoder state \"" + state.out_name + "\" could not be copied";
         return false;

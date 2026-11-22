@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="${ROOT}/scripts/liquidcodec/out"
 mkdir -p "${OUT}"
-g++ -std=c++20 -Wall -Wextra -Werror -O2 \
+g++ -std=c++20 -Wall -Wextra -Werror -Wshadow -O2 \
   -I"${ROOT}" \
   -o "${OUT}/liquid_glue_test" \
   "${ROOT}/modules/audio_coding/codecs/liquidcodec/liquid_glue_test.cc" \
@@ -31,6 +31,7 @@ rm -rf "${REWRITE}"
 bash -n "${ROOT}/scripts/liquidcodec/bench_bandwidth.sh"
 bash -n "${ROOT}/scripts/liquidcodec/run_local_call.sh"
 bash -n "${ROOT}/build.sh"
+python3 "${ROOT}/scripts/liquidcodec/check_shadow.py"
 python3 "${ROOT}/scripts/liquidcodec/tone_wav.py" "${OUT}/tone.wav" 0.05
 test -s "${OUT}/tone.wav"
 PREP="$(mktemp -d)"

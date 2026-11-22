@@ -40,6 +40,12 @@ jobs:
         fi
         echo "LiquidCodec GN labels are absolute and the target is rtc_library"
 
+    # liquid_coreml.mm is Objective-C++ and is not in the Linux ninja. Apple
+    # clang builds it with -Wshadow -Werror. This scan catches a nested local
+    # that shadows an outer one, which is what failed the Mac build.
+    - name: Check LiquidCodec for shadowed locals
+      run: python3 scripts/liquidcodec/check_shadow.py
+
   quick-build-test:
     runs-on: ubuntu-latest
     needs: validate-build-script

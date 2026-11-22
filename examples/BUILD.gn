@@ -918,6 +918,12 @@ if (!build_with_chromium) {
         "direct/wsock.cc",
         "direct/wsock.h",
         "direct/client.h",
+        "direct/pattern_video.cc",
+        "direct/pattern_video.h",
+        "direct/call_stats.cc",
+        "direct/call_stats.h",
+        "direct/audio_tap.cc",
+        "direct/audio_tap.h",
       ]
 
       # Use the output of the action_foreach target for public headers
@@ -935,6 +941,9 @@ if (!build_with_chromium) {
       ]
       if (rtc_use_speech_audio_devices) {
         defines += [ "WEBRTC_SPEECH_DEVICES" ]
+      }
+      if (rtc_use_liquidcodec) {
+        defines += [ "WEBRTC_USE_LIQUIDCODEC" ]
       }
 
       deps = [
@@ -982,7 +991,11 @@ if (!build_with_chromium) {
         "//third_party/jsoncpp:jsoncpp",
         "//pc:pc_test_utils",
         "//third_party/abseil-cpp/absl/types:optional",
+        "//common_audio",
       ]
+      if (rtc_use_liquidcodec) {
+        deps += [ "//modules/audio_coding/codecs/liquidcodec:liquidcodec" ]
+      }
 
       frameworks = [
         "Foundation.framework",
@@ -993,6 +1006,9 @@ if (!build_with_chromium) {
         "AudioToolbox.framework",
         "VideoToolbox.framework",
       ]
+      if (rtc_use_liquidcodec) {
+        frameworks += [ "CoreML.framework" ]
+      }
 
       # Conditionally add the whillats config for direct_framework
       if (rtc_use_speech_audio_devices) {

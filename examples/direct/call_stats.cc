@@ -160,6 +160,8 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     samples_.fetch_add(1);
   }
 
+  void set_encrypted(bool encrypted) { encrypted_ = encrypted; }
+
   int samples() const { return samples_.load(); }
 
   Snapshot Last() const {
@@ -234,12 +236,15 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         }
       }
     }
+    bool ipv6 = false;
     if (pair) {
       if (pair->current_round_trip_time) rtt_ms = *pair->current_round_trip_time * 1000.0;
       if (pair->local_candidate_id) {
         if (const auto* local =
                 report->GetAs<webrtc::RTCLocalIceCandidateStats>(*pair->local_candidate_id)) {
           if (local->candidate_type) ice = *local->candidate_type;
+          const std::string addr = local->address.value_or(local->ip.value_or(""));
+          ipv6 = addr.find(':') != std::string::npos;
         }
       }
     }
@@ -290,7 +295,8 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         const uint64_t recv_bytes = in->bytes_received.value_or(0);
         const uint64_t recv_header = in->header_bytes_received.value_or(0);
         const double recv_onwire_kbps_now =
-            OnWireKbps(recv_bytes, recv_header, in->packets_received.value_or(0), dt, false, false);
+            OnWireKbps(recv_bytes, recv_header, in->packets_received.value_or(0), dt,
+                       encrypted_, ipv6);
         std::string mime = codec && codec->mime_type ? *codec->mime_type : audio_codec_;
         for (char& ch : mime) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
         const int codec_algo_ms = mime.find("liquid") != std::string::npos ? 120 : 20;
@@ -385,7 +391,8 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
         const uint64_t send_header = outb->header_bytes_sent.value_or(0);
         const double send_payload_bps = bps;
         const double send_onwire_kbps_now =
-            OnWireKbps(send_bytes, send_header, outb->packets_sent.value_or(0), dt, false, false);
+            OnWireKbps(send_bytes, send_header, outb->packets_sent.value_or(0), dt, encrypted_,
+                       ipv6);
         audio_out.number("send_bitrate_bps", send_payload_bps, 0);
         audio_out.number("send_payload_kbps", send_payload_bps / 1000.0, 3);
         audio_out.number("send_onwire_ipv4_udp_rtp_kbps", send_onwire_kbps_now, 3);
@@ -466,8 +473,8 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
     if (have_audio) {
       char line[512];
       std::snprintf(line, sizeof(line),
-                    "audio send_onwire_ipv4_udp_rtp_kbps=%.3f send_payload_kbps=%.3f "
-                    "recv_onwire_ipv4_udp_rtp_kbps=%.3f "
+                    "audio onwire=payload+rtp+ip/udp send_ipv4_udp_rtp_kbps=%.3f send_payload_kbps=%.3f "
+                    "recv_ipv4_udp_rtp_kbps=%.3f "
                     "recv_payload_kbps=%.3f send_packets=%lld recv_packets=%lld lost=%lld "
                     "jitter_ms=%.2f jitter_buffer_ms=%.2f rtt_ms=%.1f algo_ms=%d "
                     "mouth_to_ear_est_ms=%.1f\n",
@@ -500,6 +507,7 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
   Counter video_dec_;
   std::string audio_codec_;
   bool audio_out_has_codec_ = false;
+  bool encrypted_ = false;
 
   friend class DirectCallStatsImpl;
   std::chrono::steady_clock::time_point FirstAudio() const {
@@ -526,12 +534,14 @@ class DirectCallStatsImpl : public DirectCallStats {
   DirectCallStatsImpl(int interval_sec,
                       std::chrono::steady_clock::time_point origin,
                       webrtc::Thread* signaling_thread,
-                      std::function<webrtc::PeerConnectionInterface*()> peer_connection)
+                      std::function<webrtc::PeerConnectionInterface*()> peer_connection,
+                      bool encrypted)
       : interval_sec_(interval_sec),
         origin_(origin),
         signaling_thread_(signaling_thread),
         peer_connection_(std::move(peer_connection)),
         collector_(webrtc::make_ref_counted<StatsCollector>()) {
+    collector_->set_encrypted(encrypted);
     if (interval_sec_ > 0) {
       thread_ = std::thread([this] { Loop(); });
     }
@@ -687,7 +697,8 @@ std::unique_ptr<DirectCallStats> DirectCallStats::Create(
     int interval_sec,
     std::chrono::steady_clock::time_point origin,
     webrtc::Thread* signaling_thread,
-    std::function<webrtc::PeerConnectionInterface*()> peer_connection) {
+    std::function<webrtc::PeerConnectionInterface*()> peer_connection,
+    bool encrypted) {
   return std::make_unique<DirectCallStatsImpl>(interval_sec, origin, signaling_thread,
-                                               std::move(peer_connection));
+                                               std::move(peer_connection), encrypted);
 }

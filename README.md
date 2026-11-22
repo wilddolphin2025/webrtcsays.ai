@@ -266,6 +266,10 @@ git checkout liquidcodec-ane
 # --aec=off so the injected clip is not altered. Use --aec=on for a mic loop.
 src/scripts/liquidcodec/run_local_call.sh
 
+# iOS frameworks for the RobotPhone app (a separate repo). Unsigned.
+# Writes <gclient>/out/ios-arm64/WebRTC.framework, direct.framework, and models/.
+# ./build.sh -b liquidcodec-ane ios release liquidcodec
+
 # A hand-supplied clip still works. 24 kHz mono is the codec rate.
 # afconvert -f WAVE -d LEI16@24000 input.flac "$HOME/liquid-clip.wav"
 # src/scripts/liquidcodec/run_local_call.sh --inject-wav "$HOME/liquid-clip.wav" --duration 20

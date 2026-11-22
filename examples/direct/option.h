@@ -130,6 +130,7 @@ struct Options {
     int stats_interval_sec = 1;
     int call_duration_sec = 0;
     std::string audio{};                // "dummy" forces the fake audio device
+    // These fields are the iOS direct.framework API the RobotPhone app sets.
     std::string audio_codec{};          // empty = built-in default; opus; liquidcodec
     int opus_bitrate_bps = 0;           // 0 = Opus default; else maxaveragebitrate
     int opus_ptime_ms = 20;             // 20, 40, or 60

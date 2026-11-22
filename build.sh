@@ -777,9 +777,8 @@ if [ "$IOS_BUILD" = "true" ]; then
         fi
     fi
     
-    echo "Building WebRTC framework and directcall for iOS (single job to avoid toolchain races)..."
-    # Build both the WebRTC framework and directcall binary
-    (cd $SRC_DIR && ninja -C out/ios_arm64 -j1 sdk:framework_objc directcall)
+    echo "Building WebRTC.framework, direct.framework, and directcall for iOS..."
+    (cd $SRC_DIR && ninja -C out/ios_arm64 -j1 sdk:framework_objc examples:direct_framework directcall)
     echo "iOS build completed."
     
     # Verify both framework and binary were built
@@ -818,18 +817,48 @@ else
 fi
 
 if [ "$IOS_BUILD" = "true" ]; then
+    IOS_DROP="$REPO_ROOT/out/ios-arm64"
+    rm -rf "$IOS_DROP"
+    mkdir -p "$IOS_DROP"
+    WEBRTC_FW="$REPO_ROOT/src/out/ios_arm64/WebRTC.framework"
+    DIRECT_FW="$REPO_ROOT/src/out/ios_arm64/direct.framework"
+    if [ ! -d "$DIRECT_FW" ]; then
+        DIRECT_FW="$(find "$REPO_ROOT/src/out/ios_arm64" -name direct.framework -type d | head -n 1)"
+    fi
+    if [ ! -d "$WEBRTC_FW" ]; then
+        echo "ERROR: missing $WEBRTC_FW"
+        exit 1
+    fi
+    cp -R "$WEBRTC_FW" "$IOS_DROP/"
+    if [ -n "$DIRECT_FW" ] && [ -d "$DIRECT_FW" ]; then
+        cp -R "$DIRECT_FW" "$IOS_DROP/"
+    else
+        echo "ERROR: direct.framework was not produced"
+        exit 1
+    fi
+    if [ "$ENABLE_WHILLATS" = "true" ]; then
+        WHILLATS_FW="$WHILLATS_DIR/build-ios/bin/${BUILD_TYPE}/whillats.framework"
+        if [ -d "$WHILLATS_FW" ]; then
+            cp -R "$WHILLATS_FW" "$IOS_DROP/"
+        else
+            echo "WARNING: whillats was requested but $WHILLATS_FW is missing"
+        fi
+    else
+        echo "whillats.framework is not part of 'ios release liquidcodec'."
+        echo "RobotPhone already vendors that prebuilt. Add the whillats argument to build one here."
+    fi
     if [ "$ENABLE_LIQUIDCODEC" = "true" ]; then
         FETCH="$REPO_ROOT/src/scripts/liquidcodec/fetch_models.sh"
         [ -f "$FETCH" ] || FETCH="$REPO_ROOT/scripts/liquidcodec/fetch_models.sh"
-        echo "LiquidCodec: fetch and compile .mlmodelc for the iOS bundle inputs"
+        echo "LiquidCodec: fetch and compile .mlmodelc"
         "$FETCH" --dest "$REPO_ROOT/scripts/liquidcodec/models"
-        echo "iOS LiquidCodec models: $REPO_ROOT/scripts/liquidcodec/models"
-        echo "This builds directcall for the device. It does not sign an app."
-        echo "Xcode project, still unsigned, Team WILDDOLPHIN LLC uploads it:"
-        echo "  (cd \"$REPO_ROOT/src\" && \"$GN_BIN\" gen out/ios_arm64 --ide=xcode --args=\"$IOS_ARGS\")"
-        echo "  open \"$REPO_ROOT/src/out/ios_arm64/all.xcworkspace\""
-        echo "AppRTCMobile has no LiquidCodec control or on-screen kbps in this branch."
+        mkdir -p "$IOS_DROP/models"
+        cp -R "$REPO_ROOT/scripts/liquidcodec/models/." "$IOS_DROP/models/"
+        echo "direct.framework exports Options: audio_codec, liquid_model_dir, liquid_pack,"
+        echo "  liquid_frames_per_packet, aec, stats_interval_sec, liquid_decode, liquid_encoder."
     fi
+    echo "iOS drop for RobotPhone (unsigned): $IOS_DROP"
+    ls -la "$IOS_DROP"
     echo "iOS build completed successfully!"
     echo "iOS binary location: $BINARY_PATH"
     echo "WebRTC framework location: $SRC_DIR/out/ios_arm64/WebRTC.framework"

@@ -421,7 +421,7 @@ void DirectPeer::StartCallStatsIfEnabled() {
     MarkSessionStart();
     call_stats_ = DirectCallStats::Create(
         opts_.stats_interval_sec, session_origin_, signaling_thread(),
-        [this] { return peer_connection_.get(); });
+        [this] { return peer_connection_.get(); }, opts_.encryption);
 }
 
 void DirectPeer::EnsureLocalVideoSource() {

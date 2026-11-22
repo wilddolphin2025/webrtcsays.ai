@@ -22,7 +22,8 @@ class DirectCallStats {
       int interval_sec,
       std::chrono::steady_clock::time_point origin,
       webrtc::Thread* signaling_thread,
-      std::function<webrtc::PeerConnectionInterface*()> peer_connection);
+      std::function<webrtc::PeerConnectionInterface*()> peer_connection,
+      bool encrypted);
 };
 
 #endif  // EXAMPLES_DIRECT_CALL_STATS_H_

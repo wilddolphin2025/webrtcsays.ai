@@ -20,6 +20,7 @@
 #include <vector>
 #include <utility>
 #include <atomic>
+#include <mutex>
 #include <functional>
 #include <chrono>
 
@@ -243,6 +244,12 @@ class DIRECT_API DirectApplication : public webrtc::PeerConnectionObserver {
 #endif
 
   std::string remote_agent() { return remote_agent_; }
+  // Caller side voice negotiation (LiquidCall app polls these), from the callee's ANSWER SDP: the voices it has
+  // (comma list incl. "me"; "" = older callee / no sidecar) and the one it confirmed ("" before any answer, "me").
+  // voice_info_gen() bumps on every change.
+  std::string remote_voices() const { std::lock_guard<std::mutex> l(voice_info_mu_); return remote_voices_; }
+  std::string remote_active_voice() const { std::lock_guard<std::mutex> l(voice_info_mu_); return remote_active_voice_; }
+  int voice_info_gen() const { return voice_info_gen_.load(); }
 
   // Local preference that we will announce in INIT. Default "audio".
   void setInitAgent(const std::string& agent) { local_agent_ = agent; }
@@ -314,6 +321,10 @@ class DIRECT_API DirectApplication : public webrtc::PeerConnectionObserver {
   std::vector<webrtc::scoped_refptr<webrtc::EchoVideoTrackSource>> echo_sources_ = {};
 
   // Capability hint received from peer via INIT JSON ("text-only", "audio", ...)
+  mutable std::mutex voice_info_mu_;
+  std::string remote_voices_;          // guarded by voice_info_mu_
+  std::string remote_active_voice_;    // guarded by voice_info_mu_
+  std::atomic<int> voice_info_gen_{0};
   std::string remote_agent_ = "audio"; // default behaviour: send pre-synthesised audio unless peer says otherwise
   std::string local_agent_ = "audio";  // what we announce in our INIT
   
@@ -400,6 +411,10 @@ class DirectVideoPump;
 
 class DIRECT_API DirectPeer : public DirectApplication {
  public:
+  // Voice swap (SDP only). Caller: the voice to ask the callee to hear us in ("me" = no conversion); before the
+  // call it rides in the first offer, during a call it triggers a re-offer. Thread-safe.
+  void RequestVoiceSwap(const std::string& voice);
+  std::string voice_request() const;
   DirectPeer(Options opts);
   ~DirectPeer() override;
 
@@ -474,6 +489,13 @@ class DIRECT_API DirectPeer : public DirectApplication {
   std::vector<std::unique_ptr<CameraFrameSink>>           &sinks() { return sinks_; }
 
  protected:
+  void ApplyOfferedVoice(const std::string& offer_sdp);   // callee: pick the voice from an offer
+  void NoteAnswerVoices(const std::string& answer_sdp);   // caller: remote voices + confirmed voice
+  void SendVoiceReoffer();                                    // caller, signaling thread
+  std::string voice_request_;                                 // guarded by voice_info_mu_; "" = opts_.voice_swap
+  bool voice_reoffer_pending_ = false;                        // signaling thread
+  webrtc::scoped_refptr<LambdaCreateSessionDescriptionObserver> voice_offer_observer_;
+  webrtc::scoped_refptr<LambdaSetLocalDescriptionObserver> voice_sld_observer_;
   // When large OFFER/ANSWER SDP blobs are sent over the raw TCP signalling
   // channel they may arrive split across multiple packets.  We buffer the
   // fragments here until a complete SDP is received and successfully parsed.

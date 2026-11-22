@@ -901,6 +901,23 @@ int main(int argc, char* argv[]) {
       }
       caller->RunOnBackgroundThread();
       fprintf(stderr, "Caller connected to room %s\n", room_name.c_str());
+      // --voice-swap-script: timed SDP re-offers (test hook for mid-call voice switching).
+      std::vector<std::pair<double, std::string>> voice_script;
+      {
+        std::string s = opts.voice_swap_script;
+        size_t p = 0;
+        while (p < s.size()) {
+          size_t c = s.find(',', p);
+          if (c == std::string::npos) c = s.size();
+          const std::string item = s.substr(p, c - p);
+          const size_t colon = item.find(':');
+          if (colon != std::string::npos)
+            voice_script.emplace_back(std::atof(item.substr(0, colon).c_str()), item.substr(colon + 1));
+          p = c + 1;
+        }
+      }
+      const auto voice_t0 = std::chrono::steady_clock::now();
+      size_t voice_next = 0;
 
       bool give_up = false;
       // Wait for connection to close or shutdown signal
@@ -916,6 +933,13 @@ int main(int argc, char* argv[]) {
           break;
         }
         
+        while (voice_next < voice_script.size() &&
+               std::chrono::duration<double>(std::chrono::steady_clock::now() - voice_t0).count() >=
+                   voice_script[voice_next].first) {
+          fprintf(stderr, "Voice swap script: -> '%s'\n", voice_script[voice_next].second.c_str());
+          caller->RequestVoiceSwap(voice_script[voice_next].second);
+          ++voice_next;
+        }
         // Check shutdown flag multiple times per second
         if (g_shutdown) {
           fprintf(stderr, "Shutdown requested during caller session #%d\n", caller_session_count);

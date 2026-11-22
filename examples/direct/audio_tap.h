@@ -28,8 +28,23 @@ scoped_refptr<AudioDecoderFactory> CreateTappingAudioDecoderFactory(
 // --voice-swap override. Tap decoders send "VOICE:<voice|none>" to the sidecar when it changes.
 void SetVoiceSwapVoice(const std::string& voice);
 std::string GetVoiceSwapVoice();
-// Callee policy: the voice to use given our --voice-swap option and the caller's INVITE "voice_swap" field.
-std::string ResolveVoiceSwap(const std::string& callee_option, const std::string& caller_request);
+// Callee policy: the voice to use given our --voice-swap option, the caller's request (the offer's
+// a=x-liquidcall-voice) and the voices our sidecar has (--voice-swap-voices, comma list). A non-auto option wins;
+// a request we don't have (or none) means no conversion. An empty list accepts any request.
+std::string ResolveVoiceSwap(const std::string& callee_option, const std::string& caller_request,
+                             const std::string& available = std::string());
+// Voice negotiation, SDP only (audio m-section, keyed to the LIQUIDCALL payload type <pt>):
+//   offer  a=x-liquidcall-voice:<pt> female           caller's choice; absent or "me" = no conversion
+//   answer a=x-liquidcall-voices:<pt> me,female,male  callee's preloaded voices (only with a sidecar)
+//          a=x-liquidcall-voice:<pt> female           callee's active voice ("me" when it lacks the one asked)
+// WebRTC ignores unknown media attributes, so peers without voice support are unaffected.
+inline constexpr char kVoiceMe[] = "me";
+inline constexpr char kVoiceSdpAttr[] = "a=x-liquidcall-voice:";
+inline constexpr char kVoicesSdpAttr[] = "a=x-liquidcall-voices:";
+std::string AddVoiceRequestToSdp(const std::string& sdp, const std::string& voice);
+std::string AddVoicesToSdp(const std::string& sdp, const std::string& voices, const std::string& active);
+std::string VoicesFromSdp(const std::string& sdp);   // "" when absent
+std::string VoiceFromSdp(const std::string& sdp);    // "" when absent
 // Keep [A-Za-z0-9_.-], at most 64 chars (the value travels in signaling JSON and to the sidecar).
 std::string SanitizeVoiceName(const std::string& voice);
 

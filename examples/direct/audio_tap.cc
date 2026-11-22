@@ -27,8 +27,9 @@
 namespace webrtc {
 namespace {
 
-std::mutex g_voice_mu;
-std::string g_voice;              // guarded by g_voice_mu
+// Leaked on purpose (no exit-time destructors).
+std::mutex& VoiceMu() { static std::mutex* m = new std::mutex; return *m; }
+std::string& VoiceStr() { static std::string* s = new std::string; return *s; }   // guarded by VoiceMu()
 std::atomic<int> g_voice_gen{0};
 
 void EnsureDir(const std::string& dir) {
@@ -480,15 +481,15 @@ scoped_refptr<AudioDecoderFactory> CreateTappingAudioDecoderFactory(
 
 void SetVoiceSwapVoice(const std::string& voice) {
   {
-    std::lock_guard<std::mutex> lock(g_voice_mu);
-    g_voice = SanitizeVoiceName(voice);
+    std::lock_guard<std::mutex> lock(VoiceMu());
+    VoiceStr() = SanitizeVoiceName(voice);
   }
   g_voice_gen.fetch_add(1, std::memory_order_release);
 }
 
 std::string GetVoiceSwapVoice() {
-  std::lock_guard<std::mutex> lock(g_voice_mu);
-  return g_voice;
+  std::lock_guard<std::mutex> lock(VoiceMu());
+  return VoiceStr();
 }
 
 std::string SanitizeVoiceName(const std::string& voice) {
@@ -500,13 +501,112 @@ std::string SanitizeVoiceName(const std::string& voice) {
   return out;
 }
 
-std::string ResolveVoiceSwap(const std::string& callee_option, const std::string& caller_request) {
+static std::vector<std::string> SplitVoiceList(const std::string& list) {
+  std::vector<std::string> out;
+  std::string cur;
+  for (size_t i = 0; i <= list.size(); ++i) {
+    if (i == list.size() || list[i] == ',' || list[i] == ' ') {
+      cur = SanitizeVoiceName(cur);
+      if (!cur.empty() && std::find(out.begin(), out.end(), cur) == out.end()) out.push_back(cur);
+      cur.clear();
+      if (out.size() >= 16) break;
+    } else {
+      cur.push_back(list[i]);
+    }
+  }
+  return out;
+}
+
+static std::string JoinVoiceList(const std::vector<std::string>& voices) {
+  std::string out;
+  for (const auto& v : voices) out += (out.empty() ? "" : ",") + v;
+  return out;
+}
+
+std::string ResolveVoiceSwap(const std::string& callee_option, const std::string& caller_request,
+                             const std::string& available) {
   const std::string opt = SanitizeVoiceName(callee_option);
   if (opt == "off" || opt == "none") return "";
   if (!opt.empty() && opt != "auto") return opt;
   const std::string req = SanitizeVoiceName(caller_request);
-  if (req == "none" || req == "off" || req == "auto") return "";
-  return req;
+  if (req.empty() || req == kVoiceMe || req == "none" || req == "off" || req == "auto") return "";
+  const auto have = SplitVoiceList(available);
+  if (have.empty()) return req;   // no list configured: trust the sidecar to know the voice
+  return std::find(have.begin(), have.end(), req) != have.end() ? req : std::string();
+}
+
+// Range [begin, end) of the audio m-section and the LIQUIDCALL payload type in it ("" if not offered).
+static bool AudioSection(const std::string& sdp, size_t* begin, size_t* end, std::string* pt) {
+  size_t m = sdp.rfind("m=audio", 0) == 0 ? 0 : sdp.find("\nm=audio");
+  if (m == std::string::npos) return false;
+  if (sdp[m] == '\n') ++m;
+  size_t e = sdp.find("\nm=", m);
+  *begin = m;
+  *end = e == std::string::npos ? sdp.size() : e + 1;
+  pt->clear();
+  const std::string sec = sdp.substr(m, *end - m);
+  size_t r = 0;
+  while ((r = sec.find("a=rtpmap:", r)) != std::string::npos) {
+    r += 9;
+    const size_t sp = sec.find(' ', r);
+    if (sp == std::string::npos) break;
+    if (sec.compare(sp + 1, 11, "LIQUIDCALL/") == 0) { *pt = sec.substr(r, sp - r); break; }
+  }
+  return true;
+}
+
+static std::string AddAudioLines(const std::string& sdp, const std::vector<std::string>& lines) {
+  size_t b = 0, e = 0;
+  std::string pt;
+  if (lines.empty() || !AudioSection(sdp, &b, &e, &pt)) return sdp;
+  if (pt.empty()) return sdp;   // not a LiquidCall call: nothing to negotiate
+  const bool crlf = sdp.find("\r\n") != std::string::npos;
+  std::string add;
+  for (const auto& l : lines) {
+    const size_t colon = l.find(':');
+    add += l.substr(0, colon + 1) + pt + " " + l.substr(colon + 1) + (crlf ? "\r\n" : "\n");
+  }
+  std::string out = sdp;
+  if (e == out.size() && !out.empty() && out.back() != '\n') out += crlf ? "\r\n" : "\n", e = out.size();
+  out.insert(e, add);
+  return out;
+}
+
+// Value of "<attr><pt> <value>" inside the audio m-section (pt not checked: one LIQUIDCALL payload per call).
+static std::string AudioAttr(const std::string& sdp, const char* attr) {
+  size_t b = 0, e = 0;
+  std::string pt;
+  if (!AudioSection(sdp, &b, &e, &pt)) return "";
+  const size_t p = sdp.find(attr, b);
+  if (p == std::string::npos || p >= e) return "";
+  size_t v = p + std::strlen(attr);
+  size_t eol = sdp.find_first_of("\r\n", v);
+  if (eol == std::string::npos) eol = sdp.size();
+  std::string val = sdp.substr(v, eol - v);
+  const size_t sp = val.find(' ');
+  return sp == std::string::npos ? val : val.substr(sp + 1);
+}
+
+std::string AddVoiceRequestToSdp(const std::string& sdp, const std::string& voice) {
+  const std::string v = SanitizeVoiceName(voice);
+  if (v.empty() || v == kVoiceMe || v == "none" || v == "off") return sdp;   // absent = no conversion
+  return AddAudioLines(sdp, {std::string(kVoiceSdpAttr) + v});
+}
+
+std::string AddVoicesToSdp(const std::string& sdp, const std::string& voices, const std::string& active) {
+  std::vector<std::string> list{kVoiceMe};
+  for (const auto& v : SplitVoiceList(voices)) if (v != kVoiceMe) list.push_back(v);
+  const std::string a = SanitizeVoiceName(active);
+  return AddAudioLines(sdp, {std::string(kVoicesSdpAttr) + JoinVoiceList(list),
+                             std::string(kVoiceSdpAttr) + (a.empty() ? kVoiceMe : a)});
+}
+
+std::string VoicesFromSdp(const std::string& sdp) {
+  return JoinVoiceList(SplitVoiceList(AudioAttr(sdp, kVoicesSdpAttr)));
+}
+
+std::string VoiceFromSdp(const std::string& sdp) {
+  return SanitizeVoiceName(AudioAttr(sdp, kVoiceSdpAttr));
 }
 
 }  // namespace webrtc

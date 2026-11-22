@@ -1150,6 +1150,7 @@ if (!build_with_chromium) {
         "../api/audio:builtin_audio_processing_builder",
         "../api/audio:create_audio_device_module",
         "../modules/audio_device:audio_device_impl",
+        "../modules/audio_device:test_audio_device_module",
         "../api/environment",
         "../api/environment:environment_factory",
         "../api/video:video_broadcaster",

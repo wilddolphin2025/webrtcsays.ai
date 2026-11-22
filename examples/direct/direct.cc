@@ -43,6 +43,9 @@
 #endif
 #include "option.h"
 #include "audio_tap.h"
+#if !defined(WEBRTC_IOS)
+#include "modules/audio_device/include/test_audio_device.h"
+#endif
 #include "impair.h"
 #if defined(WEBRTC_USE_LIQUIDCALL)
 #include "modules/audio_coding/codecs/liquidcall/liquid_factory.h"
@@ -347,6 +350,22 @@ bool DirectApplication::CreatePeerConnection() {
       return;
     }
     DirectSetEchoPath(opts_.aec ? "aec3" : "off");
+#if !defined(WEBRTC_IOS)
+    if (opts_.audio == "file") {
+      // Headless, real-time clocked device for loopback tests: the mic is the --inject-wav file (or quiet
+      // noise), playout is discarded. Unlike dummy, decoding and the voice-swap tap run as in a real call.
+      auto cap = !opts_.inject_wav.empty()
+          ? webrtc::TestAudioDeviceModule::CreateWavFileReader(opts_.inject_wav, /*repeat=*/true)
+          : std::unique_ptr<webrtc::TestAudioDeviceModule::Capturer>(
+                webrtc::TestAudioDeviceModule::CreatePulsedNoiseCapturer(300, 48000));
+      audio_device_module_ = webrtc::TestAudioDeviceModule::Create(
+          *env_, std::move(cap), webrtc::TestAudioDeviceModule::CreateDiscardRenderer(48000));
+      if (audio_device_module_) audio_device_module_->Init();
+      fprintf(stderr, "Audio device: file (headless test device)\n");
+      DirectSetEchoPath("off");
+      return;
+    }
+#endif
 #if defined(WEBRTC_MAC) && !defined(WEBRTC_IOS)
     // The HAL ADM has no canceller of its own, and AEC3 on a MacBook's
     // speaker-to-mic path leaked echo in live calls. Apple's Voice Processing

@@ -70,9 +70,6 @@ inline constexpr const char kFacePrefix[]  = "FACE:";
 // Personalized TTS voice: VOICE:<clip name known to the TTS server>
 inline constexpr const char kVoicePrefix[] = "VOICE:";
 
-// Voice swap, mid-call: VOICE_SWAP:<voice|none> from the caller changes the voice the callee hears it in
-// (same values as the INVITE's "voice_swap"). Older callees ignore it.
-inline constexpr const char kVoiceSwapPrefix[] = "VOICE_SWAP:";
 
 } // namespace Msg
 

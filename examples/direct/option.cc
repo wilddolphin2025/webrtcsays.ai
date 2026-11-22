@@ -409,6 +409,7 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --fps=30                           Send frame rate, 1..60 (default 30)\n"
       "  --video-source=pattern|camera|screen  pattern if no camera; screen falls back to pattern\n"
       "  --audio=dummy                      Use a fake audio device (no Pulse/PipeWire)\n"
+      "  --audio=file                       Headless clocked test device: mic = --inject-wav, playout discarded\n"
       "  --audio-codec=opus|liquidcall     Opus is the default. liquidcall is macOS-only.\n"
       "  --opus-bitrate=<bps>               Opus maxaveragebitrate (6000..510000)\n"
       "  --opus-ptime=<ms>                 Opus frame size 20, 40, or 60\n"
@@ -417,8 +418,10 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --voice-swap-udp=<port>            Send decoded far-end audio to 127.0.0.1:<port> (voice-swap sidecar)\n"
       "  --no-voice-swap-mute               With --voice-swap-udp, still play the original voice locally\n"
       "  --voice-swap=<voice>               Caller: ask the callee to hear us in <voice> (female, male, or a Piper id;\n"
-      "                                     sent in the INVITE). Callee: auto (default, follow the caller), off,\n"
+      "                                     sent in the SDP offer). Callee: auto (default, follow the caller), off,\n"
       "                                     or a voice that overrides the caller\n"
+      "  --voice-swap-voices=<a,b>          Callee: voices the sidecar has (advertised in the SDP answer; others fall back to me)\n"
+      "  --voice-swap-script=<s:v,...>      Caller: switch voice <s> seconds into the call (SDP re-offer), e.g. 4:male,8:me\n"
       "  --inject-wav=<path>                Send this 16-bit PCM WAV instead of the microphone\n"
       "  --liquid-model-dir=<path>          Fetched Core ML models (default scripts/liquidcall/models)\n"
       "  --liquid-manifest=<path>           liquidcall.json from the model fetch\n"
@@ -469,7 +472,8 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--audio-codec", "--audio_codec", "--opus-bitrate", "--opus_bitrate",
     "--record-dir", "--record_dir", "--inject-wav", "--inject_wav",
     "--voice-swap-udp", "--voice_swap_udp", "--voice-swap-mute", "--no-voice-swap-mute",
-    "--voice-swap", "--voice_swap",
+    "--voice-swap", "--voice_swap", "--voice-swap-voices", "--voice_swap_voices",
+    "--voice-swap-script", "--voice_swap_script",
     "--liquid-model-dir", "--liquid_model_dir", "--liquid-manifest", "--liquid_manifest",
     "--liquid-ctx", "--liquid_ctx", "--liquid-new", "--liquid_new",
     "--liquid-decode", "--liquid_decode",
@@ -925,6 +929,10 @@ Options parseOptions(const std::vector<std::string>& args) {
         opts.record_dir = arg.substr(eq + 1);
     } else if (arg.find("--voice-swap-udp=") == 0 || arg.find("--voice_swap_udp=") == 0) {
         opts.voice_swap_udp = std::atoi(arg.substr(arg.find('=') + 1).c_str());
+    } else if (arg.find("--voice-swap-script=") == 0 || arg.find("--voice_swap_script=") == 0) {
+        opts.voice_swap_script = arg.substr(arg.find('=') + 1);
+    } else if (arg.find("--voice-swap-voices=") == 0 || arg.find("--voice_swap_voices=") == 0) {
+        opts.voice_swap_voices = arg.substr(arg.find('=') + 1);
     } else if (arg.find("--voice-swap=") == 0 || arg.find("--voice_swap=") == 0) {
         opts.voice_swap = arg.substr(arg.find('=') + 1);
     } else if (arg == "--voice-swap-mute") {

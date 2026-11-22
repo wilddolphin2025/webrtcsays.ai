@@ -647,8 +647,9 @@ void DirectPeer::Start() {
                         fprintf(stderr, "%s\n", RedactedSignalingLine(std::string(Msg::kOfferPrefix) + sdp).c_str());
                         // Now that both descriptions may be in place, process any queued ICE candidates.
                         DrainPendingIceCandidates();
-                        DirectSignalingLog("local-offer", sdp);
-                        SendMessage(std::string(Msg::kOfferPrefix) + sdp);
+                        const std::string wire_sdp = webrtc::AddVoiceRequestToSdp(sdp, voice_request());
+                        DirectSignalingLog("local-offer", wire_sdp);
+                        SendMessage(std::string(Msg::kOfferPrefix) + wire_sdp);
                     });
 
                 peer_connection_->SetLocalDescription(std::move(desc), set_local_description_observer_);
@@ -705,22 +706,6 @@ void DirectPeer::HandleMessage(webrtc::AsyncPacketSocket* socket,
           }
         }
 
-        if (!is_caller()) {
-          // Voice swap for this call: the caller's INVITE "voice_swap" (absent = none) unless our
-          // --voice-swap overrides it. Only acts when --voice-swap-udp feeds a sidecar.
-          const std::string req = message.size() > kPrefixLen + 1
-              ? ExtractJsonStringField(message.substr(kPrefixLen + 1), "voice_swap") : std::string();
-          const std::string use = webrtc::ResolveVoiceSwap(opts_.voice_swap, req);
-          if (opts_.voice_swap_udp > 0) {
-            webrtc::SetVoiceSwapVoice(use);
-            RTC_LOG(LS_INFO) << "Voice swap: caller asked '" << req << "', using '" << use << "'";
-            fprintf(stderr, "Voice swap: caller asked '%s', using '%s'\n", req.c_str(),
-                    use.empty() ? "none" : use.c_str());
-          } else if (!req.empty()) {
-            fprintf(stderr, "Voice swap: caller asked '%s' but this callee has no --voice-swap-udp sidecar\n",
-                    req.c_str());
-          }
-        }
 #if defined(WEBRTC_SPEECH_DEVICES)
         if (message.size() > kPrefixLen + 1) {
           std::string voice = ExtractJsonStringField(message.substr(kPrefixLen + 1), "voice");
@@ -747,6 +732,7 @@ void DirectPeer::HandleMessage(webrtc::AsyncPacketSocket* socket,
       if (!is_caller()) {
         const size_t prefix_len = sizeof(Msg::kOfferPrefix) - 1; // length of "OFFER:"
         std::string sdp = message.substr(prefix_len);
+        ApplyOfferedVoice(sdp);
         SetRemoteDescription(sdp);
       } else {
         RTC_LOG(LS_WARNING) << "Received OFFER while in caller mode; ignoring";
@@ -755,6 +741,7 @@ void DirectPeer::HandleMessage(webrtc::AsyncPacketSocket* socket,
    } else if (is_caller() && message.find(Msg::kAnswerPrefix) == 0) {
       const size_t prefix_len = sizeof(Msg::kAnswerPrefix) - 1; // length of "ANSWER:"
       std::string sdp = message.substr(prefix_len);
+      NoteAnswerVoices(sdp);
       SetRemoteDescription(sdp);
    } else if (message.find(Msg::kFacePrefix) == 0) {
       std::string payload = message.substr(sizeof(Msg::kFacePrefix) - 1);
@@ -772,21 +759,6 @@ void DirectPeer::HandleMessage(webrtc::AsyncPacketSocket* socket,
 #else
       RTC_LOG(LS_WARNING) << "FACE command ignored: build has no WEBRTC_SPEECH_DEVICES";
 #endif
-    } else if (message.rfind(Msg::kVoiceSwapPrefix, 0) == 0) {
-      // Mid-call voice change from the caller (callee side). Our --voice-swap override wins.
-      if (!is_caller()) {
-        std::string req = message.substr(sizeof(Msg::kVoiceSwapPrefix) - 1);
-        while (!req.empty() && (req.back() == '\n' || req.back() == '\r' || req.back() == ' ')) req.pop_back();
-        const std::string use = webrtc::ResolveVoiceSwap(opts_.voice_swap, req);
-        if (opts_.voice_swap_udp > 0) {
-          webrtc::SetVoiceSwapVoice(use);
-          fprintf(stderr, "Voice swap: caller switched to '%s', using '%s'\n", req.c_str(),
-                  use.empty() ? "none" : use.c_str());
-        } else {
-          fprintf(stderr, "Voice swap: caller asked '%s' but this callee has no --voice-swap-udp sidecar\n",
-                  req.c_str());
-        }
-      }
     } else if (message.find(Msg::kVoicePrefix) == 0) {
       // The TTS server validates the name against its voices directory.
       std::string voice = message.substr(sizeof(Msg::kVoicePrefix) - 1);
@@ -844,6 +816,105 @@ void DirectPeer::OnIceCandidate(const webrtc::IceCandidateInterface* candidate) 
 
     // Send as ICE:<mline_idx>:<candidate>
     SendMessage(std::string(Msg::kIcePrefix) + std::to_string(mline_index) + ":" + sdp);
+}
+
+// ---- Voice swap, negotiated in SDP only ------------------------------------------------------------
+// Caller offer:  a=x-liquidcall-voice:<pt> <voice>          (absent or "me" = no conversion)
+// Callee answer: a=x-liquidcall-voices:<pt> me,female,male  (what its sidecar has preloaded)
+//                a=x-liquidcall-voice:<pt> <active>         (the voice it really uses; "me" if it lacks the one asked)
+// Both sit in the audio m-section keyed to the LIQUIDCALL payload type; WebRTC ignores unknown attributes, so
+// peers without voice support just don't see them. A mid-call switch is a new offer/answer on the same
+// PeerConnection (RequestVoiceSwap).
+
+void DirectPeer::NoteAnswerVoices(const std::string& answer_sdp) {
+  // Voices the callee has, and the one it confirmed; neither = older callee, no conversion ("me").
+  const std::string voices = webrtc::VoicesFromSdp(answer_sdp);
+  std::string active = webrtc::VoiceFromSdp(answer_sdp);
+  if (active.empty()) active = webrtc::kVoiceMe;
+  {
+    std::lock_guard<std::mutex> l(voice_info_mu_);
+    remote_voices_ = voices;
+    remote_active_voice_ = active;
+  }
+  voice_info_gen_.fetch_add(1);
+  fprintf(stderr, "Voice swap: callee has '%s', active '%s'\n", voices.empty() ? "me" : voices.c_str(),
+          active.c_str());
+}
+
+void DirectPeer::ApplyOfferedVoice(const std::string& offer_sdp) {
+  if (is_caller()) return;
+  const std::string req = webrtc::VoiceFromSdp(offer_sdp);
+  if (opts_.voice_swap_udp <= 0) {
+    if (!req.empty() && req != webrtc::kVoiceMe)
+      fprintf(stderr, "Voice swap: caller asked '%s' but this callee has no --voice-swap-udp sidecar\n", req.c_str());
+    return;
+  }
+  const std::string use = webrtc::ResolveVoiceSwap(opts_.voice_swap, req, opts_.voice_swap_voices);
+  const std::string before = webrtc::GetVoiceSwapVoice();
+  webrtc::SetVoiceSwapVoice(use);
+  if (use != before || !req.empty())
+    fprintf(stderr, "Voice swap: caller asked '%s', using '%s'\n", req.empty() ? webrtc::kVoiceMe : req.c_str(),
+            use.empty() ? webrtc::kVoiceMe : use.c_str());
+}
+
+std::string DirectPeer::voice_request() const {
+  std::lock_guard<std::mutex> l(voice_info_mu_);
+  return voice_request_.empty() ? opts_.voice_swap : voice_request_;   // --voice-swap until the app changes it
+}
+
+void DirectPeer::RequestVoiceSwap(const std::string& voice) {
+  std::string v = webrtc::SanitizeVoiceName(voice);
+  if (v.empty() || v == "none" || v == "off") v = webrtc::kVoiceMe;
+  {
+    std::lock_guard<std::mutex> l(voice_info_mu_);
+    voice_request_ = v;
+  }
+  if (!is_caller()) return;
+  signaling_thread()->PostTask([this]() {
+    auto pc = peer_connection();
+    if (!pc || !pc->current_remote_description()) return;   // not up yet: the first offer carries it
+    if (remote_voices().empty()) {                           // callee without voices (or older): no re-offer
+      fprintf(stderr, "Voice swap: callee offers no voices; staying on me\n");
+      return;
+    }
+    if (pc->signaling_state() != webrtc::PeerConnectionInterface::kStable) {
+      voice_reoffer_pending_ = true;                          // re-offer when the current exchange settles
+      return;
+    }
+    SendVoiceReoffer();
+  });
+}
+
+void DirectPeer::SendVoiceReoffer() {
+  auto pc = peer_connection();
+  if (!pc) return;
+  voice_reoffer_pending_ = false;
+  const auto t0 = std::chrono::steady_clock::now();
+  voice_offer_observer_ = webrtc::make_ref_counted<LambdaCreateSessionDescriptionObserver>(
+      [this, t0](std::unique_ptr<webrtc::SessionDescriptionInterface> desc) {
+        std::string sdp;
+        desc->ToString(&sdp);
+        if (opts_.audio_codec == "opus" || opts_.opus_bitrate_bps > 0) {
+          sdp = MungeOpusFmtp(std::move(sdp), opts_.opus_bitrate_bps, opts_.opus_ptime_ms, opts_.opus_dtx);
+          webrtc::SdpParseError perr;
+          if (auto patched = webrtc::CreateSessionDescription(desc->GetType(), sdp, &perr)) desc = std::move(patched);
+        }
+        voice_sld_observer_ = webrtc::make_ref_counted<LambdaSetLocalDescriptionObserver>(
+            [this, sdp, t0](webrtc::RTCError error) {
+              if (!error.ok()) {
+                fprintf(stderr, "Voice swap: re-offer failed: %s\n", error.message());
+                return;
+              }
+              const std::string req = voice_request();
+              const std::string wire_sdp = webrtc::AddVoiceRequestToSdp(sdp, req);
+              DirectSignalingLog("local-offer", wire_sdp);
+              SendMessage(std::string(Msg::kOfferPrefix) + wire_sdp);
+              const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+              fprintf(stderr, "Voice swap: re-offer for '%s' sent %.1f ms after the request\n", req.c_str(), ms);
+            });
+        peer_connection_->SetLocalDescription(std::move(desc), voice_sld_observer_);
+      });
+  pc->CreateOffer(voice_offer_observer_.get(), webrtc::PeerConnectionInterface::RTCOfferAnswerOptions{});
 }
 
 void DirectPeer::SetRemoteDescription(const std::string& sdp) {
@@ -1035,6 +1106,10 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                     // answer to have more m-lines than the offer and therefore make
                     // SetLocalDescription fail.
 
+                    // A re-offer on an established call (voice switch) keeps our tracks as they are.
+                    const bool renegotiating = peer_connection()->current_local_description() != nullptr && audio_track_;
+                    if (renegotiating) fprintf(stderr, "[peer] re-offer: answering with the existing tracks\n");
+                    if (!renegotiating) {
                     webrtc::AudioOptions audio_options;
                     ApplyAndLogApm(&audio_options, opts_.aec);
                     auto audio_source = peer_connection_factory_->CreateAudioSource(audio_options);
@@ -1144,6 +1219,7 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                         }
                         RTC_LOG(LS_INFO) << "Video source configured for callee.";
                     }
+                    }  // !renegotiating
                     ConfigureOutgoingAudio();
                     TrimAudioHeaderExtensions(peer_connection_.get(), opts_);
 
@@ -1203,8 +1279,12 @@ void DirectPeer::SetRemoteDescription(const std::string& sdp) {
                                     // Both descriptions should now be set on callee side as well.
                                     DrainPendingIceCandidates();
                                     fprintf(stderr, "[peer] sending ANSWER len=%zu\n", sdp.size());
-                                    DirectSignalingLog("local-answer", sdp);
-                                    SendMessage(std::string(Msg::kAnswerPrefix) + sdp);
+                                    // Advertise the voice-swap voices (session-level attribute; ignored by older callers).
+                                    const std::string wire_sdp = opts_.voice_swap_udp > 0
+                                        ? webrtc::AddVoicesToSdp(sdp, opts_.voice_swap_voices, webrtc::GetVoiceSwapVoice())
+                                        : sdp;
+                                    DirectSignalingLog("local-answer", wire_sdp);
+                                    SendMessage(std::string(Msg::kAnswerPrefix) + wire_sdp);
                             });
                             peer_connection_->SetLocalDescription(std::move(patched_desc), set_local_description_observer_);
                         });
@@ -1247,6 +1327,9 @@ void DirectPeer::AddIceCandidate(const std::string& candidate_sdp, int mline_ind
 
 // PeerConnectionObserver implementation
 void DirectPeer::OnSignalingChange(webrtc::PeerConnectionInterface::SignalingState new_state) {
+  if (is_caller() && voice_reoffer_pending_ && new_state == webrtc::PeerConnectionInterface::kStable) {
+    signaling_thread()->PostTask([this]() { if (voice_reoffer_pending_) SendVoiceReoffer(); });
+  }
     const char* state_names[] = {
         "Stable", "HaveLocalOffer", "HaveLocalPrAnswer", "HaveRemoteOffer", "HaveRemotePrAnswer", "Closed"
     };

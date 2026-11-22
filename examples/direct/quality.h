@@ -1,7 +1,7 @@
-// In-process LiquidCodec / Opus quality entry point.
+// In-process LiquidCall / Opus quality entry point.
 // directcall --quality=offline|factory calls DirectQualityRun.
 // The iOS direct.framework exports the same function. RobotPhone's XCTest
-// (scripts/liquidcodec/ios/LiquidQualityTests.mm) calls it and writes the
+// (scripts/liquidcall/ios/LiquidQualityTests.mm) calls it and writes the
 // CSV into the app Documents directory. The simulator has no ANE; pass
 // compute "cpu" there and "ane" only on a device.
 
@@ -20,11 +20,11 @@ extern "C" {
 
 // stage: "offline" (codec round-trip, no WebRTC) or "factory" (AudioEncoder,
 // AudioDecoder, and NetEq, no network).
-// codec: "liquidcodec" or "opus".
+// codec: "liquidcall" or "opus".
 // compute: "cpu", "ane", or "all" (liquid decoder units).
 // encoder_precision: "int8", "fp16", or "fp32".
 // Returns 0 on a completed run, 3 when a model is intentionally absent
-// (fp32 reference), 2 when this build has no LiquidCodec, 1 on failure.
+// (fp32 reference), 2 when this build has no LiquidCall, 1 on failure.
 // Writes quality_stats-style JSON to stats_json and PCM WAV to wav_out.
 DIRECT_QUALITY_API int DirectQualityRun(const char* stage, const char* wav_in,
                                         const char* wav_out, const char* stats_json,

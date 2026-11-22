@@ -11,7 +11,7 @@ namespace webrtc {
 
 // Wraps an encoder and decoder factory so a quality run can record the PCM
 // that entered the encoder and the PCM that left the decoder, and so
-// `--inject-wav` replaces the microphone for every codec (Opus and LiquidCodec).
+// `--inject-wav` replaces the microphone for every codec (Opus and LiquidCall).
 scoped_refptr<AudioEncoderFactory> CreateTappingAudioEncoderFactory(
     scoped_refptr<AudioEncoderFactory> inner, const std::string& record_dir,
     const std::string& inject_wav);

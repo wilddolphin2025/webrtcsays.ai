@@ -74,7 +74,7 @@ enum LoggingSeverity {
 
 #endif // DIRECT_EXPORT_H 
 
-// Default jitter buffer cap for liquidcodec (low-latency mode): one 80 ms
+// Default jitter buffer cap for liquidcall (low-latency mode): one 80 ms
 // packet of target plus NetEq's 20 ms window before it accelerates.
 inline constexpr int kLiquidJitterMaxMs = 80;
 
@@ -135,7 +135,7 @@ struct Options {
     int call_duration_sec = 0;
     std::string audio{};                // "dummy" forces the fake audio device
     // These fields are the iOS direct.framework API the RobotPhone app sets.
-    std::string audio_codec{};          // empty = built-in default; opus; liquidcodec
+    std::string audio_codec{};          // empty = built-in default; opus; liquidcall
     int opus_bitrate_bps = 0;           // 0 = Opus default; else maxaveragebitrate
     int opus_ptime_ms = 20;             // 20, 40, or 60
     bool opus_dtx = false;
@@ -151,13 +151,13 @@ struct Options {
     std::string liquid_encoder{"int8"};  // int8 or fp16 Core ML encoder package
     std::string liquid_pack{"u16"};     // u16 (28 bytes/frame) or tight (17 bytes/frame)
     int liquid_frames_per_packet = 1;   // 1-4 (80-320 ms per packet)
-    bool liquid_dtx = false;            // skip LiquidCodec packets during silence
-    int srtp_tag32 = -1;                // AES_CM_128_HMAC_SHA1_32 (4-byte tag): -1 auto (on for liquidcodec), 0, 1
-    int audio_rtcp_ms = -1;             // audio RTCP report interval: -1 auto (10000 liquidcodec, else 5000)
-    int rtp_header_extensions = -1;     // -1 auto (off for liquidcodec), 0 off, 1 on (audio)
+    bool liquid_dtx = false;            // skip LiquidCall packets during silence
+    int srtp_tag32 = -1;                // AES_CM_128_HMAC_SHA1_32 (4-byte tag): -1 auto (on for liquidcall), 0, 1
+    int audio_rtcp_ms = -1;             // audio RTCP report interval: -1 auto (10000 liquidcall, else 5000)
+    int rtp_header_extensions = -1;     // -1 auto (off for liquidcall), 0 off, 1 on (audio)
     // Receive jitter buffer (NetEq). jitter_max_ms caps the target delay and
     // the playout delay NetEq accelerates down to: -1 auto (80 ms for
-    // liquidcodec, the low-latency mode; unlimited otherwise), 0 unlimited
+    // liquidcall, the low-latency mode; unlimited otherwise), 0 unlimited
     // (stock NetEq), else 20..1000 ms. Below the cap NetEq still adapts.
     int jitter_max_ms = -1;
     int jitter_fast_accelerate = -1;    // -1 auto (on when jitter_max_ms caps), 0, 1

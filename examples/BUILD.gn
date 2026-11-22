@@ -964,8 +964,8 @@ if (!build_with_chromium) {
       if (rtc_use_speech_audio_devices) {
         defines += [ "WEBRTC_SPEECH_DEVICES" ]
       }
-      if (rtc_use_liquidcodec) {
-        defines += [ "WEBRTC_USE_LIQUIDCODEC" ]
+      if (rtc_use_liquidcall) {
+        defines += [ "WEBRTC_USE_LIQUIDCALL" ]
       }
 
       # Same deps as directlib. sigslot, absl/types:optional,
@@ -1038,8 +1038,8 @@ if (!build_with_chromium) {
         "//third_party/abseil-cpp/absl/memory",
         "//third_party/jsoncpp:jsoncpp",
       ]
-      if (rtc_use_liquidcodec) {
-        deps += [ "//modules/audio_coding/codecs/liquidcodec:liquidcodec" ]
+      if (rtc_use_liquidcall) {
+        deps += [ "//modules/audio_coding/codecs/liquidcall:liquidcall" ]
       }
 
       frameworks = [
@@ -1051,7 +1051,7 @@ if (!build_with_chromium) {
         "AudioToolbox.framework",
         "VideoToolbox.framework",
       ]
-      if (rtc_use_liquidcodec) {
+      if (rtc_use_liquidcall) {
         frameworks += [ "CoreML.framework" ]
       }
 
@@ -1102,8 +1102,8 @@ if (!build_with_chromium) {
         "direct/signaling_log.h",
       ]
 
-      if ((is_mac || is_ios) && rtc_use_liquidcodec) {
-        defines += [ "WEBRTC_USE_LIQUIDCODEC" ]
+      if ((is_mac || is_ios) && rtc_use_liquidcall) {
+        defines += [ "WEBRTC_USE_LIQUIDCALL" ]
       }
 
       if (rtc_use_speech_audio_devices) {
@@ -1194,8 +1194,8 @@ if (!build_with_chromium) {
         "//third_party/jsoncpp:jsoncpp",
       ]
 
-      if ((is_mac || is_ios) && rtc_use_liquidcodec) {
-        deps += [ "//modules/audio_coding/codecs/liquidcodec:liquidcodec" ]
+      if ((is_mac || is_ios) && rtc_use_liquidcall) {
+        deps += [ "//modules/audio_coding/codecs/liquidcall:liquidcall" ]
       }
 
       if (rtc_use_speech_audio_devices) {
@@ -1214,7 +1214,7 @@ if (!build_with_chromium) {
         }
       }
 
-      if ((is_mac || is_ios) && rtc_use_liquidcodec) {
+      if ((is_mac || is_ios) && rtc_use_liquidcall) {
         if (!defined(frameworks)) {
           frameworks = []
         }

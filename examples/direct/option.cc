@@ -409,7 +409,7 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --fps=30                           Send frame rate, 1..60 (default 30)\n"
       "  --video-source=pattern|camera|screen  pattern if no camera; screen falls back to pattern\n"
       "  --audio=dummy                      Use a fake audio device (no Pulse/PipeWire)\n"
-      "  --audio-codec=opus|liquidcodec     Opus is the default. liquidcodec is macOS-only.\n"
+      "  --audio-codec=opus|liquidcall     Opus is the default. liquidcall is macOS-only.\n"
       "  --opus-bitrate=<bps>               Opus maxaveragebitrate (6000..510000)\n"
       "  --opus-ptime=<ms>                 Opus frame size 20, 40, or 60\n"
       "  --opus-dtx / --no-opus-dtx        Opus discontinuous transmission\n"
@@ -417,18 +417,18 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --voice-swap-udp=<port>            Send decoded far-end audio to 127.0.0.1:<port> (voice-swap sidecar)\n"
       "  --no-voice-swap-mute               With --voice-swap-udp, still play the original voice locally\n"
       "  --inject-wav=<path>                Send this 16-bit PCM WAV instead of the microphone\n"
-      "  --liquid-model-dir=<path>          Fetched Core ML models (default scripts/liquidcodec/models)\n"
-      "  --liquid-manifest=<path>           liquidcodec.json from the model fetch\n"
+      "  --liquid-model-dir=<path>          Fetched Core ML models (default scripts/liquidcall/models)\n"
+      "  --liquid-manifest=<path>           liquidcall.json from the model fetch\n"
       "  --liquid-ctx=<frames>              Left-context frames (0 = manifest)\n"
       "  --liquid-new=<frames>              New frames per Core ML call (0 = manifest)\n"
       "  --liquid-decode=ane|cpu|all        Core ML compute units\n"
       "  --liquid-pack=u16|tight           u16 is 28 bytes/frame; tight is 17 bytes, no header\n"
       "  --liquid-frames-per-packet=<n>    1-4 codec frames (80-320 ms) in each RTP packet\n"
       "  --liquid-dtx / --no-liquid-dtx    Send nothing during silence (default off)\n"
-      "  --srtp-tag32 / --no-srtp-tag32    4-byte SRTP auth tag (AES_CM_128_HMAC_SHA1_32); default on for liquidcodec\n"
-      "  --audio-rtcp-ms=<ms>              Audio RTCP report interval (default 10000 liquidcodec, 5000 otherwise)\n"
-      "  --rtp-extensions / --no-rtp-extensions  Audio RTP header extensions (default off for liquidcodec)\n"
-      "  --jitter-max-ms=<ms>              Jitter buffer cap: low-latency mode (default 80 for liquidcodec;\n"
+      "  --srtp-tag32 / --no-srtp-tag32    4-byte SRTP auth tag (AES_CM_128_HMAC_SHA1_32); default on for liquidcall\n"
+      "  --audio-rtcp-ms=<ms>              Audio RTCP report interval (default 10000 liquidcall, 5000 otherwise)\n"
+      "  --rtp-extensions / --no-rtp-extensions  Audio RTP header extensions (default off for liquidcall)\n"
+      "  --jitter-max-ms=<ms>              Jitter buffer cap: low-latency mode (default 80 for liquidcall;\n"
       "                                    0 = stock NetEq, unlimited). NetEq adapts below the cap.\n"
       "  --jitter-fast-accelerate / --no-jitter-fast-accelerate  Drain buffer spikes quickly (default on when capped)\n"
       "  --aec=on|off                      AEC3, NS, and AGC (default on)\n"
@@ -1166,10 +1166,13 @@ Options parseOptions(const std::vector<std::string>& args) {
   for (char& c : opts.audio_codec) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   }
-  if (opts.audio_codec == "liquid") opts.audio_codec = "liquidcodec";
+  // "liquid" and the pre-rename "liquidcodec" are aliases.
+  if (opts.audio_codec == "liquid" || opts.audio_codec == "liquidcodec") {
+    opts.audio_codec = "liquidcall";
+  }
   if (!opts.audio_codec.empty() && opts.audio_codec != "opus" &&
-      opts.audio_codec != "liquidcodec") {
-    opts.parse_error = "audio-codec must be opus or liquidcodec";
+      opts.audio_codec != "liquidcall") {
+    opts.parse_error = "audio-codec must be opus or liquidcall";
   }
   for (char& c : opts.liquid_decode) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

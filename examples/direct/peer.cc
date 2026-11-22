@@ -384,13 +384,13 @@ DirectPeer::~DirectPeer() {
   Cleanup();
 }
 
-// LiquidCodec packets carry 28 bytes of payload; the default audio RTP header
+// LiquidCall packets carry 28 bytes of payload; the default audio RTP header
 // extensions (audio level, abs-send-time, transport-wide CC, ...) added 16
 // bytes to every packet, and transport-cc also triggers transport feedback
 // RTCP. Keep only MID (sent in the first packets of a call) unless asked.
 static void TrimAudioHeaderExtensions(webrtc::PeerConnectionInterface* pc, const Options& o) {
   if (!pc) return;
-  const bool keep = o.rtp_header_extensions < 0 ? o.audio_codec != "liquidcodec"
+  const bool keep = o.rtp_header_extensions < 0 ? o.audio_codec != "liquidcall"
                                                 : o.rtp_header_extensions != 0;
   if (keep) return;
   for (const auto& t : pc->GetTransceivers()) {

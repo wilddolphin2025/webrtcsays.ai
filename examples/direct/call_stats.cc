@@ -198,7 +198,7 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
   // bytes/header/packets from RTCStats are totals since the call began; the
   // rate over the last interval needs their deltas. Dividing the totals by dt
   // grew the "on-wire" figure with call length (hundreds of kbps for a
-  // ~7 kbps LiquidCodec stream).
+  // ~7 kbps LiquidCall stream).
   struct WireCounter {
     uint64_t bytes = 0;
     uint64_t header = 0;
@@ -470,7 +470,7 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
             const double hdr = static_cast<double>(send_header - audio_out_wire_.header) / dp;
             audio_out.number("send_payload_bytes_per_packet", pay, 1);
             audio_out.number("send_rtp_header_bytes_per_packet", hdr, 1);
-            // LiquidCodec payload sizes identify pack and frames per packet.
+            // LiquidCall payload sizes identify pack and frames per packet.
             int fpp = 0;
             const int ipay = static_cast<int>(pay + 0.5);
             const int tight[] = {17, 33, 50, 66};

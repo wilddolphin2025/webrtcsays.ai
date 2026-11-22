@@ -710,11 +710,11 @@ int main(int argc, char* argv[]) {
     DirectApplication::rtcInitialize();
     const std::string wav_out = opts.record_dir + "/quality_out.wav";
     const std::string stats_path = opts.record_dir + "/quality_stats.json";
-    const char* codec = opts.audio_codec.empty() ? "liquidcodec" : opts.audio_codec.c_str();
+    const char* codec = opts.audio_codec.empty() ? "liquidcall" : opts.audio_codec.c_str();
     {
       // Same jitter buffer as a live call: 80 ms low-latency cap for
-      // liquidcodec unless --jitter-max-ms says otherwise.
-      const bool liquid_jb = std::string(codec) == "liquidcodec";
+      // liquidcall unless --jitter-max-ms says otherwise.
+      const bool liquid_jb = std::string(codec) == "liquidcall";
       const int jitter_max = opts.jitter_max_ms < 0 ? (liquid_jb ? kLiquidJitterMaxMs : -1) : opts.jitter_max_ms;
       const int fast = opts.jitter_fast_accelerate < 0 ? (jitter_max > 0 ? 1 : 0)
                                                        : opts.jitter_fast_accelerate;

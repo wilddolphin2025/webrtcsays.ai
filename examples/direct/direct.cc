@@ -86,6 +86,18 @@ class CappedNetEqFactory : public webrtc::NetEqFactory {
 // String split from option.cc
 std::vector<std::string> stringSplit(std::string input, std::string delimiter);
 
+std::string DirectApplication::remote_voices() const {
+  std::lock_guard<std::mutex> l(voice_info_mu_);
+  return remote_voices_;
+}
+
+std::string DirectApplication::remote_active_voice() const {
+  std::lock_guard<std::mutex> l(voice_info_mu_);
+  return remote_active_voice_;
+}
+
+int DirectApplication::voice_info_gen() const { return voice_info_gen_.load(); }
+
 void DirectApplication::rtcInitialize() {
   webrtc::InitializeSSL();
 }

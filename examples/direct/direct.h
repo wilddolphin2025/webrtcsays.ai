@@ -247,9 +247,10 @@ class DIRECT_API DirectApplication : public webrtc::PeerConnectionObserver {
   // Caller side voice negotiation (LiquidCall app polls these), from the callee's ANSWER SDP: the voices it has
   // (comma list incl. "me"; "" = older callee / no sidecar) and the one it confirmed ("" before any answer, "me").
   // voice_info_gen() bumps on every change.
-  std::string remote_voices() const { std::lock_guard<std::mutex> l(voice_info_mu_); return remote_voices_; }
-  std::string remote_active_voice() const { std::lock_guard<std::mutex> l(voice_info_mu_); return remote_active_voice_; }
-  int voice_info_gen() const { return voice_info_gen_.load(); }
+  // Out of line so apps never depend on the member layout.
+  std::string remote_voices() const;
+  std::string remote_active_voice() const;
+  int voice_info_gen() const;
 
   // Local preference that we will announce in INIT. Default "audio".
   void setInitAgent(const std::string& agent) { local_agent_ = agent; }

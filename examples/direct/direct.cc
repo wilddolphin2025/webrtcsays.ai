@@ -354,9 +354,21 @@ bool DirectApplication::CreatePeerConnection() {
     if (opts_.audio_codec == "liquidcodec") {
 #if defined(WEBRTC_USE_LIQUIDCODEC)
       webrtc::liquid::RuntimeConfig liquid;
-      liquid.paths.model_dir = opts_.liquid_model_dir.empty()
-                                   ? "scripts/liquidcodec/models"
-                                   : opts_.liquid_model_dir;
+      std::string model_dir = opts_.liquid_model_dir;
+      if (model_dir.empty()) {
+        const char* candidates[] = {
+            "scripts/liquidcodec/models",
+            "../scripts/liquidcodec/models",
+        };
+        model_dir = candidates[0];
+        for (const char* candidate : candidates) {
+          if (webrtc::liquid::FileExists(std::string(candidate) + "/liquidcodec.json")) {
+            model_dir = candidate;
+            break;
+          }
+        }
+      }
+      liquid.paths.model_dir = model_dir;
       liquid.paths.compute = opts_.liquid_decode.empty() ? "ane" : opts_.liquid_decode;
       liquid.record_dir = opts_.record_dir;
       liquid.inject_wav = opts_.inject_wav;
@@ -382,9 +394,7 @@ bool DirectApplication::CreatePeerConnection() {
       liquid.pack = opts_.liquid_pack == "tight" ? webrtc::liquid::WirePack::kTight
                                                  : webrtc::liquid::WirePack::kU16;
       liquid.frames_per_packet = opts_.liquid_frames_per_packet;
-      liquid.paths.model_dir = opts_.liquid_model_dir.empty()
-                                   ? "scripts/liquidcodec/models"
-                                   : opts_.liquid_model_dir;
+      liquid.paths.model_dir = model_dir;
       std::string liquid_error;
       if (!webrtc::ConfigureLiquidRuntime(liquid, &liquid_error)) {
         fprintf(stderr, "%s\n", liquid_error.c_str());

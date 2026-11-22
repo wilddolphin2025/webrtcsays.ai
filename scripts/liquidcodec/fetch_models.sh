@@ -13,9 +13,22 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# README runs directcall from the gclient parent, with BIN=src/out/release/directcall,
+# so models belong at <parent>/scripts/liquidcodec/models. Invoking
+# src/scripts/liquidcodec/fetch_models.sh from that parent used to write a
+# cwd-relative scripts/ path only by accident. Pin the parent when this script
+# lives inside src/.
+if [[ "$(basename "${SCRIPT_ROOT}")" == "src" && -e "${SCRIPT_ROOT}/../.git" ]]; then
+  DEFAULT_DEST="$(cd "${SCRIPT_ROOT}/.." && pwd)/scripts/liquidcodec/models"
+else
+  DEFAULT_DEST="${SCRIPT_DIR}/models"
+fi
+
 REPO="${LIQUIDCODEC_REPO:-wilddolphin2025/liquidcodec-ane}"
 REF="${LIQUIDCODEC_REF:-cursor/liquidcodec-stream-51d0}"
-DEST="${LIQUIDCODEC_DEST:-scripts/liquidcodec/models}"
+DEST="${LIQUIDCODEC_DEST:-${DEFAULT_DEST}}"
 DRY=0
 PROBE=0
 

@@ -253,8 +253,15 @@ git fetch origin liquidcodec-ane
 git checkout liquidcodec-ane
 
 # Default ref is the streaming draft branch. After that PR merges, pass --ref master.
+# From the gclient parent (the directory that contains src/), either of these
+# writes models to <parent>/scripts/liquidcodec/models, which is where the
+# directcall commands below look when you stay in that directory:
 scripts/liquidcodec/fetch_models.sh
-# scripts/liquidcodec/fetch_models.sh --repo wilddolphin2025/liquidcodec-ane --ref cursor/liquidcodec-stream-51d0
+# src/scripts/liquidcodec/fetch_models.sh
+# If you start directcall from inside src/, pass
+# --liquid-model-dir=../scripts/liquidcodec/models
+# or the binary also checks ../scripts/liquidcodec/models when
+# scripts/liquidcodec/models has no manifest.
 
 ./build.sh release liquidcodec
 BIN=src/out/release/directcall

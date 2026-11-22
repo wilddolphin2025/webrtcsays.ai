@@ -37,6 +37,10 @@
 
 #include "api/neteq/default_neteq_factory.h"
 #include "direct.h"
+#include "echo_stats.h"
+#if defined(WEBRTC_MAC) && !defined(WEBRTC_IOS)
+#include "mac_vpio_audio_device.h"
+#endif
 #include "option.h"
 #include "audio_tap.h"
 #include "impair.h"
@@ -342,6 +346,29 @@ bool DirectApplication::CreatePeerConnection() {
     if (audio_device_module_) {
       return;
     }
+    DirectSetEchoPath(opts_.aec ? "aec3" : "off");
+#if defined(WEBRTC_MAC) && !defined(WEBRTC_IOS)
+    // The HAL ADM has no canceller of its own, and AEC3 on a MacBook's
+    // speaker-to-mic path leaked echo in live calls. Apple's Voice Processing
+    // I/O unit cancels against the exact speaker signal; use it unless asked
+    // for the old path.
+    if (opts_.aec && opts_.aec_mode != "aec3" &&
+        audio_layer == webrtc::AudioDeviceModule::kPlatformDefaultAudio) {
+      audio_device_module_ = CreateMacVoiceProcessingAudioDeviceModule(*env_);
+      if (audio_device_module_) {
+        DirectSetEchoPath("vpio");
+        return;
+      }
+      fprintf(stderr, "Audio device: Voice Processing I/O unavailable, falling back to "
+                      "CoreAudio HAL + WebRTC AEC3\n");
+    }
+    if (audio_layer == webrtc::AudioDeviceModule::kPlatformDefaultAudio) {
+      fprintf(stderr, "Audio device: CoreAudio HAL%s\n",
+              opts_.aec ? " + WebRTC AEC3 (software echo canceller)" : ", echo cancel off");
+    }
+#elif defined(WEBRTC_IOS)
+    if (opts_.aec) DirectSetEchoPath("vpio");
+#endif
     audio_device_module_ = webrtc::CreateAudioDeviceModule(*env_, audio_layer);
     if (!audio_device_module_ || audio_device_module_->Init() != 0) {
       RTC_LOG(LS_ERROR) << "Audio layer " << audio_layer
@@ -480,8 +507,8 @@ bool DirectApplication::CreatePeerConnection() {
     }
     deps.audio_encoder_factory = audio_encoder_factory;
     deps.audio_decoder_factory = audio_decoder_factory;
-    deps.audio_processing_builder =
-        std::make_unique<webrtc::BuiltinAudioProcessingBuilder>();
+    deps.audio_processing_builder = DirectWrapApmBuilder(
+        std::make_unique<webrtc::BuiltinAudioProcessingBuilder>());
     // H.264 first, then VP8 and VP9. AV1 and HEVC are not offered.
     deps.video_encoder_factory = std::make_unique<webrtc::VideoEncoderFactoryTemplate<
         webrtc::OpenH264EncoderTemplateAdapter,

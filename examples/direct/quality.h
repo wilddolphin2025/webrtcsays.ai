@@ -36,6 +36,11 @@ DIRECT_QUALITY_API int DirectQualityRun(const char* stage, const char* wav_in,
 // 500 ms default, 0 is no cap. directcall --quality passes --jitter-max-ms.
 DIRECT_QUALITY_API void DirectQualitySetJitterBuffer(int max_delay_ms, int fast_accelerate);
 
+// Offline echo-canceller loop (directcall --quality=aec): render_wav plays
+// through a simulated speaker-to-mic path into APM with AEC3; prints ERLE per
+// second and writes aec_stats.json and aec_out.wav to out_dir.
+DIRECT_QUALITY_API int DirectAecSelfTest(const char* render_wav, const char* out_dir);
+
 #ifdef __cplusplus
 }
 #endif

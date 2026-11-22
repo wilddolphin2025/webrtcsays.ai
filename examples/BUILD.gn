@@ -946,6 +946,9 @@ if (!build_with_chromium) {
         "direct/quality.h",
         "direct/signaling_log.cc",
         "direct/signaling_log.h",
+        "direct/echo_stats.cc",
+        "direct/echo_stats.h",
+        "direct/aec_selftest.cc",
       ]
 
       # Use the output of the action_foreach target for public headers
@@ -1100,7 +1103,16 @@ if (!build_with_chromium) {
         "direct/quality.h",
         "direct/signaling_log.cc",
         "direct/signaling_log.h",
+        "direct/echo_stats.cc",
+        "direct/echo_stats.h",
+        "direct/aec_selftest.cc",
       ]
+      if (is_mac) {
+        sources += [
+          "direct/mac_vpio_audio_device.cc",
+          "direct/mac_vpio_audio_device.h",
+        ]
+      }
 
       if ((is_mac || is_ios) && rtc_use_liquidcall) {
         defines += [ "WEBRTC_USE_LIQUIDCALL" ]
@@ -1137,6 +1149,7 @@ if (!build_with_chromium) {
         "../api:enable_media",
         "../api/audio:builtin_audio_processing_builder",
         "../api/audio:create_audio_device_module",
+        "../modules/audio_device:audio_device_impl",
         "../api/environment",
         "../api/environment:environment_factory",
         "../api/video:video_broadcaster",
@@ -1225,6 +1238,13 @@ if (!build_with_chromium) {
       }
 
       if (is_mac) {
+        if (!defined(frameworks)) {
+          frameworks = []
+        }
+        frameworks += [
+          "AudioToolbox.framework",
+          "CoreAudio.framework",
+        ]
         if (!defined(ldflags)) { ldflags = [] }
         ldflags += [ "-mmacosx-version-min=15.0.0", "-install_name", "@rpath/libdirect.dylib" ]
         ldflags += [ "-Wl,-rpath,@loader_path/../Default" ] # Adjust rpath if needed

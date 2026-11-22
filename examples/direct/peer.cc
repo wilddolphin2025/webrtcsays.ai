@@ -29,6 +29,7 @@
 #include "media/engine/internal_encoder_factory.h"
 #include "modules/audio_device/include/audio_device.h"
 #include "modules/audio_processing/include/audio_processing.h"
+#include "echo_stats.h"
 #include "modules/video_capture/video_capture_factory.h"
 #include "pc/video_track_source.h"
 #include "rtc_base/ref_counted_object.h"
@@ -92,6 +93,10 @@ void ApplyAndLogApm(webrtc::AudioOptions* options, bool aec) {
           "APM echo_cancellation=%s noise_suppression=%s auto_gain_control=%s "
           "highpass_filter=%s\n",
           aec ? "on" : "off", aec ? "on" : "off", aec ? "on" : "off", aec ? "on" : "off");
+  const std::string path = DirectEchoPath();
+  fprintf(stderr, "Echo canceller: %s\n",
+          path == "vpio" ? "Voice Processing I/O (Apple, built in; WebRTC AEC3 and AGC off)"
+          : path == "aec3" ? "WebRTC AEC3 (software)" : "off");
 }
 
 }  // namespace

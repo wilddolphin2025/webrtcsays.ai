@@ -37,6 +37,7 @@
 #include "direct.h"
 #include "option.h"
 #include "audio_tap.h"
+#include "impair.h"
 #if defined(WEBRTC_USE_LIQUIDCODEC)
 #include "modules/audio_coding/codecs/liquidcodec/liquid_factory.h"
 #endif
@@ -416,6 +417,10 @@ bool DirectApplication::CreatePeerConnection() {
           audio_encoder_factory, opts_.record_dir, opts_.inject_wav);
       audio_decoder_factory = webrtc::CreateTappingAudioDecoderFactory(
           audio_decoder_factory, opts_.record_dir);
+    }
+    if (opts_.impair_loss_pct > 0 || opts_.impair_jitter_ms > 0) {
+      audio_encoder_factory = webrtc::CreateImpairingAudioEncoderFactory(
+          audio_encoder_factory, opts_.impair_loss_pct, opts_.impair_jitter_ms);
     }
     deps.audio_encoder_factory = audio_encoder_factory;
     deps.audio_decoder_factory = audio_decoder_factory;

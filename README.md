@@ -270,6 +270,13 @@ src/scripts/liquidcodec/run_local_call.sh
 # Writes <gclient>/out/ios-arm64/WebRTC.framework, direct.framework, and models/.
 # ./build.sh -b liquidcodec-ane ios release liquidcodec
 
+# Quality ladder. One command prepares clips, models, and the binary, then
+# writes scripts/liquidcodec/out/quality/<timestamp>/quality.csv and quality.md.
+# --stages 1 is the offline codec. --stages 2 is packing and runs on Linux.
+# --quick is the short matrix. Stage 5 injects loss and jitter in-process.
+src/scripts/liquidcodec/quality_ladder.sh --quick
+# src/scripts/liquidcodec/quality_ladder.sh --stages 1-6
+
 # A hand-supplied clip still works. 24 kHz mono is the codec rate.
 # afconvert -f WAVE -d LEI16@24000 input.flac "$HOME/liquid-clip.wav"
 # src/scripts/liquidcodec/run_local_call.sh --inject-wav "$HOME/liquid-clip.wav" --duration 20

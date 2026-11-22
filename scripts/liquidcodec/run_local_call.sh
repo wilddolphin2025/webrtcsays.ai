@@ -14,6 +14,12 @@ RECORD="${LC_TREE}/scripts/liquidcodec/out/local-call"
 PREPARE=0
 BIN="${LC_BIN}"
 MODELS="${LC_MODELS}"
+AEC="off"
+CODEC="liquidcodec"
+OPUS_BPS=""
+LOSS=""
+JITTER=""
+ALLOW_LOSS=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -23,9 +29,15 @@ while [[ $# -gt 0 ]]; do
     --record-dir) RECORD="$2"; shift 2 ;;
     --bin) BIN="$2"; shift 2 ;;
     --model-dir) MODELS="$2"; shift 2 ;;
+    --aec) AEC="$2"; shift 2 ;;
+    --audio-codec) CODEC="$2"; shift 2 ;;
+    --opus-bitrate) OPUS_BPS="$2"; shift 2 ;;
+    --impair-loss) LOSS="$2"; shift 2 ;;
+    --impair-jitter-ms) JITTER="$2"; shift 2 ;;
+    --allow-loss) ALLOW_LOSS=1; shift ;;
     --prepare-only) PREPARE=1; shift ;;
     -h|--help)
-      echo "usage: $0 [--duration N] [--inject-wav PATH] [--record-dir DIR] [--port N] [--prepare-only]"
+      echo "usage: $0 [--duration N] [--inject-wav PATH] [--record-dir DIR] [--port N] [--prepare-only] [--aec on|off] [--audio-codec opus|liquidcodec] [--opus-bitrate N] [--impair-loss N] [--impair-jitter-ms N] [--allow-loss]"
       exit 0
       ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -40,11 +52,22 @@ fi
 
 COMMON=(
   --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama
-  --audio-codec=liquidcodec --liquid-decode=ane --aec=off
+  --audio-codec="${CODEC}" --aec="${AEC}"
   --stats=1
-  --liquid-model-dir="${MODELS}"
   --inject-wav="${INJECT}"
 )
+if [[ "${CODEC}" == "liquidcodec" ]]; then
+  COMMON+=(--liquid-decode=ane --liquid-model-dir="${MODELS}")
+fi
+if [[ -n "${OPUS_BPS}" ]]; then
+  COMMON+=(--opus-bitrate="${OPUS_BPS}")
+fi
+if [[ -n "${LOSS}" ]]; then
+  COMMON+=(--impair-loss="${LOSS}")
+fi
+if [[ -n "${JITTER}" ]]; then
+  COMMON+=(--impair-jitter-ms="${JITTER}")
+fi
 {
   echo "${BIN} --mode=callee --user_name=alice --room_name=liquid ${COMMON[*]} --record-dir=${RECORD}/callee 127.0.0.1:${PORT}"
   echo "${BIN} --mode=caller --user_name=bob --target_name=alice --room_name=liquid ${COMMON[*]} --record-dir=${RECORD}/caller --duration=${DURATION} 127.0.0.1:${PORT}"
@@ -61,7 +84,7 @@ if [[ ! -x "${BIN}" ]]; then
   echo "From the gclient parent: ./build.sh release liquidcodec" >&2
   exit 1
 fi
-if [[ ! -f "${MODELS}/liquidcodec.json" ]]; then
+if [[ "${CODEC}" == "liquidcodec" && ! -f "${MODELS}/liquidcodec.json" ]]; then
   echo "No manifest at ${MODELS}/liquidcodec.json." >&2
   echo "From the gclient parent: ./build.sh release liquidcodec" >&2
   exit 1
@@ -85,11 +108,12 @@ sleep 1
 cleanup
 trap - EXIT
 
-python3 - "${RECORD}" "${DURATION}" <<'PY'
+python3 - "${RECORD}" "${DURATION}" "${ALLOW_LOSS}" <<'PY'
 import json, re, sys
 from pathlib import Path
 record = Path(sys.argv[1])
 duration = float(sys.argv[2])
+allow_loss = sys.argv[3] == "1"
 expected = duration * 1000.0 / 80.0
 bad = re.compile(r"Check failed|outside the codebook|session #[0-9]+ ended|SIGABRT")
 failed = False
@@ -115,7 +139,7 @@ for enc, dec in pairs:
     if ep is None or dp is None:
         failed = True
         continue
-    if ep < 0.9 * expected:
+    if not allow_loss and ep < 0.9 * expected:
         print(f"{enc}: packets {ep} < 90% of {expected:.0f}", file=sys.stderr)
         failed = True
     if abs(ep - dp) > max(2, 0.01 * max(ep, dp)):

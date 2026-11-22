@@ -39,6 +39,7 @@
 #include "direct.h"
 #include "option.h"
 #include "client.h"
+#include "quality.h"
 //#include "room.h"
 
 static volatile sig_atomic_t g_shutdown = 0;
@@ -675,6 +676,23 @@ int main(int argc, char* argv[]) {
   if (!opts.parse_error.empty()) {
     fprintf(stderr, "%s\n", opts.parse_error.c_str());
     return 1;
+  }
+
+  if (!opts.quality.empty()) {
+    if (opts.inject_wav.empty() || opts.record_dir.empty()) {
+      fprintf(stderr, "--quality needs --inject-wav and --record-dir\n");
+      return 1;
+    }
+    DirectApplication::rtcInitialize();
+    const std::string wav_out = opts.record_dir + "/quality_out.wav";
+    const std::string stats_path = opts.record_dir + "/quality_stats.json";
+    const char* codec = opts.audio_codec.empty() ? "liquidcodec" : opts.audio_codec.c_str();
+    const int rc = DirectQualityRun(
+        opts.quality.c_str(), opts.inject_wav.c_str(), wav_out.c_str(), stats_path.c_str(), codec,
+        opts.liquid_model_dir.c_str(), opts.liquid_decode.c_str(), opts.liquid_encoder.c_str(),
+        opts.opus_bitrate_bps, opts.impair_loss_pct, opts.impair_jitter_ms);
+    DirectApplication::rtcCleanup();
+    return rc;
   }
 
   InstallSignalHandlers();

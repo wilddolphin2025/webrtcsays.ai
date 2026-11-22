@@ -85,3 +85,4 @@ rust-project.json
 # LiquidCodec weights (LFM Open License). Fetched by scripts/liquidcodec/fetch_models.sh.
 /scripts/liquidcodec/models/
 /scripts/liquidcodec/out/
+/scripts/liquidcodec/.venv/

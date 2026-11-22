@@ -37,6 +37,8 @@ class LiquidBackend {
                             std::string* error) = 0;
   virtual void Reset() = 0;
   virtual const char* name() const = 0;
+  // Codes the encoder refused (farther than one int8 step from the codebook).
+  virtual int out_of_codebook() const { return 0; }
 };
 
 std::unique_ptr<LiquidBackend> CreateCoreMlBackend();

@@ -180,8 +180,15 @@ bool ApplyNegotiatedPack(const std::string& pack, const std::string& fpp,
 // `clamped` is set when the raw float was outside the legal integers.
 bool QuantizeCode(float raw, int codebook_size, int32_t* quantized, bool* clamped);
 
-// Swap an _int8 / _fp16 token in an encoder path. Other names are unchanged.
+// Swap an _int8 / _fp16 / _fp32 token in an encoder path. Other names are unchanged.
 std::string EncoderModelForPrecision(const std::string& model, const std::string& precision);
+
+// Process-wide counts for one quality run. Core ML increments them. Consume
+// returns the count and resets it so the next run starts at zero.
+void NoteOutOfCodebook();
+void NoteClampedCode();
+int ConsumeOutOfCodebook();
+int ConsumeClampedCodes();
 
 // getStats headerBytes is the RTP header only, and some builds report a value
 // equal to the payload. Use it when it is 8..20 bytes/packet, otherwise 12.

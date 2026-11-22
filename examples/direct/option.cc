@@ -423,6 +423,9 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --liquid-pack=u16|tight           u16 is 28 bytes/frame; tight is 17 bytes, no header\n"
       "  --liquid-frames-per-packet=<n>    1, 2, or 4 codec frames in each RTP packet\n"
       "  --aec=on|off                      AEC3, NS, and AGC (default on)\n"
+      "  --quality=offline|factory         Codec or NetEq loop, no call\n"
+      "  --impair-loss=<0-100>             Drop that percent of packets, no sudo\n"
+      "  --impair-jitter-ms=<ms>           Delay packets by 0, half, then full\n"
       "  --liquid-encoder=int8|fp16        Core ML encoder package (default int8)\n"
       "  --stats=<seconds>                  Log a GetStats JSON line on this interval\n"
       "  --duration=<seconds>               Hang up and exit after this many seconds\n"
@@ -457,6 +460,7 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--liquid-decode", "--liquid_decode",
     "--liquid-pack", "--liquid_pack", "--liquid-frames-per-packet", "--liquid_frames_per_packet",
     "--aec", "--liquid-encoder", "--liquid_encoder",
+    "--quality", "--impair-loss", "--impair_loss", "--impair-jitter-ms", "--impair_jitter_ms",
     "--opus-ptime", "--opus_ptime", "--opus-dtx", "--no-opus-dtx",
     "--help"
   };
@@ -898,6 +902,14 @@ Options parseOptions(const std::vector<std::string>& args) {
         opts.liquid_decode = arg.substr(eq + 1);
     } else if (arg.find("--liquid-encoder=") == 0 || arg.find("--liquid_encoder=") == 0) {
         opts.liquid_encoder = arg.substr(eq + 1);
+    } else if (arg.find("--quality=") == 0) {
+        opts.quality = arg.substr(10);
+    } else if (arg.find("--impair-loss=") == 0 || arg.find("--impair_loss=") == 0) {
+        const auto eq = arg.find('=');
+        opts.impair_loss_pct = std::atoi(arg.substr(eq + 1).c_str());
+    } else if (arg.find("--impair-jitter-ms=") == 0 || arg.find("--impair_jitter_ms=") == 0) {
+        const auto eq = arg.find('=');
+        opts.impair_jitter_ms = std::atoi(arg.substr(eq + 1).c_str());
     } else if (arg.find("--aec=") == 0) {
         const std::string value = arg.substr(6);
         if (value == "on" || value == "1" || value == "true") opts.aec = true;
@@ -1122,8 +1134,18 @@ Options parseOptions(const std::vector<std::string>& args) {
   for (char& c : opts.liquid_encoder) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   }
-  if (opts.liquid_encoder != "int8" && opts.liquid_encoder != "fp16") {
-    opts.parse_error = "liquid-encoder must be int8 or fp16";
+  if (opts.liquid_encoder != "int8" && opts.liquid_encoder != "fp16" &&
+      opts.liquid_encoder != "fp32") {
+    opts.parse_error = "liquid-encoder must be int8, fp16, or fp32";
+  }
+  if (!opts.quality.empty() && opts.quality != "offline" && opts.quality != "factory") {
+    opts.parse_error = "quality must be offline or factory";
+  }
+  if (opts.impair_loss_pct < 0 || opts.impair_loss_pct > 100) {
+    opts.parse_error = "impair-loss must be 0..100";
+  }
+  if (opts.impair_jitter_ms < 0 || opts.impair_jitter_ms > 500) {
+    opts.parse_error = "impair-jitter-ms must be 0..500";
   }
   if (opts.liquid_decode != "ane" && opts.liquid_decode != "cpu" &&
       opts.liquid_decode != "all") {

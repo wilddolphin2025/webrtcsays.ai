@@ -146,6 +146,11 @@ struct Options {
     std::string liquid_pack{"u16"};     // u16 (28 bytes/frame) or tight (17 bytes/frame)
     int liquid_frames_per_packet = 1;   // 1, 2, or 4
     bool aec = true;                    // AEC3, NS, and AGC in the platform ADM
+    // Quality ladder. Empty means a normal call. offline = codec only.
+    // factory = AudioEncoder/AudioDecoder plus NetEq, no network.
+    std::string quality{};
+    int impair_loss_pct = 0;            // deterministic, packet_index % 100 < pct
+    int impair_jitter_ms = 0;           // delay cycles 0, half, full
     std::string parse_error{};
 };
 

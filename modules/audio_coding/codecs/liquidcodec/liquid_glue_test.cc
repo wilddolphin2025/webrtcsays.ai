@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "examples/direct/impair_schedule.h"
 #include "modules/audio_coding/codecs/liquidcodec/liquid_codec.h"
 #include "modules/audio_coding/codecs/liquidcodec/liquid_stream.h"
 #include "modules/audio_coding/codecs/liquidcodec/liquid_tail.h"
@@ -123,8 +124,11 @@ void TestPayload() {
       Expect(webrtc::liquid::UnpackPayload(buf, out, 2016, &got, &frames, &seq_n, back_n),
              "unpack multi");
       Expect(got == pack && frames == n, "detected pack and frame count");
-      Expect(std::memcmp(many.data(), back_n, many.size() * sizeof(int32_t)) == 0,
-             "multi-frame codes roundtrip");
+      const bool exact = std::memcmp(many.data(), back_n, many.size() * sizeof(int32_t)) == 0 &&
+                         got == pack && frames == n;
+      Expect(exact, "multi-frame codes roundtrip");
+      std::cout << "QUALITY_PACK pack=" << (pack == webrtc::liquid::WirePack::kU16 ? "u16" : "tight")
+                << " fpp=" << n << " bit_exact=" << (exact ? 1 : 0) << " bytes=" << out << "\n";
       if (pack == webrtc::liquid::WirePack::kU16) Expect(seq_n == 9, "u16 keeps the first sequence");
       if (pack == webrtc::liquid::WirePack::kTight) Expect(seq_n == 0, "tight has no sequence");
     }
@@ -250,6 +254,9 @@ void TestManifest() {
   Expect(webrtc::liquid::EncoderModelForPrecision("stream/lc_enc_step_int8.mlmodelc", "fp16") ==
              "stream/lc_enc_step_fp16.mlmodelc",
          "fp16 swaps the int8 encoder name");
+  Expect(webrtc::liquid::EncoderModelForPrecision("stream/lc_enc_step_int8.mlmodelc", "fp32") ==
+             "stream/lc_enc_step_fp32.mlmodelc",
+         "fp32 swaps the int8 encoder name");
   Expect(std::fabs(webrtc::liquid::OnWireKbps(28, 12, 1, 0.08, false, false) - 6.8) < 0.01,
          "one u16 frame is 6.8 kbps IPv4/UDP/RTP");
   Expect(webrtc::liquid::RtpHeaderBytesForOnWire(28, 1) == 12,
@@ -492,11 +499,26 @@ void TestWavAndTail(const std::string& dir) {
 
 }  // namespace
 
+void TestImpairSchedule() {
+  using webrtc::quality::DelayMs;
+  using webrtc::quality::DropPacket;
+  Expect(!DropPacket(0, 0) && DelayMs(2, 0) == 0, "zero impair is identity");
+  Expect(DropPacket(0, 10) && DropPacket(9, 10) && !DropPacket(10, 10),
+         "10% drops the first 10 packets of each 100");
+  Expect(DelayMs(0, 20) == 0 && DelayMs(1, 20) == 10 && DelayMs(2, 20) == 20 &&
+             DelayMs(3, 20) == 0,
+         "jitter delay cycles 0, half, full");
+  int drops = 0;
+  for (int i = 0; i < 100; ++i) drops += DropPacket(i, 3) ? 1 : 0;
+  Expect(drops == 3, "3% drops 3 of every 100 packets");
+}
+
 int main() {
   const char* dir = std::getenv("LIQUID_TEST_DIR");
   const std::string out = dir ? dir : "scripts/liquidcodec/out";
   mkdir(out.c_str(), 0755);
   TestPayload();
+  TestImpairSchedule();
   TestLatency();
   TestManifest();
   TestPaddedStrides();

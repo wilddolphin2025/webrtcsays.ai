@@ -878,7 +878,8 @@ if (!build_with_chromium) {
         "direct/direct.h",
         "direct/option.h",
         "direct/client.h",
-        "direct/wsock.h"
+        "direct/wsock.h",
+        "direct/quality.h",
       ]
       outputs = [
         "$target_gen_dir/direct.framework/Headers/{{source_file_part}}",
@@ -924,6 +925,10 @@ if (!build_with_chromium) {
         "direct/call_stats.h",
         "direct/audio_tap.cc",
         "direct/audio_tap.h",
+        "direct/impair.cc",
+        "direct/impair.h",
+        "direct/quality.cc",
+        "direct/quality.h",
       ]
 
       # Use the output of the action_foreach target for public headers
@@ -963,6 +968,8 @@ if (!build_with_chromium) {
         "//api/audio_codecs:audio_codecs_api",
         "//api/audio_codecs:builtin_audio_decoder_factory",
         "//api/audio_codecs:builtin_audio_encoder_factory",
+        "//api/neteq:default_neteq_factory",
+        "//system_wrappers:system_wrappers",
         "//api/task_queue:pending_task_safety_flag",
         "//api/units:time_delta",
         "//api/video:video_frame",
@@ -1049,6 +1056,10 @@ if (!build_with_chromium) {
         "direct/call_stats.h",
         "direct/audio_tap.cc",
         "direct/audio_tap.h",
+        "direct/impair.cc",
+        "direct/impair.h",
+        "direct/quality.cc",
+        "direct/quality.h",
       ]
 
       if ((is_mac || is_ios) && rtc_use_liquidcodec) {
@@ -1101,6 +1112,8 @@ if (!build_with_chromium) {
         "../api/audio_codecs:audio_codecs_api",
         "../api/audio_codecs:builtin_audio_decoder_factory",
         "../api/audio_codecs:builtin_audio_encoder_factory",
+        "../api/neteq:default_neteq_factory",
+        "../system_wrappers:system_wrappers",
         "../common_audio",
         "../api/video_codecs:video_decoder_factory_template",
         "../api/video_codecs:video_decoder_factory_template_dav1d_adapter",

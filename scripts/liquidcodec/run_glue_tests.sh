@@ -11,7 +11,8 @@ g++ -std=c++20 -Wall -Wextra -Werror -Wshadow -O2 \
   "${ROOT}/modules/audio_coding/codecs/liquidcodec/liquid_codec.cc" \
   "${ROOT}/modules/audio_coding/codecs/liquidcodec/liquid_stream.cc" \
   "${ROOT}/modules/audio_coding/codecs/liquidcodec/liquid_tail.cc"
-LIQUID_TEST_DIR="${OUT}" "${OUT}/liquid_glue_test"
+LIQUID_TEST_DIR="${OUT}" "${OUT}/liquid_glue_test" | tee "${OUT}/glue.txt"
+grep -c '^QUALITY_PACK ' "${OUT}/glue.txt" | grep -qx 6
 python3 -m pip install --quiet numpy
 python3 "${ROOT}/scripts/liquidcodec/check_tail.py" "${OUT}/tail_case.bin"
 python3 "${ROOT}/scripts/liquidcodec/bandwidth.py" --self-check
@@ -30,7 +31,10 @@ fi
 rm -rf "${REWRITE}"
 bash -n "${ROOT}/scripts/liquidcodec/bench_bandwidth.sh"
 bash -n "${ROOT}/scripts/liquidcodec/run_local_call.sh"
+bash -n "${ROOT}/scripts/liquidcodec/quality_ladder.sh"
+bash -n "${ROOT}/scripts/liquidcodec/run_ios_quality.sh"
 bash -n "${ROOT}/build.sh"
+python3 "${ROOT}/scripts/liquidcodec/quality_metrics.py" --self-check
 python3 "${ROOT}/scripts/liquidcodec/check_shadow.py"
 python3 "${ROOT}/scripts/liquidcodec/tone_wav.py" "${OUT}/tone.wav" 0.05
 test -s "${OUT}/tone.wav"

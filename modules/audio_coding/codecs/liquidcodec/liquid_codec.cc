@@ -5,6 +5,7 @@
 #include "modules/audio_coding/codecs/liquidcodec/liquid_codec.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -374,13 +375,28 @@ bool QuantizeCode(float raw, int codebook_size, int32_t* quantized, bool* clampe
 }
 
 std::string EncoderModelForPrecision(const std::string& model, const std::string& precision) {
+  if (precision != "int8" && precision != "fp16" && precision != "fp32") return model;
+  const std::string token = "_" + precision;
   std::string out = model;
-  const std::string from = precision == "fp16" ? "_int8" : "_fp16";
-  const std::string to = precision == "fp16" ? "_fp16" : "_int8";
-  const size_t pos = out.find(from);
-  if (pos != std::string::npos) out.replace(pos, from.size(), to);
+  for (const char* old : {"_int8", "_fp16", "_fp32"}) {
+    if (token == old) continue;
+    const size_t pos = out.find(old);
+    if (pos == std::string::npos) continue;
+    out.replace(pos, std::strlen(old), token);
+    break;
+  }
   return out;
 }
+
+namespace {
+std::atomic<int> g_out_of_codebook{0};
+std::atomic<int> g_clamped_codes{0};
+}  // namespace
+
+void NoteOutOfCodebook() { g_out_of_codebook.fetch_add(1, std::memory_order_relaxed); }
+void NoteClampedCode() { g_clamped_codes.fetch_add(1, std::memory_order_relaxed); }
+int ConsumeOutOfCodebook() { return g_out_of_codebook.exchange(0, std::memory_order_relaxed); }
+int ConsumeClampedCodes() { return g_clamped_codes.exchange(0, std::memory_order_relaxed); }
 
 uint64_t RtpHeaderBytesForOnWire(uint64_t reported_header_bytes, uint64_t packets) {
   if (packets == 0) return reported_header_bytes;

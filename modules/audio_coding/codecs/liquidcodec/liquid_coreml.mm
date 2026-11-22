@@ -348,6 +348,7 @@ bool ReadCodes(MLMultiArray* arr, int codebooks, int codebook_size, int new_fram
         return false;
       }
       if (clamped) {
+        NoteClampedCode();
         fprintf(stderr,
                 "LiquidCodec encoder: clamped int8/fp16 code frame=%d codebook=%d raw=%.4f -> %d\n",
                 frame_index, q, sample, code);
@@ -387,6 +388,7 @@ class CoreMlBackend final : public LiquidBackend {
   }
 
   const char* name() const override { return "coreml"; }
+  int out_of_codebook() const override { return bad_codes_; }
 
   bool Start(const ModelPaths& paths, const ChunkConfig& chunk, std::string* error) override {
     std::lock_guard<std::mutex> lock(mu_);
@@ -572,6 +574,7 @@ class CoreMlBackend final : public LiquidBackend {
                              stateful ? 0 : chunk.ctx_frames, paths_.encoder_codes_layout,
                              frames_encoded_, codes_out, error)) {
       ++bad_codes_;
+      NoteOutOfCodebook();
       fprintf(stderr, "LiquidCodec %s (count=%d). State reset to zero.\n",
               error && !error->empty() ? error->c_str() : "encoder code unreadable", bad_codes_);
       for (const KeptState& cleared : states_) {
@@ -611,6 +614,7 @@ class CoreMlBackend final : public LiquidBackend {
     for (int i = 0; i < frames_out * chunk.codebooks; ++i) {
       if (codes_out[i] < 0 || codes_out[i] >= chunk.codebook_size) {
         ++bad_codes_;
+        NoteOutOfCodebook();
         if (bad_codes_ == 1 || bad_codes_ % 50 == 0) {
           fprintf(stderr,
                   "LiquidCodec encoder: code outside the codebook (count=%d). "

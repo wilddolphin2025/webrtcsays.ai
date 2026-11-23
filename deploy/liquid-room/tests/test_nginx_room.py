@@ -43,8 +43,8 @@ def make_pki(root: Path) -> tuple[Path, Path, Path]:
         "-days", "2", "-subj", "/CN=test-ca", "-addext", "basicConstraints=critical,CA:TRUE",
         "-addext", "keyUsage=critical,keyCertSign,cRLSign")
     run("openssl", "req", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key), "-out", str(csr),
-        "-subj", "/CN=liquidserver.wilddolphin.us")
-    ext.write_text("subjectAltName=DNS:liquidserver.wilddolphin.us\nextendedKeyUsage=serverAuth\n")
+        "-subj", "/CN=ls.wilddolphin.us")
+    ext.write_text("subjectAltName=DNS:ls.wilddolphin.us\nextendedKeyUsage=serverAuth\n")
     run("openssl", "x509", "-req", "-in", str(csr), "-CA", str(ca_crt), "-CAkey", str(ca_key), "-CAcreateserial",
         "-out", str(crt), "-days", "2", "-extfile", str(ext))
     return ca_crt, crt, key
@@ -163,7 +163,7 @@ class NginxRoomTests(unittest.TestCase):
                     .replace("/etc/nginx/liquid-gate.conf", str(gate_conf))
                     .replace("/etc/ssl/certs/ca-certificates.crt", str(ca)))
         room_http = (ROOM_DIR / "nginx" / "liquid-room-http.conf").read_text().replace(
-            "liquidserver.wilddolphin.us:443", f"127.0.0.1:{self.stub.port}")
+            "ls.wilddolphin.us:443", f"127.0.0.1:{self.stub.port}")
         (self.root / "demo-loc.conf").write_text(demo_loc)
         (self.root / "room-loc.conf").write_text(room_loc)
         (self.root / "room-http.conf").write_text(room_http)
@@ -302,13 +302,13 @@ http {{
         lines = req.split("\r\n")
         self.assertEqual(lines[0], "GET /ws/room101 HTTP/1.1")
         hdr = {l.split(":", 1)[0].lower(): l.split(":", 1)[1].strip() for l in lines[1:] if ":" in l}
-        self.assertEqual(hdr.get("host"), "liquidserver.wilddolphin.us")
+        self.assertEqual(hdr.get("host"), "ls.wilddolphin.us")
         gates = [l for l in lines if l.lower().startswith("x-liquid-gate:")]
         self.assertEqual(gates, [f"X-Liquid-Gate: {GATE}"], "client cannot forge or add a gate header")
         for name in ("authorization", "cookie", "x-demo-token"):
             self.assertIn(hdr.get(name, ""), ("",), name)
         self.assertNotIn(TOKEN, req)
-        self.assertEqual(self.stub.sni, ["liquidserver.wilddolphin.us"])
+        self.assertEqual(self.stub.sni, ["ls.wilddolphin.us"])
         self.assertEqual(self.stub.texts[:1], ["HELLO"])
 
     def test_query_token_is_not_forwarded_or_logged(self) -> None:

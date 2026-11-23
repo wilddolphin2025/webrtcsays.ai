@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Phase B checks with no credentials. LIQUID_HOST defaults to liquidserver.wilddolphin.us.
+# Phase B checks with no credentials. LIQUID_HOST defaults to ls.wilddolphin.us.
 set -uo pipefail
 fail() { echo "FAIL $*"; exit 1; }
 code() { curl -s -o /dev/null -w '%{http_code}' -m 10 "$@"; }
-host="${LIQUID_HOST:-liquidserver.wilddolphin.us}"
+host="${LIQUID_HOST:-ls.wilddolphin.us}"
 [ "$(code https://rtc.wilddolphin.us/demo/room/room101)" = 302 ] || fail "room page is not behind login"
 loc="$(curl -s -o /dev/null -w '%{redirect_url}' -m 10 https://rtc.wilddolphin.us/demo/room/room101)"
 case "$loc" in *"/demo/login?next=/demo/room/room101") ;; *) fail "login next lost the room: $loc";; esac

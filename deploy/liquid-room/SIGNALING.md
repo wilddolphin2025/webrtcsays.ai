@@ -23,7 +23,7 @@ Wire format words below (`MUST`, `SHOULD`, `MAY`) are used in the RFC 2119 sense
 
 ```
 iPhone / Chrome ──wss──▶ rtc.wilddolphin.us/demo/room/ws/<room>     (nginx: auth_request, strips credentials)
-                 ──https─▶ liquidserver.wilddolphin.us/ws/<room>    (Caddy on the LiquidServer VPS: source-IP allowlist)
+                 ──https─▶ ls.wilddolphin.us/ws/<room>              (Caddy on the LiquidServer VPS: source-IP allowlist)
                  ──ws────▶ 127.0.0.1:7880/ws/<room>                 (LiquidServer, loopback only)
 media:  iPhone / Chrome ◀──DTLS-SRTP──▶ LiquidServer public IP udp/7882 (ICE UDP mux), tcp/7881 (ICE-TCP fallback)
 ```

@@ -48,7 +48,7 @@ bash deploy/liquid-room/host/check-phase-a.sh
 ---------------------------------------------------------------------------------------------------
 ## Phase B: LiquidServer behind rtc (only after the founder approves phase 1 on the LiquidServer VPS)
 
-Prerequisites: DNS `liquidserver.wilddolphin.us A <liquidserver-vps IPv4>`; Caddy on the LiquidServer VPS; ufw
+Prerequisites: DNS `ls.wilddolphin.us A <liquidserver-vps IPv4>`; Caddy on the LiquidServer VPS; ufw
 `80/tcp 443/tcp 7881/tcp 7882/udp` (22/tcp stays); the LiquidServer binary and unit from the
 LiquidServer repo (env `LIQUID_HTTP_BIND=127.0.0.1:7880`, `LIQUID_GATE_FILE=/etc/liquidserver/gate`,
 `LIQUID_PUBLIC_IP=<public IPv4>`, `LIQUID_ICE_UDP_PORT=7882`, `LIQUID_ICE_TCP_PORT=7881`). Until the
@@ -105,7 +105,7 @@ The script backs up the site file to `/root/backups/liquid-room-<ts>/` with `rol
 bash deploy/liquid-room/host/check-phase-b.sh        # from the box or the Mac (not from rtc)
 ```
 - `/demo/room/room101` → 302 to `/demo/login?next=/demo/room/room101`; `/demo/room/ws/room101` → 401.
-- `https://liquidserver.wilddolphin.us/healthz` → 200; `/ws/room101` from a non-rtc address → 404.
+- `https://ls.wilddolphin.us/healthz` → 200; `/ws/room101` from a non-rtc address → 404.
 - On rtc, as root, with the founder's token file (never echo it):
   `curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat <tokenfile>)" -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' https://rtc.wilddolphin.us/demo/room/ws/room101` → `101`.
 - `grep -c token= /var/log/nginx/demo-room.log` → 0. `/demo/`, `/demo/ws`, `/demo/view/*`, `/ws/`, `/`,

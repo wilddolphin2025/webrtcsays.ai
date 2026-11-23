@@ -5,7 +5,7 @@
 # ICE ports 7882/udp and 7881/tcp itself; Caddy does not touch media.
 # No access log: request headers include X-Liquid-Gate.
 
-liquidserver.wilddolphin.us {
+ls.wilddolphin.us {
 	@rtc_ws {
 		path /ws/*
 		remote_ip RTC_VPS_IP_PLACEHOLDER

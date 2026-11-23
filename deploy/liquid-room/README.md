@@ -51,7 +51,7 @@ Chrome  /demo/room/room101 (caller) ─┐                         ┌─ iPhone
                                      ▼                         ▼
              rtc nginx /demo/room/ws/room101: auth, strip credentials, add X-Liquid-Gate
                                      ▼
-             Caddy liquidserver.wilddolphin.us/ws/room101 (rtc source IP only) → 127.0.0.1:7880
+             Caddy ls.wilddolphin.us/ws/room101 (rtc source IP only) → 127.0.0.1:7880
                                      ▼
              LiquidServer (Go/Pion): callee for both; LIQUIDCALL → decode → voice swap → Opus → Chrome
              media on udp/7882 (ICE mux) and tcp/7881, public IP, no TURN needed

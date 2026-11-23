@@ -268,6 +268,55 @@ class AuthTests(unittest.TestCase):
         code, _, _ = self.request("GET", "/_demo_auth", headers=headers)
         self.assertEqual(code, 401)
 
+    def test_view_and_room_paths_need_a_credential(self) -> None:
+        headers = {"Authorization": f"Bearer {TOKEN}"}
+        allowed = [
+            "/demo/view/frame101",
+            "/demo/view/room101",
+            "/demo/view/assets/view.css",
+            "/demo/view/assets/view.js",
+            "/demo/view/ws/room101",
+            "/demo/room/room101",
+            "/demo/room/ws/room101",
+            "/demo/room/Room_1-a",
+        ]
+        for path in allowed:
+            code, _, _ = self.request("GET", "/_demo_auth", headers={**headers, "X-Original-URI": path})
+            self.assertEqual(code, 204, path)
+            code, _, _ = self.request("GET", "/_demo_auth", headers={"X-Original-URI": path})
+            self.assertEqual(code, 401, path + " without credential")
+        denied = [
+            "/demo/room/",
+            "/demo/room/ws",
+            "/demo/room/ws/",
+            "/demo/room/ws/room101/extra",
+            "/demo/room/-bad",
+            "/demo/room/" + "a" * 65,
+            "/demo/room/room101/",
+            "/demo/room/../ws",
+            "/demo/room/ws/room%2F101",
+            "/demo/rooms/room101",
+        ]
+        for path in denied:
+            code, _, _ = self.request("GET", "/_demo_auth", headers={**headers, "X-Original-URI": path})
+            self.assertEqual(code, 401, path)
+
+    def test_login_returns_to_a_room_page(self) -> None:
+        for nxt in ("/demo/room/room101", "/demo/view/room101"):
+            code, _, headers = self.login(PASSWORD, nxt=nxt)
+            self.assertEqual(code, 303, nxt)
+            self.assertEqual(headers.get("Location"), nxt)
+        for nxt in (
+            "/demo/room/ws/room101",
+            "/demo/room/room101?token=sekret",
+            "/demo/room/room101#x",
+            "/demo/room/ws",
+            "/demo/room//evil.example",
+        ):
+            code, _, headers = self.login(PASSWORD, nxt=nxt)
+            self.assertEqual(code, 303, nxt)
+            self.assertEqual(headers.get("Location"), "/demo/", nxt)
+
     def test_redirects_are_closed(self) -> None:
         hostile = [
             "https://evil.example/phish",

@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="base-uri 'none'; object-src 'none'; form-action 'self'; frame-ancestors 'none'">
+  <title>LiquidCall room</title>
+  <style>
+    body.wsdemo { margin: 0; background: #1B2838; color: #C7D5E0; font: 14px/1.4 Inter, system-ui, sans-serif; }
+    body.wsdemo * { box-sizing: border-box; }
+    body.wsdemo .wrap { max-width: 1120px; margin: 0 auto; padding: 0 32px; }
+    body.wsdemo .top { background: #171D25; border-bottom: 3px solid #2A475E; }
+    body.wsdemo .topin { display: flex; align-items: center; min-height: 72px; }
+    body.wsdemo .wm { margin: 0; font-size: 22px; font-weight: 800; letter-spacing: -.01em; line-height: 1.2; color: #FFFFFF; }
+    body.wsdemo .by { margin: 0; font-size: 12px; color: #8F98A0; text-transform: uppercase; letter-spacing: .12em; }
+    body.wsdemo .card { background: #2A475E; border: 1px solid #3D4450; border-radius: 10px; padding: 24px; margin-top: 24px; }
+    body.wsdemo h2 { margin: 0 0 16px; font-size: 13px; line-height: 1.3; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: #D6D9DC; }
+    body.wsdemo p { margin: 0 0 16px; }
+    body.wsdemo .hint { color: #D6D9DC; font-size: 12px; }
+    body.wsdemo .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    body.wsdemo .stage { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    body.wsdemo .stage h3 { margin: 0 0 8px; font-size: 14px; font-weight: 600; color: #F1F2F3; }
+    body.wsdemo .stats { font-variant-numeric: tabular-nums; }
+    body.wsdemo video { background: #0E141B; border: 1px solid #3D4450; border-radius: 6px; width: 100%; height: auto; aspect-ratio: 16 / 9; }
+    body.wsdemo .btn { min-height: 48px; padding: 0 20px; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; border-radius: 6px; border: 1px solid #ACB2B8; color: #C7D5E0; background: #23262E; touch-action: manipulation; }
+    body.wsdemo .btn.primary { background: #1A9FFF; color: #0E141B; border-color: #1A9FFF; }
+    body.wsdemo .btn.ghost { background: transparent; }
+    body.wsdemo #log { white-space: pre-wrap; margin: 0; height: 220px; overflow: auto; padding: 16px; background: #0E141B; border: 1px solid #ACB2B8; border-radius: 6px; color: #C7D5E0; font: inherit; }
+    body.wsdemo .foot { margin: 40px 0 32px; text-align: center; color: #8F98A0; font-size: 12px; }
+    body.wsdemo :focus-visible { outline: 3px solid #66C0F4; outline-offset: 2px; }
+    @media (max-width: 800px) {
+      body.wsdemo .wrap { padding: 0 16px; }
+      body.wsdemo .card { padding: 16px; }
+      body.wsdemo .stage { grid-template-columns: 1fr; }
+      body.wsdemo .topin { min-height: 0; padding: 14px 0; }
+    }
+  </style>
+</head>
+<body class="wsdemo">
+  <header class="top">
+    <div class="wrap topin">
+      <div class="brand">
+        <h1 class="wm">LiquidCall</h1>
+        <p class="by">by Wilddolphin LLC</p>
+      </div>
+    </div>
+  </header>
+  <main class="wrap">
+    <section class="card" aria-labelledby="call-heading">
+      <h2 id="call-heading">Room <span id="roomName"></span></h2>
+      <p>Join the room, then call the same room from the LiquidCall iPhone app. LiquidServer turns the iPhone's LiquidCall audio, in the voice picked on the phone, into Opus for this browser.</p>
+      <p id="endpoint" class="hint"></p>
+      <div class="row">
+        <button id="startBtn" class="btn primary" type="button">Join room</button>
+        <button id="hangupBtn" class="btn" type="button">Leave</button>
+        <form method="post" action="/demo/logout">
+          <button class="btn ghost" type="submit">Sign out</button>
+        </form>
+        <span id="status" class="hint">idle</span>
+      </div>
+      <p id="stats" class="hint stats">no call</p>
+      <audio id="remoteAudio" autoplay playsinline></audio>
+    </section>
+    <section class="card" aria-labelledby="log-heading">
+      <h2 id="log-heading">Log</h2>
+      <pre id="log"></pre>
+    </section>
+    <p class="foot">LiquidCall room · rtc.wilddolphin.us</p>
+  </main>
+  <script>
+    const ROOM_RE = /^\/demo\/room\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})$/;
+    const roomMatch = location.pathname.match(ROOM_RE);
+    const ROOM = roomMatch && roomMatch[1] !== "ws" ? roomMatch[1] : "";
+    let ws = null;
+    let pc = null;
+    let localStream = null;
+    let inviteSent = false;
+    let callTimeout = null;
+    let statsTimer = null;
+    let lastStats = null;
+    const pendingRemoteCandidates = [];
+
+    const logEl = document.getElementById("log");
+    const statusEl = document.getElementById("status");
+    const statsEl = document.getElementById("stats");
+    const remoteAudio = document.getElementById("remoteAudio");
+    document.getElementById("roomName").textContent = ROOM || "(invalid)";
+
+    function log(msg) {
+      const line = "[" + new Date().toLocaleTimeString() + "] " + msg;
+      logEl.textContent += line + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setStatus(s) {
+      statusEl.textContent = s;
+      log("status=" + s);
+    }
+
+    function signalingUrl() {
+      if (!ROOM) throw new Error("Room name is not valid.");
+      const host = location.hostname;
+      const ipv4 = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(host);
+      if (!host || host.indexOf(":") !== -1 || ipv4) {
+        throw new Error("Refusing to open signaling on a raw IP address.");
+      }
+      const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+      return scheme + "//" + location.host + "/demo/room/ws/" + ROOM;
+    }
+
+    document.getElementById("endpoint").textContent = ROOM
+      ? "Signaling stays on " + location.host + "/demo/room/ws/" + ROOM
+      : "This address has no valid room name.";
+
+    function cleanIncoming(raw) {
+      return raw.replace(/^[\u0000-\u001f]+/, "");
+    }
+
+    function toLegacySdp(sdp) {
+      const lines = sdp.split(/\r\n|\n/).filter(Boolean);
+      const allowAudio = new Set(["opus", "pcmu", "pcma", "g722", "isac", "telephone-event"]);
+      const allowVideo = new Set(["vp8", "vp9", "h264", "av1"]);
+      const keepPt = new Set();
+      let currentMedia = "";
+      for (const line of lines) {
+        if (line.startsWith("m=audio ")) currentMedia = "audio";
+        else if (line.startsWith("m=video ")) currentMedia = "video";
+        else if (line.startsWith("m=")) currentMedia = "";
+        if (line.startsWith("a=rtpmap:")) {
+          const m = line.match(/^a=rtpmap:(\d+)\s+([^/]+)/i);
+          if (!m) continue;
+          const pt = m[1];
+          const codec = m[2].toLowerCase();
+          if ((currentMedia === "audio" && allowAudio.has(codec)) ||
+              (currentMedia === "video" && allowVideo.has(codec))) {
+            keepPt.add(pt);
+          }
+        }
+      }
+      const out = [];
+      currentMedia = "";
+      for (const line of lines) {
+        if (/ulpfec|flexfec|rtx|red/i.test(line)) continue;
+        if (line.startsWith("m=audio ") || line.startsWith("m=video ")) {
+          currentMedia = line.startsWith("m=audio ") ? "audio" : "video";
+          const parts = line.split(" ");
+          const pts = parts.slice(3).filter((pt) => keepPt.has(pt));
+          out.push(pts.length ? parts.slice(0, 3).concat(pts).join(" ") : line);
+          continue;
+        }
+        if (line.startsWith("a=rtpmap:") || line.startsWith("a=fmtp:") || line.startsWith("a=rtcp-fb:")) {
+          const m = line.match(/^a=(?:rtpmap|fmtp|rtcp-fb):(\d+)/i);
+          if (m && !keepPt.has(m[1])) continue;
+        }
+        out.push(line);
+      }
+      return out.join("\r\n") + "\r\n";
+    }
+
+    function resetTimeout() {
+      if (callTimeout) clearTimeout(callTimeout);
+      callTimeout = setTimeout(() => log("call setup timeout (no auto-cancel)"), 120000);
+    }
+
+    function stopTimeout() {
+      if (callTimeout) {
+        clearTimeout(callTimeout);
+        callTimeout = null;
+      }
+    }
+
+    function describeStats(report, prev) {
+      let codec = "", inbound = null, outbound = null, rtt = null;
+      const codecs = {};
+      report.forEach((s) => { if (s.type === "codec") codecs[s.id] = s; });
+      report.forEach((s) => {
+        if (s.type === "inbound-rtp" && s.kind === "audio") inbound = s;
+        if (s.type === "outbound-rtp" && s.kind === "audio") outbound = s;
+        if (s.type === "candidate-pair" && s.nominated && s.state === "succeeded" && typeof s.currentRoundTripTime === "number") {
+          rtt = s.currentRoundTripTime;
+        }
+      });
+      if (inbound && codecs[inbound.codecId]) codec = String(codecs[inbound.codecId].mimeType || "");
+      const parts = ["codec " + (codec.replace(/^audio\//i, "") || "-")];
+      if (inbound && prev && prev.inbound && inbound.timestamp > prev.inbound.timestamp) {
+        const kbps = ((inbound.bytesReceived - prev.inbound.bytesReceived) * 8) / (inbound.timestamp - prev.inbound.timestamp);
+        parts.push("down " + kbps.toFixed(1) + " kbps");
+      }
+      if (outbound && prev && prev.outbound && outbound.timestamp > prev.outbound.timestamp) {
+        const kbps = ((outbound.bytesSent - prev.outbound.bytesSent) * 8) / (outbound.timestamp - prev.outbound.timestamp);
+        parts.push("up " + kbps.toFixed(1) + " kbps");
+      }
+      if (inbound) {
+        parts.push("jitter " + Math.round((inbound.jitter || 0) * 1000) + " ms");
+        parts.push("lost " + (inbound.packetsLost || 0));
+      }
+      if (rtt !== null) parts.push("rtt " + Math.round(rtt * 1000) + " ms");
+      return { text: parts.join(" · "), inbound, outbound };
+    }
+
+    function startStats() {
+      stopStats();
+      statsTimer = setInterval(async () => {
+        if (!pc) return;
+        try {
+          const d = describeStats(await pc.getStats(), lastStats);
+          lastStats = d;
+          statsEl.textContent = d.text;
+        } catch (err) {}
+      }, 1000);
+    }
+
+    function stopStats() {
+      if (statsTimer) {
+        clearInterval(statsTimer);
+        statsTimer = null;
+      }
+      lastStats = null;
+    }
+
+    async function ensureLocalMedia() {
+      if (localStream) return;
+      localStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false
+      });
+      log("microphone ready");
+    }
+
+    async function loadIceServers() {
+      const servers = [{ urls: "stun:stun.l.google.com:19302" }];
+      const res = await fetch("/demo/turn", {
+        credentials: "same-origin",
+        cache: "no-store",
+        redirect: "manual",
+        referrerPolicy: "no-referrer"
+      });
+      if (res.status === 401 || res.status === 302 || res.type === "opaqueredirect") {
+        location.assign("/demo/login?next=/demo/room/" + ROOM);
+        throw new Error("login required");
+      }
+      if (!res.ok) {
+        log("TURN unavailable; continuing with STUN only. Static credentials are temporary and are not embedded in this page.");
+        return servers;
+      }
+      const data = await res.json();
+      if (data.minted === true || data.mode !== "static" || data.temporary !== true || data.rest_api === true) {
+        log("Refusing TURN settings that are not the temporary static account.");
+        return servers;
+      }
+      if (data.uris && data.username && data.credential) {
+        servers.push({ urls: data.uris, username: data.username, credential: data.credential });
+        log("TURN: temporary static account. REST credentials are not minted.");
+      }
+      return servers;
+    }
+
+    async function createPeerConnection() {
+      if (pc) return;
+      await ensureLocalMedia();
+      const iceServers = await loadIceServers();
+      pc = new RTCPeerConnection({ iceServers, bundlePolicy: "max-bundle", rtcpMuxPolicy: "require" });
+      for (const track of localStream.getAudioTracks()) pc.addTrack(track, localStream);
+      pc.ontrack = (ev) => {
+        const stream = ev.streams && ev.streams.length ? ev.streams[0] : new MediaStream([ev.track]);
+        remoteAudio.srcObject = stream;
+        log("remote track: " + (ev.track ? ev.track.kind : "unknown"));
+        remoteAudio.play().catch(() => {});
+      };
+      pc.onicecandidate = (ev) => {
+        if (!ev.candidate || !ev.candidate.candidate || !ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send("ICE:" + (ev.candidate.sdpMLineIndex || 0) + ":" + ev.candidate.candidate);
+        log(">> ICE");
+      };
+      pc.onconnectionstatechange = () => {
+        if (!pc) return;
+        setStatus("pc:" + pc.connectionState);
+        if (pc.connectionState === "connected") {
+          stopTimeout();
+          startStats();
+        }
+      };
+    }
+
+    async function onSignal(msg) {
+      if (/^\d{3}\s/.test(msg) && !msg.startsWith("200 OK")) {
+        setStatus("reject:" + msg.slice(0, 40));
+        hangup(false);
+        return;
+      }
+      if (msg.startsWith("200 OK")) {
+        if (!inviteSent) {
+          ws.send("INVITE:" + JSON.stringify({ agent: "audio", room_name: ROOM, video: false }));
+          inviteSent = true;
+          setStatus("invite-sent");
+          log(">> INVITE " + ROOM);
+        }
+        return;
+      }
+      if (msg === "WAITING") {
+        await createPeerConnection();
+        const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false });
+        const legacySdp = toLegacySdp(offer.sdp || "");
+        await pc.setLocalDescription({ type: "offer", sdp: legacySdp });
+        ws.send("OFFER:" + legacySdp);
+        log(">> OFFER sent");
+        return;
+      }
+      if (msg.startsWith("ANSWER:")) {
+        if (!pc) return;
+        await pc.setRemoteDescription({ type: "answer", sdp: msg.slice("ANSWER:".length) });
+        log("remote ANSWER applied");
+        stopTimeout();
+        while (pendingRemoteCandidates.length) {
+          await pc.addIceCandidate(pendingRemoteCandidates.shift());
+        }
+        return;
+      }
+      if (msg.startsWith("ICE:")) {
+        const payload = msg.slice("ICE:".length);
+        const i = payload.indexOf(":");
+        if (i < 0) return;
+        const mline = Number(payload.slice(0, i));
+        const ice = {
+          candidate: payload.slice(i + 1),
+          sdpMLineIndex: Number.isFinite(mline) ? mline : 0,
+          sdpMid: "0"
+        };
+        if (pc && pc.remoteDescription) await pc.addIceCandidate(ice);
+        else pendingRemoteCandidates.push(ice);
+        return;
+      }
+      if (msg === "BYE") {
+        try { ws.send("200 OK"); } catch (err) {}
+        setStatus("remote-bye");
+        hangup(false);
+      }
+    }
+
+    async function startCall() {
+      if (ws) return;
+      const wsUrl = signalingUrl();
+      inviteSent = false;
+      pendingRemoteCandidates.length = 0;
+      ws = new WebSocket(wsUrl);
+      resetTimeout();
+      ws.onerror = () => setStatus("ws-error");
+      ws.onclose = () => {
+        setStatus("ws-closed");
+        if (ws) hangup(false);
+      };
+      ws.onmessage = async (e) => {
+        const msg = cleanIncoming(String(e.data || ""));
+        const shown = msg.startsWith("OFFER:") || msg.startsWith("ANSWER:") ? msg.slice(0, 12) + "…" : msg.slice(0, 180);
+        log("<< " + (msg.startsWith("ICE:") ? "ICE" : shown));
+        resetTimeout();
+        try {
+          await onSignal(msg);
+        } catch (err) {
+          log("signal error: " + (err.message || err));
+        }
+      };
+      ws.onopen = () => {
+        setStatus("ws-open");
+        ws.send("HELLO");
+        log(">> HELLO");
+      };
+    }
+
+    function hangup(sendBye) {
+      if (sendBye === undefined) sendBye = true;
+      stopTimeout();
+      stopStats();
+      const sock = ws;
+      ws = null;
+      try {
+        if (sendBye && sock && sock.readyState === WebSocket.OPEN) sock.send("BYE");
+      } catch (err) {}
+      if (pc) {
+        pc.close();
+        pc = null;
+      }
+      if (localStream) {
+        for (const track of localStream.getTracks()) track.stop();
+        localStream = null;
+      }
+      if (sock) {
+        try { sock.close(); } catch (err) {}
+      }
+      statsEl.textContent = "no call";
+      setStatus("ended");
+    }
+
+    document.getElementById("startBtn").addEventListener("click", () => {
+      remoteAudio.play().catch(() => {});
+      startCall().catch((e) => log("start failed: " + (e.message || e)));
+    });
+    document.getElementById("hangupBtn").addEventListener("click", () => hangup(true));
+    window.addEventListener("pagehide", () => hangup(true));
+  </script>
+</body>
+</html>

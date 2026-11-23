@@ -584,15 +584,21 @@ bool DtlsTransportInternalImpl::SetupDtls() {
              srtp_ciphers_.size(), dtls_in_stun_ ? 1 : 0);
     SSLStreamAdapter::LogSrtpDiagnostic(line);
   }
-  if (!srtp_ciphers_.empty()) {
-    if (!dtls_->SetDtlsSrtpCryptoSuites(srtp_ciphers_)) {
-      SSLStreamAdapter::LogSrtpDiagnostic(
-          "SetupDtls SetDtlsSrtpCryptoSuites failed");
-      return false;
-    }
-  } else {
+  // An empty list used to skip SetDtlsSrtpCryptoSuites and still call
+  // MaybeStartDtls. BoringSSL then completes DTLS with no use_srtp in the
+  // ClientHello or the ServerHello. There is no mismatch alert, because the
+  // extension was never offered. Install the product profile instead.
+  const bool srtp_fallback = srtp_ciphers_.empty();
+  const std::vector<int> sha1_32_only = {kSrtpAes128CmSha1_32};
+  const std::vector<int>& suites = srtp_fallback ? sha1_32_only : srtp_ciphers_;
+  if (srtp_fallback) {
     SSLStreamAdapter::LogSrtpDiagnostic(
-        "SetupDtls srtp_ciphers empty; use_srtp will not be installed");
+        "SetupDtls srtp_ciphers=0 profiles=SRTP_AES128_CM_SHA1_32 fallback=1");
+  }
+  if (!dtls_->SetDtlsSrtpCryptoSuites(suites)) {
+    SSLStreamAdapter::LogSrtpDiagnostic(
+        "SetupDtls SetDtlsSrtpCryptoSuites failed");
+    return false;
   }
 
   if (!dtls_->SetSslGroupIds(ephemeral_key_exchange_cipher_groups_)) {

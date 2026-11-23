@@ -94,6 +94,15 @@ constexpr SrtpCipherMapEntry kSrtpCipherMap[] = {
     {.internal_name = "SRTP_AEAD_AES_128_GCM", .id = kSrtpAeadAes128Gcm},
     {.internal_name = "SRTP_AEAD_AES_256_GCM", .id = kSrtpAeadAes256Gcm}};
 
+size_t SrtpProfileCount(const std::string& profiles) {
+  if (profiles.empty()) return 0;
+  size_t count = 1;
+  for (char c : profiles) {
+    if (c == ':') ++count;
+  }
+  return count;
+}
+
 #ifdef OPENSSL_IS_BORINGSSL
 // Enabled by EnableTimeCallbackForTesting. Should never be set in production
 // code.
@@ -548,16 +557,16 @@ bool OpenSSLStreamAdapter::SetDtlsSrtpCryptoSuites(
   }
 
   if (internal_ciphers.empty()) {
-    SSLStreamAdapter::LogSrtpDiagnostic(
-        "SetDtlsSrtpCryptoSuites empty profile string; use_srtp will be omitted");
-    return false;
+    // Do not leave the adapter with no profiles. DTLS would still finish,
+    // and both the ClientHello and the ServerHello would omit use_srtp.
+    internal_ciphers = "SRTP_AES128_CM_SHA1_32";
   }
 
   srtp_ciphers_ = internal_ciphers;
-  char line[256];
+  char line[320];
   snprintf(line, sizeof(line),
-           "SetDtlsSrtpCryptoSuites role=%s state=%d profiles=%s",
-           role_ == SSL_SERVER ? "server" : "client", static_cast<int>(state_),
+           "SetDtlsSrtpCryptoSuites role=%s srtp_ciphers=%zu profiles=%s",
+           role_ == SSL_SERVER ? "server" : "client", ciphers.size(),
            srtp_ciphers_.c_str());
   SSLStreamAdapter::LogSrtpDiagnostic(line);
   return true;
@@ -957,16 +966,24 @@ int OpenSSLStreamAdapter::BeginSSL() {
     return -1;
   }
 
-  // CTX profiles are not always copied onto a server SSL. Set them on this
-  // object too, after SSL_new and before the handshake.
-  if (!srtp_ciphers_.empty()) {
-    const int rc = SSL_set_tlsext_use_srtp(ssl_, srtp_ciphers_.c_str());
-    char line[320];
-    snprintf(line, sizeof(line),
-             "BeginSSL role=%s SSL_set_tlsext_use_srtp(%s)=%d",
-             role_ == SSL_SERVER ? "server" : "client", srtp_ciphers_.c_str(),
-             rc);
-    SSLStreamAdapter::LogSrtpDiagnostic(line);
+  // Apply the profile string to this SSL for both roles. An empty string
+  // makes BoringSSL omit use_srtp from the ClientHello and the ServerHello
+  // while the handshake still completes.
+  const bool begin_fallback = srtp_ciphers_.empty();
+  if (begin_fallback) {
+    srtp_ciphers_ = "SRTP_AES128_CM_SHA1_32";
+  }
+  const int srtp_rc = SSL_set_tlsext_use_srtp(ssl_, srtp_ciphers_.c_str());
+  char srtp_line[320];
+  snprintf(srtp_line, sizeof(srtp_line),
+           "BeginSSL role=%s srtp_ciphers=%zu profiles=%s fallback=%d "
+           "SSL_set_tlsext_use_srtp=%d",
+           role_ == SSL_SERVER ? "server" : "client",
+           SrtpProfileCount(srtp_ciphers_), srtp_ciphers_.c_str(),
+           begin_fallback ? 1 : 0, srtp_rc);
+  SSLStreamAdapter::LogSrtpDiagnostic(srtp_line);
+  if (srtp_rc != 0) {
+    return -1;
   }
 
   SSL_set_app_data(ssl_, this);
@@ -1229,28 +1246,27 @@ SSL_CTX* OpenSSLStreamAdapter::SetupSSLContext() {
       ctx,
       "DEFAULT:!NULL:!aNULL:!SHA256:!SHA384:!aECDH:!AESGCM+AES256:!aPSK:!3DES");
 
-  {
-    char line[320];
-    if (srtp_ciphers_.empty()) {
-      snprintf(line, sizeof(line),
-               "SetupSSLContext role=%s srtp_ciphers empty; ServerHello will "
-               "have no use_srtp",
-               role_ == SSL_SERVER ? "server" : "client");
-      SSLStreamAdapter::LogSrtpDiagnostic(line);
-    } else {
-      const int rc = SSL_CTX_set_tlsext_use_srtp(ctx, srtp_ciphers_.c_str());
-      snprintf(line, sizeof(line),
-               "SetupSSLContext role=%s SSL_CTX_set_tlsext_use_srtp(%s)=%d",
-               role_ == SSL_SERVER ? "server" : "client", srtp_ciphers_.c_str(),
-               rc);
-      SSLStreamAdapter::LogSrtpDiagnostic(line);
-      // 0 is success. A failure used to free the context with no log the
-      // device syslog could see.
-      if (rc != 0) {
-        SSL_CTX_free(ctx);
-        return nullptr;
-      }
-    }
+  // Both roles. BoringSSL adds use_srtp to the ClientHello only when this
+  // SSL_CTX has a profile list (ssl/extensions.cc ext_srtp_add_clienthello).
+  // The same list is what a DTLS 1.2 server echoes. An empty string skips
+  // the extension and the handshake still succeeds.
+  const bool ctx_fallback = srtp_ciphers_.empty();
+  if (ctx_fallback) {
+    srtp_ciphers_ = "SRTP_AES128_CM_SHA1_32";
+  }
+  const int srtp_rc = SSL_CTX_set_tlsext_use_srtp(ctx, srtp_ciphers_.c_str());
+  char srtp_line[320];
+  snprintf(srtp_line, sizeof(srtp_line),
+           "SetupSSLContext role=%s srtp_ciphers=%zu profiles=%s fallback=%d "
+           "SSL_CTX_set_tlsext_use_srtp=%d",
+           role_ == SSL_SERVER ? "server" : "client",
+           SrtpProfileCount(srtp_ciphers_), srtp_ciphers_.c_str(),
+           ctx_fallback ? 1 : 0, srtp_rc);
+  SSLStreamAdapter::LogSrtpDiagnostic(srtp_line);
+  // 0 is success. The legacy wrapper inverts SSL_CTX_set_srtp_profiles.
+  if (srtp_rc != 0) {
+    SSL_CTX_free(ctx);
+    return nullptr;
   }
 
 #ifdef OPENSSL_IS_BORINGSSL

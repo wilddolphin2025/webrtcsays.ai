@@ -82,6 +82,14 @@ inline std::string BoringSslProfileString(const std::vector<int>& ids) {
   return out;
 }
 
+// An empty profile string makes BoringSSL omit use_srtp from the ClientHello
+// and the ServerHello. The handshake still completes. DTLS must not start
+// that way: the product profile is SHA1_32.
+inline std::string ProfilesOrSha1_32(const std::string& configured) {
+  if (!configured.empty()) return configured;
+  return "SRTP_AES128_CM_SHA1_32";
+}
+
 inline std::vector<int> SuiteIds(const Policy& policy) {
   std::vector<int> suites;
   if (policy.sha1_32) suites.push_back(kSha1_32);

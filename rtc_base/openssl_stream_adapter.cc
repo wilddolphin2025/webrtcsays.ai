@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <optional>
@@ -547,10 +548,18 @@ bool OpenSSLStreamAdapter::SetDtlsSrtpCryptoSuites(
   }
 
   if (internal_ciphers.empty()) {
+    SSLStreamAdapter::LogSrtpDiagnostic(
+        "SetDtlsSrtpCryptoSuites empty profile string; use_srtp will be omitted");
     return false;
   }
 
   srtp_ciphers_ = internal_ciphers;
+  char line[256];
+  snprintf(line, sizeof(line),
+           "SetDtlsSrtpCryptoSuites role=%s state=%d profiles=%s",
+           role_ == SSL_SERVER ? "server" : "client", static_cast<int>(state_),
+           srtp_ciphers_.c_str());
+  SSLStreamAdapter::LogSrtpDiagnostic(line);
   return true;
 }
 
@@ -948,6 +957,18 @@ int OpenSSLStreamAdapter::BeginSSL() {
     return -1;
   }
 
+  // CTX profiles are not always copied onto a server SSL. Set them on this
+  // object too, after SSL_new and before the handshake.
+  if (!srtp_ciphers_.empty()) {
+    const int rc = SSL_set_tlsext_use_srtp(ssl_, srtp_ciphers_.c_str());
+    char line[320];
+    snprintf(line, sizeof(line),
+             "BeginSSL role=%s SSL_set_tlsext_use_srtp(%s)=%d",
+             role_ == SSL_SERVER ? "server" : "client", srtp_ciphers_.c_str(),
+             rc);
+    SSLStreamAdapter::LogSrtpDiagnostic(line);
+  }
+
   SSL_set_app_data(ssl_, this);
 
   SSL_set_bio(ssl_, bio, bio);  // the SSL object owns the bio now.
@@ -1208,10 +1229,27 @@ SSL_CTX* OpenSSLStreamAdapter::SetupSSLContext() {
       ctx,
       "DEFAULT:!NULL:!aNULL:!SHA256:!SHA384:!aECDH:!AESGCM+AES256:!aPSK:!3DES");
 
-  if (!srtp_ciphers_.empty()) {
-    if (SSL_CTX_set_tlsext_use_srtp(ctx, srtp_ciphers_.c_str())) {
-      SSL_CTX_free(ctx);
-      return nullptr;
+  {
+    char line[320];
+    if (srtp_ciphers_.empty()) {
+      snprintf(line, sizeof(line),
+               "SetupSSLContext role=%s srtp_ciphers empty; ServerHello will "
+               "have no use_srtp",
+               role_ == SSL_SERVER ? "server" : "client");
+      SSLStreamAdapter::LogSrtpDiagnostic(line);
+    } else {
+      const int rc = SSL_CTX_set_tlsext_use_srtp(ctx, srtp_ciphers_.c_str());
+      snprintf(line, sizeof(line),
+               "SetupSSLContext role=%s SSL_CTX_set_tlsext_use_srtp(%s)=%d",
+               role_ == SSL_SERVER ? "server" : "client", srtp_ciphers_.c_str(),
+               rc);
+      SSLStreamAdapter::LogSrtpDiagnostic(line);
+      // 0 is success. A failure used to free the context with no log the
+      // device syslog could see.
+      if (rc != 0) {
+        SSL_CTX_free(ctx);
+        return nullptr;
+      }
     }
   }
 

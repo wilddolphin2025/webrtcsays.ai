@@ -212,6 +212,11 @@ void TestLiquidCallRoomSrtp() {
   Expect(!opus.empty() && opus.front() == direct_srtp::kSha1_80, "opus keeps SHA1_80");
   const auto plain = direct_srtp::SuiteIds(direct_srtp::PolicyFor("liquidcall", -1, false));
   Expect(plain.empty(), "encryption off installs no SRTP profiles");
+  const std::string profile = direct_srtp::BoringSslProfileString(suites);
+  Expect(profile == "SRTP_AES128_CM_SHA1_32",
+         "BoringSSL profile string is SRTP_AES128_CM_SHA1_32");
+  Expect(profile.find("HMAC") == std::string::npos,
+         "profile string does not use the IANA HMAC spelling");
 }
 
 void TestWiring(const std::string& root) {
@@ -230,6 +235,8 @@ void TestWiring(const std::string& root) {
          "codec preferences come from AudioCodecPreferenceNames");
   Expect(Contains(direct, "direct_srtp::PolicyFor"),
          "peer connection installs the shared SRTP policy");
+  Expect(Contains(direct, "SSL_PROTOCOL_DTLS_12"),
+         "peer connection caps DTLS at 1.2");
   Expect(Contains(option, "bool liquid_dtx = false"), "DTX default stays off");
   Expect(Contains(option, "kLiquidJitterMaxMs = 80"), "80 ms jitter cap unchanged");
   Expect(Contains(factory, "PrependLiquidCall"), "factories prepend LIQUIDCALL and keep the inner list");

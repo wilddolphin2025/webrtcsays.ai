@@ -534,11 +534,10 @@ bool DirectApplication::CreatePeerConnection() {
   }
 
   webrtc::PeerConnectionInterface::RTCConfiguration config;
-  // Factory Options default to DTLS 1.3 (M156). BoringSSL then puts use_srtp
-  // in EncryptedExtensions instead of the ServerHello. Pion reads the
-  // ServerHello, so the phone as DTLS server looks like it offered no SRTP
-  // profile. The phone as DTLS client still puts use_srtp in its ClientHello,
-  // which is why that direction works. Cap every call at DTLS 1.2.
+  // Factory Options default to DTLS 1.3 (M156). BoringSSL then puts the
+  // server's use_srtp in EncryptedExtensions, which a DTLS 1.2 peer never
+  // reads. Cap every call at DTLS 1.2 so the extension stays in the
+  // ClientHello and the ServerHello.
   // The certificate object is reused across calls (same fingerprint). It is
   // only an identity. The SSL_CTX is created later, per handshake, after the
   // SRTP profile string is stored.
@@ -594,9 +593,19 @@ bool DirectApplication::CreatePeerConnection() {
     }
     const int rtcp_ms = opts_.audio_rtcp_ms > 0 ? opts_.audio_rtcp_ms : (liquid ? 10000 : 5000);
     config.set_audio_rtcp_report_interval_ms(rtcp_ms);
-    fprintf(stderr, "Transport: srtp_suites=%zu sha1_32=%s sha1_80=%s gcm=%s audio_rtcp=%d ms\n",
-            suites.size(), srtp.sha1_32 ? "on" : "off", srtp.sha1_80 ? "on" : "off",
-            srtp.gcm ? "on" : "off", rtcp_ms);
+    // Same Options and the same CreatePeerConnection for direct TCP and the
+    // room WebSocket. parseOptions starts encryption at false; a wss URL
+    // turns it back on. Direct TCP therefore stays plain RTP unless
+    // --encryption or the JSON flag is set. The room path is the one that
+    // runs DTLS. disable_encryption turns DTLS off entirely, so a completed
+    // DTLS handshake means this flag was on.
+    fprintf(stderr,
+            "Transport: encryption=%d room=%d audio_codec=%s srtp_tag32=%d "
+            "srtp_suites=%zu sha1_32=%s sha1_80=%s gcm=%s audio_rtcp=%d ms\n",
+            opts_.encryption ? 1 : 0, opts_.signal_url.empty() ? 0 : 1,
+            opts_.audio_codec.empty() ? "-" : opts_.audio_codec.c_str(),
+            opts_.srtp_tag32, suites.size(), srtp.sha1_32 ? "on" : "off",
+            srtp.sha1_80 ? "on" : "off", srtp.gcm ? "on" : "off", rtcp_ms);
   }
 
   // Host, srflx and relay candidates so LAN calls connect directly.

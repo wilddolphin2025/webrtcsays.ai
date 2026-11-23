@@ -217,6 +217,10 @@ void TestLiquidCallRoomSrtp() {
          "BoringSSL profile string is SRTP_AES128_CM_SHA1_32");
   Expect(profile.find("HMAC") == std::string::npos,
          "profile string does not use the IANA HMAC spelling");
+  Expect(direct_srtp::ProfilesOrSha1_32("") == "SRTP_AES128_CM_SHA1_32",
+         "empty SRTP list falls back to SHA1_32");
+  Expect(direct_srtp::ProfilesOrSha1_32(profile) == profile,
+         "a configured profile string is kept");
 }
 
 void TestWiring(const std::string& root) {
@@ -237,6 +241,17 @@ void TestWiring(const std::string& root) {
          "peer connection installs the shared SRTP policy");
   Expect(Contains(direct, "SSL_PROTOCOL_DTLS_12"),
          "peer connection caps DTLS at 1.2");
+  const std::string dtls = ReadFile(root + "/p2p/dtls/dtls_transport.cc");
+  const std::string ssl = ReadFile(root + "/rtc_base/openssl_stream_adapter.cc");
+  Expect(Contains(dtls, "installing SRTP_AES128_CM_SHA1_32") ||
+             Contains(dtls, "profiles=SRTP_AES128_CM_SHA1_32 fallback=1"),
+         "empty DTLS SRTP list installs SHA1_32");
+  Expect(Contains(ssl, "SetupSSLContext role=%s"),
+         "SSL_CTX setup logs the role");
+  Expect(Contains(ssl, "BeginSSL role=%s"),
+         "SSL object setup logs the role");
+  Expect(Contains(ssl, "SRTP_AES128_CM_SHA1_32"),
+         "SSL setup has the SHA1_32 fallback profile");
   Expect(Contains(option, "bool liquid_dtx = false"), "DTX default stays off");
   Expect(Contains(option, "kLiquidJitterMaxMs = 80"), "80 ms jitter cap unchanged");
   Expect(Contains(factory, "PrependLiquidCall"), "factories prepend LIQUIDCALL and keep the inner list");

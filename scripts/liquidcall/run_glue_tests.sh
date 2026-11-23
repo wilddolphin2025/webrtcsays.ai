@@ -46,6 +46,18 @@ bash -n "${ROOT}/scripts/liquidcall/run_local_call.sh"
 bash -n "${ROOT}/scripts/liquidcall/quality_ladder.sh"
 bash -n "${ROOT}/scripts/liquidcall/run_ios_quality.sh"
 bash -n "${ROOT}/build.sh"
+bash -n "${ROOT}/scripts/build_voiceswap_frameworks.sh"
+grep -q 'OUT="${OUT:-out/ios_voiceswap}"' "${ROOT}/scripts/build_voiceswap_frameworks.sh"
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  default_msg="$(bash "${ROOT}/scripts/build_voiceswap_frameworks.sh" 2>&1 || true)"
+  grep -q 'iOS frameworks output: out/ios_voiceswap' <<<"${default_msg}"
+  override_msg="$(OUT=out/ios_dualcodec bash "${ROOT}/scripts/build_voiceswap_frameworks.sh" 2>&1 || true)"
+  grep -q 'iOS frameworks output: out/ios_dualcodec' <<<"${override_msg}"
+  flag_msg="$(bash "${ROOT}/scripts/build_voiceswap_frameworks.sh" --out=ios_dualcodec 2>&1 || true)"
+  grep -q 'iOS frameworks output: out/ios_dualcodec' <<<"${flag_msg}"
+  help_msg="$(bash "${ROOT}/scripts/build_voiceswap_frameworks.sh" --help)"
+  grep -q 'out/ios_voiceswap' <<<"${help_msg}"
+fi
 python3 "${ROOT}/scripts/liquidcall/quality_metrics.py" --self-check
 python3 "${ROOT}/scripts/liquidcall/check_shadow.py"
 python3 "${ROOT}/scripts/liquidcall/tone_wav.py" "${OUT}/tone.wav" 0.05

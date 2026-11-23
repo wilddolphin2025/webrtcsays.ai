@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <optional>
 #include <span>
@@ -573,14 +574,31 @@ bool DtlsTransportInternalImpl::SetupDtls() {
     return false;
   }
 
-  // Set up DTLS-SRTP, if it's been enabled.
-  if (!srtp_ciphers_.empty()) {
-    if (!dtls_->SetDtlsSrtpCryptoSuites(srtp_ciphers_)) {
-      RTC_LOG(LS_ERROR) << ToString() << ": Couldn't set DTLS-SRTP ciphers.";
-      return false;
-    }
-  } else {
-    RTC_LOG(LS_INFO) << ToString() << ": Not using DTLS-SRTP.";
+  // Set up DTLS-SRTP, if it's been enabled. This must happen before
+  // MaybeStartDtls creates the SSL_CTX.
+  {
+    char line[160];
+    snprintf(line, sizeof(line),
+             "SetupDtls role=%s srtp_ciphers=%zu dtls_in_stun=%d",
+             dtls_role_ && *dtls_role_ == SSL_SERVER ? "server" : "client",
+             srtp_ciphers_.size(), dtls_in_stun_ ? 1 : 0);
+    SSLStreamAdapter::LogSrtpDiagnostic(line);
+  }
+  // An empty list used to skip SetDtlsSrtpCryptoSuites and still call
+  // MaybeStartDtls. BoringSSL then completes DTLS with no use_srtp in the
+  // ClientHello or the ServerHello. There is no mismatch alert, because the
+  // extension was never offered. Install the product profile instead.
+  const bool srtp_fallback = srtp_ciphers_.empty();
+  const std::vector<int> sha1_32_only = {kSrtpAes128CmSha1_32};
+  const std::vector<int>& suites = srtp_fallback ? sha1_32_only : srtp_ciphers_;
+  if (srtp_fallback) {
+    SSLStreamAdapter::LogSrtpDiagnostic(
+        "SetupDtls srtp_ciphers=0 profiles=SRTP_AES128_CM_SHA1_32 fallback=1");
+  }
+  if (!dtls_->SetDtlsSrtpCryptoSuites(suites)) {
+    SSLStreamAdapter::LogSrtpDiagnostic(
+        "SetupDtls SetDtlsSrtpCryptoSuites failed");
+    return false;
   }
 
   if (!dtls_->SetSslGroupIds(ephemeral_key_exchange_cipher_groups_)) {

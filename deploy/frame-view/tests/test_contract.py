@@ -35,6 +35,18 @@ class ContractTests(unittest.TestCase):
         self.assertNotIn("#101418", css)
         self.assertNotIn("getUserMedia", (ROOT / "page" / "view.js").read_text(encoding="utf-8"))
 
+    def test_page_keeps_rtc_brand_and_switches_on_ls_host(self) -> None:
+        page = (ROOT / "page" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("<title>Frame viewer</title>", page)
+        self.assertIn('<h1 class="wm">WebRTCSays</h1>', page)
+        self.assertIn('<h2 id="view-heading">Frame viewer</h2>', page)
+        self.assertIn("by Wilddolphin LLC", page)
+        self.assertIn('location.hostname === "ls.wilddolphin.us"', page)
+        self.assertIn('document.title = "LiquidServer demo"', page)
+        self.assertIn('wm.textContent = "LiquidServer"', page)
+        self.assertIn('room || "Demo room"', page)
+        self.assertNotIn("LiquidCodec", page)
+
     def test_nginx_adds_viewer_routes_only(self) -> None:
         conf = (ROOT / "nginx" / "frame-view-locations.conf").read_text(encoding="utf-8")
         self.assertIn("auth_request /_demo_auth;", conf)

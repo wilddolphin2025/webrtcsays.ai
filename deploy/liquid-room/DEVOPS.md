@@ -118,6 +118,25 @@ bash deploy/liquid-room/host/check-phase-b.sh        # from the box or the Mac (
 2. LiquidServer VPS: restore `/root/backups/Caddyfile.<ts>`, `systemctl reload caddy`; stop the LiquidServer unit.
 3. www (phase A): restore `~/site-backups/demo.html.<ts>`.
 
+## LiquidServer brand on ls.wilddolphin.us (no rtc change)
+
+The login, viewer, and `/demo/` pages are the same templates as rtc. They show
+**LiquidServer** / **by Wilddolphin LLC** when the Host is `ls.wilddolphin.us`
+(or `DEMO_BRAND=liquidserver`). rtc stays **WebRTCSays**. The `/demo/room/`
+page is LiquidServer-only and is hardcoded.
+
+Do not deploy these files to rtc. On 186 only, after founder approval in the
+DevOps chat:
+
+| File | Destination on 186 |
+|---|---|
+| `deploy/webrtcsays-demo/auth/demo_auth.py` | rebuild the auth image and recreate `webrtcsays-demo-auth` (same run flags, `127.0.0.1:8793`, `/etc/webrtcsays-demo:/conf:ro`) |
+| `deploy/frame-view/page/index.html` | `/srv/webrtcsays-frame-view/index.html` |
+| `deploy/webrtcsays-demo/page/index.html` | `/srv/webrtcsays-demo/index.html` if that page is served under `/demo/` |
+| `deploy/liquid-room/page/index.html` | `/srv/liquid-room/index.html` (when the room page is installed) |
+
+No nginx, Caddy, or router change. Optional override: env `DEMO_BRAND=liquidserver` or `webrtcsays` on the auth container.
+
 ## Local tests already run (box, no production access)
 
 ```

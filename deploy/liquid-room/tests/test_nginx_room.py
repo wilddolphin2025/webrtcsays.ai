@@ -278,7 +278,7 @@ http {{
         self.assertTrue(headers["Location"].endswith(":%d/demo/login?next=/demo/room/room101" % self.port), headers["Location"])
         code, body, headers = self.http("/demo/room/room101", {"Authorization": f"Bearer {TOKEN}"})
         self.assertEqual(code, 200)
-        self.assertIn(b"<title>LiquidCall room</title>", body)
+        self.assertIn(b"<title>LiquidServer demo</title>", body)
         self.assertEqual(headers["Cache-Control"], "no-store, private")
         code, _, headers = self.http("/demo/room")
         self.assertEqual((code, headers["Location"].rsplit(":%d" % self.port, 1)[-1]), (301, "/demo/room/room101"))

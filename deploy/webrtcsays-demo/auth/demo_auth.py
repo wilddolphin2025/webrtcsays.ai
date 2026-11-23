@@ -528,6 +528,49 @@ def is_trusted_peer(ip: str) -> bool:
     return bool(addr.is_loopback or addr.is_private or addr.is_link_local)
 
 
+WEBRTCSAYS_BRAND = {
+    "product": "WebRTCSays",
+    "byline": "by Wilddolphin LLC",
+    "title_prefix": "WebRTCSays demo",
+    "view_heading": "Frame viewer",
+}
+
+LIQUIDSERVER_BRAND = {
+    "product": "LiquidServer",
+    "byline": "by Wilddolphin LLC",
+    "title_prefix": "LiquidServer demo",
+    "view_heading": "Demo room",
+}
+
+LIQUIDSERVER_HOSTS = frozenset({"ls.wilddolphin.us"})
+
+
+def hostname_from_headers(headers, peer: str | None = None) -> str:
+    host = (headers.get("Host") or "").split(",")[0]
+    if os.environ.get("DEMO_TRUST_PROXY", "0") == "1" and peer and is_trusted_peer(peer):
+        forwarded = (headers.get("X-Forwarded-Host") or "").split(",")[0].strip()
+        if forwarded:
+            host = forwarded
+    return host.split(":")[0].strip().lower()
+
+
+def demo_brand(host: str | None = None) -> dict[str, str]:
+    """Pick the public wordmark for this deployment.
+
+    Defaults to the WebRTCSays / rtc pages. ls.wilddolphin.us, or
+    DEMO_BRAND=liquidserver, switches the same templates to LiquidServer
+    without changing the rtc Babelfish demo.
+    """
+    preset = os.environ.get("DEMO_BRAND", "").strip().lower()
+    if preset in ("liquidserver", "ls"):
+        return dict(LIQUIDSERVER_BRAND)
+    if preset in ("webrtcsays", "rtc"):
+        return dict(WEBRTCSAYS_BRAND)
+    if (host or "").split(":")[0].strip().lower() in LIQUIDSERVER_HOSTS:
+        return dict(LIQUIDSERVER_BRAND)
+    return dict(WEBRTCSAYS_BRAND)
+
+
 def is_ip(value: str) -> bool:
     try:
         ipaddress.ip_address(value)
@@ -659,7 +702,11 @@ def csrf_cookie(value: str) -> str:
     )
 
 
-def login_page(csrf: str, nxt: str, message: str) -> bytes:
+def login_page(csrf: str, nxt: str, message: str, host: str | None = None) -> bytes:
+    brand = demo_brand(host)
+    title = html.escape(f"{brand['title_prefix']} login")
+    product = html.escape(brand["product"])
+    byline = html.escape(brand["byline"])
     banner = ""
     if message:
         banner = f'<p class="msg err" role="status">{html.escape(message, quote=True)}</p>'
@@ -671,7 +718,7 @@ def login_page(csrf: str, nxt: str, message: str) -> bytes:
   <meta name="color-scheme" content="dark">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
-  <title>WebRTCSays demo login</title>
+  <title>{title}</title>
   <style>
     body.wsdemo {{ margin: 0; background: #1B2838; color: #C7D5E0; font: 14px/1.4 Inter, system-ui, sans-serif; }}
     body.wsdemo * {{ box-sizing: border-box; }}
@@ -701,8 +748,8 @@ def login_page(csrf: str, nxt: str, message: str) -> bytes:
   <header class="top">
     <div class="wrap topin">
       <div class="brand">
-        <h1 class="wm">WebRTCSays</h1>
-        <p class="by">by Wilddolphin LLC</p>
+        <h1 class="wm">{product}</h1>
+        <p class="by">{byline}</p>
       </div>
     </div>
   </header>
@@ -806,7 +853,7 @@ class DemoHandler(BaseHTTPRequestHandler):
             return
         csrf = sign_csrf()
         nxt = safe_next(query_items(self.path).get("next"))
-        page = login_page(csrf, nxt, "")
+        page = login_page(csrf, nxt, "", self._request_hostname())
         self._respond(
             200,
             page,
@@ -878,7 +925,7 @@ class DemoHandler(BaseHTTPRequestHandler):
         nxt = "/demo/"
         self._respond(
             status,
-            login_page(csrf, nxt, message),
+            login_page(csrf, nxt, message, self._request_hostname()),
             "text/html; charset=utf-8",
             cookies=[csrf_cookie(csrf)],
         )
@@ -942,6 +989,9 @@ class DemoHandler(BaseHTTPRequestHandler):
             if forwarded and "," not in forwarded and is_ip(forwarded):
                 return forwarded
         return peer
+
+    def _request_hostname(self) -> str:
+        return hostname_from_headers(self.headers, self.client_address[0])
 
     def _json(self, status: int, payload: dict, extra: list[tuple[str, str]] | None = None) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")

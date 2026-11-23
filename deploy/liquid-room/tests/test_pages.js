@@ -186,6 +186,15 @@ function runRedirect(search) {
     assert.strictEqual(p.ctx.location.assigned, "/demo/login?next=/demo/room/room101");
   });
 
+  await test("page: LiquidServer wordmark and title", () => {
+    assert(/<title>LiquidServer demo<\/title>/.test(page));
+    assert(/<h1 class="wm">LiquidServer<\/h1>/.test(page));
+    assert(/by Wilddolphin LLC/.test(page));
+    assert(/LiquidServer demo · ls\.wilddolphin\.us/.test(page));
+    assert(!/<h1 class="wm">LiquidCall<\/h1>/.test(page));
+    assert(!/<title>LiquidCall room<\/title>/.test(page));
+  });
+
   await test("page: no secrets, IPs or legacy name", () => {
     assert(!/LiquidCodec/.test(page));
     assert(!/\b\d{1,3}(\.\d{1,3}){3}\b/.test(page.replace(/\\d\{1,3\}/g, "")));

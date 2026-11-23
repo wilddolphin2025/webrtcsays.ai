@@ -12,6 +12,7 @@ cd "$REPO_ROOT"
 # Optional --whillats-accel overrides env WHILLATS_ACCEL for whillats (GGML) backend.
 SRC_BRANCH_OVERRIDE=""
 WHILLATS_ACCEL_CLI=""
+OUT_DIR_NAME=""
 EARLY_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -47,6 +48,22 @@ while [ $# -gt 0 ]; do
       fi
       shift
       ;;
+    --out|--out-dir)
+      if [ -z "${2:-}" ]; then
+        echo "ERROR: $1 requires a directory name, for example ios_dualcodec"
+        exit 1
+      fi
+      OUT_DIR_NAME="$2"
+      shift 2
+      ;;
+    --out=*|--out-dir=*)
+      OUT_DIR_NAME="${1#*=}"
+      if [ -z "$OUT_DIR_NAME" ]; then
+        echo "ERROR: --out= requires a directory name, for example ios_dualcodec"
+        exit 1
+      fi
+      shift
+      ;;
     *)
       EARLY_ARGS+=("$1")
       shift
@@ -71,13 +88,33 @@ WEBRTC_SPILL_DIRNAMES=(
   third_party tools tools_webrtc video out
 )
 
+# out/voiceswap and out/ios_voiceswap are founder builds. Never delete them.
+keep_named_out_dir() {
+  case "$1" in
+    voiceswap|ios_voiceswap) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 remove_webrtc_spill_at_root() {
-  local d tracked
+  local d tracked child base
   for d in "${WEBRTC_SPILL_DIRNAMES[@]}"; do
     [ -d "$REPO_ROOT/$d" ] || continue
     tracked=$(git -C "$REPO_ROOT" ls-files -- "$d" | head -n 1 || true)
     if [ -n "$tracked" ]; then
       echo "Keeping $REPO_ROOT/$d (tracked in the outer repo: $tracked)"
+      continue
+    fi
+    if [ "$d" = "out" ]; then
+      for child in "$REPO_ROOT/out"/*; do
+        [ -e "$child" ] || continue
+        base=$(basename "$child")
+        if keep_named_out_dir "$base"; then
+          echo "Keeping $child"
+          continue
+        fi
+        rm -rf "$child"
+      done
       continue
     fi
     echo "Removing untracked WebRTC spill directory at repo root (duplicate of src/): $d"
@@ -250,9 +287,12 @@ fi
 
 # After sync, drop previous Chromium ninja output under src/ (often tens of GB). gn/ninja
 # recreates out/. Set BUILD_KEEP_SRC_OUT=1 to preserve an existing src/out tree.
+# voiceswap and ios_voiceswap stay either way.
 if [ "${BUILD_KEEP_SRC_OUT:-}" != "1" ] && [ -d "$REPO_ROOT/src/out" ]; then
-    echo "Removing $REPO_ROOT/src/out (previous build output) to free disk space before configuring..."
-    rm -rf "$REPO_ROOT/src/out"
+    echo "Removing previous ninja output under $REPO_ROOT/src/out (keeping voiceswap and ios_voiceswap)..."
+    find "$REPO_ROOT/src/out" -mindepth 1 -maxdepth 1 \
+        ! -name voiceswap ! -name ios_voiceswap \
+        -exec rm -rf {} +
 fi
 
 # Drop stray duplicate tree at gclient root whether or not we synced this run.
@@ -581,6 +621,10 @@ if [ $# -ge 1 ]; then
         echo "  $0 ios whillats             # iOS debug with whillats"
         echo "  $0 ios debug whillats       # iOS debug with whillats"
         echo "  $0 ios release whillats     # iOS release with whillats"
+        echo "  $0 ios release liquidcall --out=ios_dualcodec"
+        echo "      iOS LiquidCall frameworks into a new out dir (does not touch out/ios_arm64,"
+        echo "      out/voiceswap, or out/ios_voiceswap). Gn dir is src/out/<name>; the drop"
+        echo "      copy is <repo>/out/<name>."
         echo ""
         echo "Notes:"
         echo "  • Always runs from the script’s repo root (dirname of build.sh), not your current directory."
@@ -626,6 +670,28 @@ if [[ "$ENABLE_LIQUIDCALL" == "true" ]]; then
     echo "LiquidCall Core ML will be compiled into directcall (rtc_use_liquidcall=true)."
 fi
 
+# iOS gn directory. The default stays out/ios_arm64 so existing drops are unchanged.
+# --out=ios_dualcodec writes src/out/ios_dualcodec and copies frameworks to
+# <repo>/out/ios_dualcodec. It does not remove out/voiceswap, out/ios_voiceswap,
+# or the default out/ios_arm64.
+IOS_GN_DIR="out/ios_arm64"
+IOS_DROP_DIR="$REPO_ROOT/out/ios-arm64"
+if [ -n "$OUT_DIR_NAME" ]; then
+    if [ "$IOS_BUILD" != "true" ]; then
+        echo "ERROR: --out is for iOS builds: ./build.sh ios release liquidcall --out=ios_dualcodec"
+        exit 1
+    fi
+    case "$OUT_DIR_NAME" in
+        *[!A-Za-z0-9_-]*|voiceswap|ios_voiceswap|ios-arm64|ios_arm64)
+            echo "ERROR: --out must be a new directory name under out/, such as ios_dualcodec"
+            exit 1
+            ;;
+    esac
+    IOS_GN_DIR="out/$OUT_DIR_NAME"
+    IOS_DROP_DIR="$REPO_ROOT/out/$OUT_DIR_NAME"
+    echo "iOS output directory: src/$IOS_GN_DIR (framework drop $IOS_DROP_DIR)"
+fi
+
 # Handle whillats building
 if [[ "$ENABLE_WHILLATS" == "true" ]]; then
     # Clean up previous iOS build artifacts before building whillats.
@@ -633,9 +699,9 @@ if [[ "$ENABLE_WHILLATS" == "true" ]]; then
     if [ "$IOS_BUILD" = "true" ]; then
         echo "Cleaning previous iOS build directories..."
         if [ -n "${WHILLATS_IOS_FRAMEWORK:-}" ]; then
-            rm -rf "$SRC_DIR/out/ios_arm64"
+            rm -rf "$SRC_DIR/$IOS_GN_DIR"
         else
-            rm -rf "$WHILLATS_DIR/build-ios" "$SRC_DIR/out/ios_arm64"
+            rm -rf "$WHILLATS_DIR/build-ios" "$SRC_DIR/$IOS_GN_DIR"
         fi
     fi
     echo "Whillats option enabled: building whillats..."
@@ -711,8 +777,8 @@ fi
 
 # Set binary path and build dir based on build type and SRC_DIR
 if [ "$IOS_BUILD" = "true" ]; then
-    BINARY_PATH="$SRC_DIR/out/ios_arm64/directcall"
-    BUILD_DIR="$SRC_DIR/out/ios_arm64"
+    BINARY_PATH="$SRC_DIR/$IOS_GN_DIR/directcall"
+    BUILD_DIR="$SRC_DIR/$IOS_GN_DIR"
 elif [ "$BUILD_TYPE" = "debug" ]; then
     BINARY_PATH="$SRC_DIR/out/debug/directcall"
     BUILD_DIR="$SRC_DIR/out/debug"
@@ -787,10 +853,10 @@ if [ "$IOS_BUILD" = "true" ]; then
     
     # Clean iOS build directory
     echo "Cleaning iOS build directory..."
-    (cd $SRC_DIR && rm -rf out/ios_arm64)
+    (cd $SRC_DIR && rm -rf "$IOS_GN_DIR")
     
     echo "Generating iOS build configuration..."
-    (cd $SRC_DIR && "$GN_BIN" gen out/ios_arm64 --args="$IOS_ARGS")
+    (cd $SRC_DIR && "$GN_BIN" gen "$IOS_GN_DIR" --args="$IOS_ARGS")
     
     # Ensure whillats framework is available before WebRTC build if enabled
     if [ "$ENABLE_WHILLATS" = "true" ]; then
@@ -808,20 +874,20 @@ if [ "$IOS_BUILD" = "true" ]; then
     fi
     
     echo "Building WebRTC.framework, direct.framework, and directcall for iOS..."
-    (cd $SRC_DIR && ninja -C out/ios_arm64 -j"${IOS_NINJA_JOBS:-1}" sdk:framework_objc examples:direct_framework directcall)
+    (cd $SRC_DIR && ninja -C "$IOS_GN_DIR" -j"${IOS_NINJA_JOBS:-1}" sdk:framework_objc examples:direct_framework directcall)
     echo "iOS build completed."
     
     # Verify both framework and binary were built
-    if [ -d "$SRC_DIR/out/ios_arm64/WebRTC.framework" ]; then
+    if [ -d "$SRC_DIR/$IOS_GN_DIR/WebRTC.framework" ]; then
         echo "✅ WebRTC.framework built successfully"
-        ls -la "$SRC_DIR/out/ios_arm64/WebRTC.framework/"
+        ls -la "$SRC_DIR/$IOS_GN_DIR/WebRTC.framework/"
     else
         echo "❌ WebRTC.framework build failed"
         exit 1
     fi
     
     # Update binary path for iOS
-    BINARY_PATH="$SRC_DIR/out/ios_arm64/directcall"
+    BINARY_PATH="$SRC_DIR/$IOS_GN_DIR/directcall"
     
 elif [ "$BUILD_TYPE" = "debug" ]; then
     echo "Building WebRTC project (debug, whillats: $ENABLE_WHILLATS)..."
@@ -847,13 +913,13 @@ else
 fi
 
 if [ "$IOS_BUILD" = "true" ]; then
-    IOS_DROP="$REPO_ROOT/out/ios-arm64"
+    IOS_DROP="$IOS_DROP_DIR"
     rm -rf "$IOS_DROP"
     mkdir -p "$IOS_DROP"
-    WEBRTC_FW="$REPO_ROOT/src/out/ios_arm64/WebRTC.framework"
-    DIRECT_FW="$REPO_ROOT/src/out/ios_arm64/direct.framework"
+    WEBRTC_FW="$REPO_ROOT/src/$IOS_GN_DIR/WebRTC.framework"
+    DIRECT_FW="$REPO_ROOT/src/$IOS_GN_DIR/direct.framework"
     if [ ! -d "$DIRECT_FW" ]; then
-        DIRECT_FW="$(find "$REPO_ROOT/src/out/ios_arm64" -name direct.framework -type d | head -n 1)"
+        DIRECT_FW="$(find "$REPO_ROOT/src/$IOS_GN_DIR" -name direct.framework -type d | head -n 1)"
     fi
     if [ ! -d "$WEBRTC_FW" ]; then
         echo "ERROR: missing $WEBRTC_FW"
@@ -891,7 +957,7 @@ if [ "$IOS_BUILD" = "true" ]; then
     ls -la "$IOS_DROP"
     echo "iOS build completed successfully!"
     echo "iOS binary location: $BINARY_PATH"
-    echo "WebRTC framework location: $SRC_DIR/out/ios_arm64/WebRTC.framework"
+    echo "WebRTC framework location: $SRC_DIR/$IOS_GN_DIR/WebRTC.framework"
     echo "Note: iOS binaries cannot be executed directly on macOS."
     echo "To deploy to iOS device or simulator, use Xcode or appropriate iOS deployment tools."
     if [ -f "$BINARY_PATH" ]; then
@@ -901,9 +967,9 @@ if [ "$IOS_BUILD" = "true" ]; then
         echo "❌ iOS binary not found at expected location"
     fi
     
-    if [ -d "$SRC_DIR/out/ios_arm64/WebRTC.framework" ]; then
+    if [ -d "$SRC_DIR/$IOS_GN_DIR/WebRTC.framework" ]; then
         echo "✅ WebRTC.framework ready for iOS app integration"
-        echo "Framework size: $(du -sh "$SRC_DIR/out/ios_arm64/WebRTC.framework" | cut -f1)"
+        echo "Framework size: $(du -sh "$SRC_DIR/$IOS_GN_DIR/WebRTC.framework" | cut -f1)"
     else
         echo "❌ WebRTC.framework not found at expected location"
     fi

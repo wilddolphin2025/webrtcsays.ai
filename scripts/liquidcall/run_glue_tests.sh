@@ -13,6 +13,18 @@ g++ -std=c++20 -Wall -Wextra -Werror -Wshadow -O2 \
   "${ROOT}/modules/audio_coding/codecs/liquidcall/liquid_tail.cc"
 LIQUID_TEST_DIR="${OUT}" "${OUT}/liquid_glue_test" | tee "${OUT}/glue.txt"
 grep -c '^QUALITY_PACK ' "${OUT}/glue.txt" | grep -qx 8
+if ! pkg-config --exists opus; then
+  echo "libopus development files are required (pkg-config opus, e.g. libopus-dev)" >&2
+  exit 1
+fi
+g++ -std=c++20 -Wall -Wextra -Werror -Wshadow -O2 \
+  -I"${ROOT}" \
+  $(pkg-config --cflags opus) \
+  -o "${OUT}/liquid_dual_codec_test" \
+  "${ROOT}/modules/audio_coding/codecs/liquidcall/liquid_dual_codec_test.cc" \
+  $(pkg-config --libs opus)
+LIQUID_REPO_ROOT="${ROOT}" "${OUT}/liquid_dual_codec_test" | tee "${OUT}/dual_codec.txt"
+grep -q 'liquidcall dual-codec tests passed' "${OUT}/dual_codec.txt"
 python3 -m pip install --quiet numpy
 python3 "${ROOT}/scripts/liquidcall/check_tail.py" "${OUT}/tail_case.bin"
 python3 "${ROOT}/scripts/liquidcall/bandwidth.py" --self-check

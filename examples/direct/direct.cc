@@ -565,21 +565,36 @@ bool DirectApplication::CreatePeerConnection() {
   }
 
   webrtc::PeerConnectionInterface::RTCConfiguration config;
+  // Factory Options default to DTLS 1.3 (M156). BoringSSL then puts use_srtp
+  // in EncryptedExtensions instead of the ServerHello. Pion reads the
+  // ServerHello, so the phone as DTLS server looks like it offered no SRTP
+  // profile. The phone as DTLS client still puts use_srtp in its ClientHello,
+  // which is why that direction works. Cap every call at DTLS 1.2.
+  // The certificate object is reused across calls (same fingerprint). It is
+  // only an identity. The SSL_CTX is created later, per handshake, after the
+  // SRTP profile string is stored.
+  {
+    webrtc::PeerConnectionFactoryInterface::Options options;
+    options.ssl_max_version = webrtc::SSL_PROTOCOL_DTLS_12;
+    options.disable_encryption = !opts_.encryption;
+    peer_connection_factory_->SetOptions(options);
+    fprintf(stderr, "DTLS max version: 1.2 (factory default in this tree is 1.3)\n");
+  }
   if (opts_.encryption) {
+    const bool reused_identity = static_cast<bool>(certificate_);
     if (!certificate_) {
       certificate_ = DirectLoadCertificateFromEnv(opts_);
       UpdateCertificateStats();
     }
     if (certificate_) {
       config.certificates.push_back(certificate_);
+      const char* fp =
+          certificate_stats_ ? certificate_stats_->fingerprint.c_str() : "";
+      fprintf(stderr, "DTLS identity %s fingerprint=%s\n",
+              reused_identity ? "reused" : "new", fp);
     } else {
       RTC_LOG(LS_ERROR) << "Failed to obtain certificate, WebRTC DTLS would not work";
     }
-  } else {
-    // Debug only: plain RTP.
-    webrtc::PeerConnectionFactoryInterface::Options options;
-    options.disable_encryption = true;
-    peer_connection_factory_->SetOptions(options);
   }
 
   // One configuration for every signaling path (caller and callee, direct

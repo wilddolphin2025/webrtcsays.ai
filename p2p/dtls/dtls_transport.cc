@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <optional>
 #include <span>
@@ -573,14 +574,25 @@ bool DtlsTransportInternalImpl::SetupDtls() {
     return false;
   }
 
-  // Set up DTLS-SRTP, if it's been enabled.
+  // Set up DTLS-SRTP, if it's been enabled. This must happen before
+  // MaybeStartDtls creates the SSL_CTX.
+  {
+    char line[160];
+    snprintf(line, sizeof(line),
+             "SetupDtls role=%s srtp_ciphers=%zu dtls_in_stun=%d",
+             dtls_role_ && *dtls_role_ == SSL_SERVER ? "server" : "client",
+             srtp_ciphers_.size(), dtls_in_stun_ ? 1 : 0);
+    SSLStreamAdapter::LogSrtpDiagnostic(line);
+  }
   if (!srtp_ciphers_.empty()) {
     if (!dtls_->SetDtlsSrtpCryptoSuites(srtp_ciphers_)) {
-      RTC_LOG(LS_ERROR) << ToString() << ": Couldn't set DTLS-SRTP ciphers.";
+      SSLStreamAdapter::LogSrtpDiagnostic(
+          "SetupDtls SetDtlsSrtpCryptoSuites failed");
       return false;
     }
   } else {
-    RTC_LOG(LS_INFO) << ToString() << ": Not using DTLS-SRTP.";
+    SSLStreamAdapter::LogSrtpDiagnostic(
+        "SetupDtls srtp_ciphers empty; use_srtp will not be installed");
   }
 
   if (!dtls_->SetSslGroupIds(ephemeral_key_exchange_cipher_groups_)) {

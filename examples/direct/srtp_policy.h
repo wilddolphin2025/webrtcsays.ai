@@ -54,6 +54,34 @@ inline Policy PolicyFor(const std::string& audio_codec, int srtp_tag32, bool enc
 
 // Same order as CryptoOptions::GetSupportedDtlsSrtpCryptoSuites with
 // prefer_gcm left false: SHA1_32, then SHA1_80, then GCM.
+// BoringSSL's SSL_CTX_set_tlsext_use_srtp names. Not the IANA
+// "AES_CM_128_HMAC_SHA1_32" spelling.
+inline const char* BoringSslProfileName(int id) {
+  switch (id) {
+    case kSha1_80:
+      return "SRTP_AES128_CM_SHA1_80";
+    case kSha1_32:
+      return "SRTP_AES128_CM_SHA1_32";
+    case kAeadAes128Gcm:
+      return "SRTP_AEAD_AES_128_GCM";
+    case kAeadAes256Gcm:
+      return "SRTP_AEAD_AES_256_GCM";
+    default:
+      return nullptr;
+  }
+}
+
+inline std::string BoringSslProfileString(const std::vector<int>& ids) {
+  std::string out;
+  for (int id : ids) {
+    const char* name = BoringSslProfileName(id);
+    if (!name) return {};
+    if (!out.empty()) out += ":";
+    out += name;
+  }
+  return out;
+}
+
 inline std::vector<int> SuiteIds(const Policy& policy) {
   std::vector<int> suites;
   if (policy.sha1_32) suites.push_back(kSha1_32);

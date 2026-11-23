@@ -1,0 +1,3 @@
+# /etc/nginx/liquid-gate.conf on rtc.wilddolphin.us. root:root 0600.
+# Written by host/make-gate-secret.sh. Never commit the real file.
+proxy_set_header X-Liquid-Gate "REPLACE_WITH_64_HEX";

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer">
+    <meta name="robots" content="noindex">
+    <title>LiquidCall Demo | Wilddolphin LLC</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .gradient-bg { background: linear-gradient(135deg, #0066cc 0%, #003366 100%); }
+        .glass-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+    </style>
+    <!--
+      www.wilddolphin.us/demo.html?room=room101#demo
+      This static page holds no credentials. It sends the visitor to the
+      authenticated demo on rtc.wilddolphin.us, which asks for the demo
+      sign-in (/demo/login) and then returns to the room page.
+        via=view  (default, phase A): /demo/view/<room>  browser answers a LiquidCall/Opus caller (frame-view router)
+        via=room  (phase B):          /demo/room/<room>  browser calls LiquidServer, which converts LiquidCall to Opus
+      Anything else falls back to room101 and the default route. The #hash is dropped.
+    -->
+    <script id="demo-redirect">
+        (function (root) {
+            var RTC_ORIGIN = "https://rtc.wilddolphin.us";
+            var DEFAULT_ROOM = "room101";
+            var DEFAULT_VIA = "view";
+            var ROOM_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+            var RESERVED = { ws: true, assets: true };
+
+            function param(search, name) {
+                var query = String(search || "").replace(/^\?/, "");
+                var parts = query.split("&");
+                for (var i = 0; i < parts.length; i++) {
+                    var eq = parts[i].indexOf("=");
+                    var key = eq < 0 ? parts[i] : parts[i].slice(0, eq);
+                    if (key !== name) continue;
+                    var raw = eq < 0 ? "" : parts[i].slice(eq + 1);
+                    try { return decodeURIComponent(raw.replace(/\+/g, " ")); } catch (e) { return ""; }
+                }
+                return "";
+            }
+
+            function demoTarget(search) {
+                var room = param(search, "room");
+                if (!ROOM_RE.test(room) || RESERVED[room]) room = DEFAULT_ROOM;
+                var via = param(search, "via");
+                if (via !== "view" && via !== "room") via = DEFAULT_VIA;
+                return RTC_ORIGIN + "/demo/" + via + "/" + room;
+            }
+
+            root.demoTarget = demoTarget;
+            if (root.location && typeof root.location.replace === "function" && !root.DEMO_REDIRECT_DISABLED) {
+                root.location.replace(demoTarget(root.location.search));
+            }
+        })(this);
+    </script>
+</head>
+<body class="font-sans flex flex-col min-h-screen bg-gray-50">
+    <nav class="bg-white shadow-lg fixed w-full z-50">
+        <div class="max-w-7xl mx-auto px-4">
+            <div class="flex justify-between items-center h-16">
+                <div class="flex items-center">
+                    <a href="/" class="flex items-center space-x-3">
+                        <i class="fas fa-water text-blue-600 text-3xl"></i>
+                        <span class="font-bold text-xl text-gray-800">Wilddolphin LLC</span>
+                    </a>
+                </div>
+                <div class="hidden md:flex items-center space-x-8">
+                    <a href="/" class="text-gray-800 hover:text-blue-600">Home</a>
+                    <a href="/projects-page.html" class="text-gray-800 hover:text-blue-600">Projects</a>
+                    <a href="/services-page.html" class="text-gray-800 hover:text-blue-600">Services</a>
+                    <a href="/about-page.html" class="text-gray-800 hover:text-blue-600">About</a>
+                    <a href="/support-page.html" class="text-gray-800 hover:text-blue-600">Support</a>
+                    <a href="/contact-page.html" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700">Contact</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-grow pt-16 flex items-center justify-center">
+        <section id="demo" class="gradient-bg w-full">
+            <div class="max-w-3xl mx-auto px-4 py-24 text-center text-white">
+                <div class="glass-card rounded-2xl p-10 md:p-14 text-gray-800 shadow-2xl">
+                    <div class="w-20 h-20 mx-auto mb-6 rounded-full bg-blue-100 flex items-center justify-center">
+                        <i class="fas fa-headset text-blue-600 text-4xl"></i>
+                    </div>
+                    <h1 class="text-3xl md:text-4xl font-bold mb-4">Opening the LiquidCall demo</h1>
+                    <p class="text-lg text-gray-600 mb-8">
+                        The live demo room needs a demo sign-in. You'll go to the sign-in page and then straight
+                        into the room.
+                    </p>
+                    <div class="flex flex-col sm:flex-row gap-3 justify-center">
+                        <a id="demo-link" href="https://rtc.wilddolphin.us/demo/view/room101" class="inline-block bg-blue-600 text-white px-8 py-3 rounded-lg hover:bg-blue-700 transition font-medium">
+                            <i class="fas fa-right-to-bracket mr-2"></i> Sign in to room101
+                        </a>
+                        <a href="/contact-page.html" class="inline-block bg-gray-100 text-gray-800 px-8 py-3 rounded-lg hover:bg-gray-200 transition font-medium">
+                            <i class="fas fa-envelope mr-2"></i> Request access
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="bg-gray-900 text-gray-300 py-8">
+        <div class="max-w-7xl mx-auto px-4 text-center">
+            <p>&copy; 2026 Wilddolphin LLC. All rights reserved.</p>
+        </div>
+    </footer>
+    <script>
+        (function () {
+            var link = document.getElementById("demo-link");
+            if (link && window.demoTarget) link.href = window.demoTarget(window.location.search);
+        })();
+    </script>
+</body>
+</html>

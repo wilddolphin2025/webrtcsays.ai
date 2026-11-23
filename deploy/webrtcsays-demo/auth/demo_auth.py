@@ -36,6 +36,13 @@ ALLOWED_PATHS = frozenset({
     "/ws",
 })
 ALLOWED_NEXT = frozenset({"/demo/", "/demo/index.html", "/demo/turn"})
+VIEW_PAGE_RE = re.compile(r"^/demo/view/(?!ws$|assets$)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+VIEW_ASSET_RE = re.compile(r"^/demo/view/assets/view\.(?:css|js)$")
+VIEW_WS_RE = re.compile(r"^/demo/view/ws/[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+# LiquidServer rooms (deploy/liquid-room). The page is a caller; the socket is
+# proxied by nginx to LiquidServer. The room label "ws" is reserved.
+ROOM_PAGE_RE = re.compile(r"^/demo/room/(?!ws$)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+ROOM_WS_RE = re.compile(r"^/demo/room/ws/[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9]{16,128}$")
 TURN_URI_RE = re.compile(
@@ -365,7 +372,7 @@ def safe_next(raw: str | None) -> str:
             return default
         if "?" in value or "#" in value or "%" in value:
             return default
-    if decoded in ALLOWED_NEXT:
+    if decoded in ALLOWED_NEXT or VIEW_PAGE_RE.fullmatch(decoded) or ROOM_PAGE_RE.fullmatch(decoded):
         return decoded
     return default
 
@@ -568,6 +575,22 @@ def authorization_token(header: str | None):
     return parts[1]
 
 
+def view_path(path: str | None) -> bool:
+    if not isinstance(path, str):
+        return False
+    return bool(
+        VIEW_PAGE_RE.fullmatch(path)
+        or VIEW_ASSET_RE.fullmatch(path)
+        or VIEW_WS_RE.fullmatch(path)
+    )
+
+
+def room_path(path: str | None) -> bool:
+    if not isinstance(path, str):
+        return False
+    return bool(ROOM_PAGE_RE.fullmatch(path) or ROOM_WS_RE.fullmatch(path))
+
+
 def authenticated_client(headers, url_path: str) -> str | None:
     original = headers.get("X-Original-URI")
     if original:
@@ -576,7 +599,7 @@ def authenticated_client(headers, url_path: str) -> str | None:
         path = normalize_path(urllib.parse.urlsplit(url_path).path)
         if path == "/_demo_auth":
             path = None
-    if path not in ALLOWED_PATHS:
+    if path not in ALLOWED_PATHS and not view_path(path) and not room_path(path):
         return None
     bearer = authorization_token(headers.get("Authorization"))
     if bearer is False:

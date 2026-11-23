@@ -1,0 +1,252 @@
+{
+ "comment": "Signaling conformance vectors for LiquidServer (SIGNALING.md). Each step: [client text, expected server reply prefix or null for no reply]. answer_has applies to the last ANSWER.",
+ "vectors": [
+  {
+   "name": "browser_opus_call",
+   "room": "room101",
+   "steps": [
+    [
+     "HELLO",
+     "200 OK"
+    ],
+    [
+     "INVITE:{\"agent\":\"audio\",\"room_name\":\"room101\",\"video\":false}",
+     "WAITING"
+    ],
+    [
+     "OFFER:v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111 0 8 9 126\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendrecv\r\na=rtcp-mux\r\na=setup:actpass\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:9 G722/8000\r\na=rtpmap:126 telephone-event/8000\r\n",
+     "ANSWER:"
+    ],
+    [
+     "ICE:0:candidate:1 1 udp 2122260223 192.0.2.10 50000 typ host",
+     null
+    ],
+    [
+     "BYE",
+     "200 OK"
+    ]
+   ],
+   "answer_has": [
+    "m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
+    "a=rtpmap:111 opus/48000/2",
+    "a=rtcp-mux"
+   ],
+   "answer_lacks": [
+    "LIQUIDCALL",
+    "x-liquidcall",
+    "PCMU"
+   ]
+  },
+  {
+   "name": "iphone_liquid_female_then_me",
+   "room": "room101",
+   "steps": [
+    [
+     "HELLO",
+     "200 OK"
+    ],
+    [
+     "HELLO",
+     "200 OK"
+    ],
+    [
+     "INVITE:{\"agent\":\"audio\",\"encryption\":true,\"video\":false,\"room_name\":\"room101\"}",
+     "WAITING"
+    ],
+    [
+     "OFFER:v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 96 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendrecv\r\na=rtcp-mux\r\na=setup:actpass\r\na=rtpmap:96 LIQUIDCALL/48000/1\r\na=fmtp:96 pack=tight;fpp=1\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\na=x-liquidcall-voice:96 female\r\n",
+     "ANSWER:"
+    ],
+    [
+     "OFFER:v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 96 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendrecv\r\na=rtcp-mux\r\na=setup:actpass\r\na=rtpmap:96 LIQUIDCALL/48000/1\r\na=fmtp:96 pack=tight;fpp=1\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\na=x-liquidcall-voice:96 me\r\n",
+     "ANSWER:"
+    ],
+    [
+     "BYE",
+     "200 OK"
+    ]
+   ],
+   "answer_has": [
+    "m=audio 9 UDP/TLS/RTP/SAVPF 96 111\r\n",
+    "a=rtpmap:96 LIQUIDCALL/48000/1",
+    "a=fmtp:96 pack=tight;fpp=1",
+    "a=x-liquidcall-voices:96 me,female,male",
+    "a=x-liquidcall-voice:96 me",
+    "a=rtpmap:111 opus/48000/2"
+   ],
+   "first_answer_has": [
+    "a=x-liquidcall-voice:96 female"
+   ]
+  },
+  {
+   "name": "iphone_liquid_only_no_voice",
+   "room": "room101",
+   "steps": [
+    [
+     "HELLO:iphone",
+     "200 OK"
+    ],
+    [
+     "INVITE",
+     "WAITING"
+    ],
+    [
+     "OFFER:v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1\r\nm=audio 9 UDP/TLS/RTP/SAVPF 96\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendrecv\r\na=rtcp-mux\r\na=setup:actpass\r\na=rtpmap:96 LIQUIDCALL/48000/1\r\na=fmtp:96 pack=tight;fpp=1\r\nm=video 9 UDP/TLS/RTP/SAVPF 102\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=rtpmap:102 H264/90000\r\n",
+     "ANSWER:"
+    ]
+   ],
+   "answer_has": [
+    "m=audio 9 UDP/TLS/RTP/SAVPF 96\r\n",
+    "a=x-liquidcall-voice:96 me",
+    "m=video 0 UDP/TLS/RTP/SAVPF 102"
+   ],
+   "answer_lacks": [
+    "opus"
+   ]
+  },
+  {
+   "name": "legacy_payload_name",
+   "room": "room101",
+   "steps": [
+    [
+     "HELLO",
+     "200 OK"
+    ],
+    [
+     "INVITE",
+     "WAITING"
+    ],
+    [
+     "OFFER:v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 96 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendrecv\r\na=rtcp-mux\r\na=setup:actpass\r\na=rtpmap:96 LIQUIDCODEC/48000/1\r\na=fmtp:96 pack=tight;fpp=1\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\na=x-liquidcall-voice:96 male\r\n",
+     "ANSWER:"
+    ]
+   ],
+   "answer_has": [
+    "a=rtpmap:96 LIQUIDCALL/48000/1",
+    "a=x-liquidcall-voice:96 male"
+   ]
+  },
+  {
+   "name": "unknown_voice_falls_back",
+   "room": "room101",
+   "steps": [
+    [
+     "HELLO",
+     "200 OK"
+    ],
+    [
+     "INVITE",
+     "WAITING"
+    ],
+    [
+     "OFFER:v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 96 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendrecv\r\na=rtcp-mux\r\na=setup:actpass\r\na=rtpmap:96 LIQUIDCALL/48000/1\r\na=fmtp:96 pack=tight;fpp=1\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\na=x-liquidcall-voice:96 robot\r\n",
+     "ANSWER:"
+    ]
+   ],
+   "answer_has": [
+    "a=x-liquidcall-voice:96 me"
+   ]
+  },
+  {
+   "name": "no_supported_codec",
+   "room": "room101",
+   "steps": [
+    [
+     "HELLO",
+     "200 OK"
+    ],
+    [
+     "INVITE",
+     "WAITING"
+    ],
+    [
+     "OFFER:v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendrecv\r\na=rtcp-mux\r\na=setup:actpass\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:9 G722/8000\r\na=rtpmap:126 telephone-event/8000\r\n",
+     "400 Bad Request"
+    ]
+   ],
+   "closed": true
+  },
+  {
+   "name": "room_name_mismatch",
+   "room": "room101",
+   "steps": [
+    [
+     "HELLO",
+     "200 OK"
+    ],
+    [
+     "INVITE:{\"agent\":\"audio\",\"room_name\":\"room202\"}",
+     "400 Bad Request"
+    ]
+   ],
+   "closed": true
+  },
+  {
+   "name": "invite_before_hello",
+   "room": "room101",
+   "steps": [
+    [
+     "INVITE",
+     "400 Bad Request"
+    ]
+   ],
+   "closed": true
+  },
+  {
+   "name": "offer_before_invite",
+   "room": "room101",
+   "steps": [
+    [
+     "HELLO",
+     "200 OK"
+    ],
+    [
+     "OFFER:v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111 0 8 9 126\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendrecv\r\na=rtcp-mux\r\na=setup:actpass\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:9 G722/8000\r\na=rtpmap:126 telephone-event/8000\r\n",
+     "400 Bad Request"
+    ]
+   ],
+   "closed": true
+  },
+  {
+   "name": "cancel_before_answer",
+   "room": "room101",
+   "steps": [
+    [
+     "HELLO",
+     "200 OK"
+    ],
+    [
+     "INVITE",
+     "WAITING"
+    ],
+    [
+     "CANCEL",
+     "200 OK"
+    ]
+   ],
+   "closed": true
+  },
+  {
+   "name": "late_hello_ignored",
+   "room": "room101",
+   "steps": [
+    [
+     "HELLO",
+     "200 OK"
+    ],
+    [
+     "INVITE",
+     "WAITING"
+    ],
+    [
+     "HELLO",
+     null
+    ],
+    [
+     "OFFER:v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111 0 8 9 126\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendrecv\r\na=rtcp-mux\r\na=setup:actpass\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:9 G722/8000\r\na=rtpmap:126 telephone-event/8000\r\n",
+     "ANSWER:"
+    ]
+   ]
+  }
+ ]
+}

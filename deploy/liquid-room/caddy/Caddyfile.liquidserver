@@ -1,0 +1,24 @@
+# Caddy site for LiquidServer on the LiquidServer VPS. Phase B.
+# Install with host/install-liquid-caddy.sh, which replaces RTC_VPS_IP_PLACEHOLDER
+# with the rtc.wilddolphin.us address (the only client allowed on /ws/*).
+# LiquidServer listens on 127.0.0.1:7880 (HTTP/WebSocket) and on the public
+# ICE ports 7882/udp and 7881/tcp itself; Caddy does not touch media.
+# No access log: request headers include X-Liquid-Gate.
+
+liquidserver.wilddolphin.us {
+	@rtc_ws {
+		path /ws/*
+		remote_ip RTC_VPS_IP_PLACEHOLDER
+	}
+	handle @rtc_ws {
+		reverse_proxy 127.0.0.1:7880 {
+			flush_interval -1
+		}
+	}
+	handle /healthz {
+		respond "ok" 200
+	}
+	handle {
+		respond 404
+	}
+}

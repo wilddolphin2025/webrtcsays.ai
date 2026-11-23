@@ -25,6 +25,7 @@
 #include <sstream>
 #include <memory>
 #include <cstdlib>
+#include "rtc_base/ssl_stream_adapter.h"
 #include "rtc_base/time_utils.h"
 #include "api/video_codecs/video_decoder_factory_template.h"
 #include "api/video_codecs/video_decoder_factory_template_libvpx_vp8_adapter.h"
@@ -42,8 +43,10 @@
 #include "mac_vpio_audio_device.h"
 #endif
 #include "option.h"
+#include "srtp_policy.h"
 #include "audio_tap.h"
 #include "impair.h"
+#include "modules/audio_coding/codecs/liquidcall/liquid_offer.h"
 #if defined(WEBRTC_USE_LIQUIDCALL)
 #include "modules/audio_coding/codecs/liquidcall/liquid_factory.h"
 #endif
@@ -486,8 +489,10 @@ bool DirectApplication::CreatePeerConnection() {
         fprintf(stderr, "%s\n", liquid_error.c_str());
         return false;
       }
-      audio_encoder_factory = webrtc::CreateLiquidAudioEncoderFactory();
-      audio_decoder_factory = webrtc::CreateLiquidAudioDecoderFactory();
+      // Keep Opus (and the rest of the builtin factories). LIQUIDCALL is added
+      // in front so this client sends it and can still decode Opus.
+      audio_encoder_factory = webrtc::CreateLiquidAudioEncoderFactory(audio_encoder_factory);
+      audio_decoder_factory = webrtc::CreateLiquidAudioDecoderFactory(audio_decoder_factory);
 #else
       fprintf(stderr,
               "LiquidCall is not in this build. On Apple Silicon run "
@@ -529,37 +534,78 @@ bool DirectApplication::CreatePeerConnection() {
   }
 
   webrtc::PeerConnectionInterface::RTCConfiguration config;
+  // Factory Options default to DTLS 1.3 (M156). BoringSSL then puts the
+  // server's use_srtp in EncryptedExtensions, which a DTLS 1.2 peer never
+  // reads. Cap every call at DTLS 1.2 so the extension stays in the
+  // ClientHello and the ServerHello.
+  // The certificate object is reused across calls (same fingerprint). It is
+  // only an identity. The SSL_CTX is created later, per handshake, after the
+  // SRTP profile string is stored.
+  {
+    webrtc::PeerConnectionFactoryInterface::Options options;
+    options.ssl_max_version = webrtc::SSL_PROTOCOL_DTLS_12;
+    options.disable_encryption = !opts_.encryption;
+    peer_connection_factory_->SetOptions(options);
+    fprintf(stderr, "DTLS max version: 1.2 (factory default in this tree is 1.3)\n");
+  }
   if (opts_.encryption) {
+    const bool reused_identity = static_cast<bool>(certificate_);
     if (!certificate_) {
       certificate_ = DirectLoadCertificateFromEnv(opts_);
       UpdateCertificateStats();
     }
     if (certificate_) {
       config.certificates.push_back(certificate_);
+      const char* fp =
+          certificate_stats_ ? certificate_stats_->fingerprint.c_str() : "";
+      fprintf(stderr, "DTLS identity %s fingerprint=%s\n",
+              reused_identity ? "reused" : "new", fp);
     } else {
       RTC_LOG(LS_ERROR) << "Failed to obtain certificate, WebRTC DTLS would not work";
     }
-  } else {
-    // Debug only: plain RTP.
-    webrtc::PeerConnectionFactoryInterface::Options options;
-    options.disable_encryption = true;
-    peer_connection_factory_->SetOptions(options);
   }
 
-  // Low-bitrate transport for LiquidCall (none of these add latency):
-  // the 4-byte SRTP tag (used only when both peers allow it; otherwise
-  // SHA1_80's 10 bytes) and a slower audio RTCP report interval.
+  // One configuration for every signaling path (caller and callee, direct
+  // TCP and the room WebSocket). LiquidCall offers only
+  // AES_CM_128_HMAC_SHA1_32. Leaving the WebRTC defaults (SHA1_80, then
+  // AES-256-GCM, then AES-128-GCM) lets a Mac WebRTC peer match AES-256-GCM
+  // or SHA1_80, while Pion's ClientHello (AES-128-GCM, SHA1_80, SHA1_32, no
+  // AES-256-GCM) can fail to select a profile. BoringSSL then omits use_srtp
+  // from the ServerHello. SHA1_80 is not a fallback: as DTLS server we would
+  // pick it, because Pion lists it before SHA1_32.
   {
     const bool liquid = opts_.audio_codec == "liquidcall";
-    const bool tag32 = opts_.srtp_tag32 < 0 ? liquid : opts_.srtp_tag32 != 0;
-    if (opts_.encryption && tag32) {
+    const direct_srtp::Policy srtp =
+        direct_srtp::PolicyFor(opts_.audio_codec, opts_.srtp_tag32, opts_.encryption);
+    const std::vector<int> suites = direct_srtp::SuiteIds(srtp);
+    if (opts_.encryption) {
       webrtc::CryptoOptions crypto;
-      crypto.srtp.enable_aes128_sha1_32_crypto_cipher = true;
+      crypto.srtp.enable_aes128_sha1_32_crypto_cipher = srtp.sha1_32;
+      crypto.srtp.enable_aes128_sha1_80_crypto_cipher = srtp.sha1_80;
+      crypto.srtp.enable_gcm_crypto_suites = srtp.gcm;
+      crypto.srtp.prefer_gcm_crypto_suites = false;
       config.crypto_options = crypto;
+      static_assert(webrtc::kSrtpAes128CmSha1_32 == direct_srtp::kSha1_32, "SRTP id");
+      static_assert(webrtc::kSrtpAes128CmSha1_80 == direct_srtp::kSha1_80, "SRTP id");
+      if (suites.empty()) {
+        fprintf(stderr, "Transport: SRTP profile list is empty\n");
+      }
     }
     const int rtcp_ms = opts_.audio_rtcp_ms > 0 ? opts_.audio_rtcp_ms : (liquid ? 10000 : 5000);
     config.set_audio_rtcp_report_interval_ms(rtcp_ms);
-    fprintf(stderr, "Transport: srtp_tag32=%s audio_rtcp=%d ms\n", tag32 ? "on" : "off", rtcp_ms);
+    // Same Options and the same CreatePeerConnection for direct TCP and the
+    // room WebSocket. parseOptions starts encryption at false; a wss URL
+    // turns it back on. Direct TCP therefore stays plain RTP unless
+    // --encryption or the JSON flag is set. The room path is the one that
+    // runs DTLS. disable_encryption turns DTLS off entirely, so a completed
+    // DTLS handshake means this flag was on.
+    fprintf(stderr,
+            "Transport: encryption=%d room=%d audio_codec=%s srtp_tag32=%d "
+            "srtp_suites=%zu sha1_32=%s sha1_80=%s gcm=%s audio_rtcp=%d ms\n",
+            opts_.encryption ? 1 : 0, opts_.signal_url.empty() ? 0 : 1,
+            opts_.audio_codec.empty() ? "-" : opts_.audio_codec.c_str(),
+            opts_.srtp_tag32, suites.size(), srtp.sha1_32 ? "on" : "off",
+            srtp.sha1_80 ? "on" : "off", srtp.gcm ? "on" : "off", rtcp_ms);
   }
 
   // Host, srflx and relay candidates so LAN calls connect directly.
@@ -1017,24 +1063,32 @@ void DirectApplication::ConfigureOutgoingAudio() {
   if (!liquid && !opus) return;
   const auto caps =
       peer_connection_factory_->GetRtpSenderCapabilities(webrtc::MediaType::AUDIO).codecs;
+  // liquidcall: LIQUIDCALL/48000/1 (PT 96, sent) then opus/48000/2 (PT 111).
+  // opus: Opus only, same as before. Default never reaches here.
+  // pack, fpp, and usedtx are already on the factory's SdpAudioFormat, so they
+  // are part of the capability. Adding them again is a different codec and
+  // SetCodecPreferences returns INVALID_MODIFICATION. Opus keeps the builtin
+  // fmtp minptime=10;useinbandfec=1, which is what the server answers with.
+  const auto want = webrtc::liquid::AudioCodecPreferenceNames(liquid ? "liquidcall" : "opus");
   std::vector<webrtc::RtpCodecCapability> preferred;
-  for (auto codec : caps) {
-    std::string name = codec.name;
-    for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (liquid) {
-      if (name == "liquidcall") {
-        // pack and fpp are already on the factory's SdpAudioFormat, so they
-        // are part of this capability. Adding them again is a different
-        // codec and SetCodecPreferences returns INVALID_MODIFICATION.
-        preferred.push_back(std::move(codec));
+  for (const auto& want_name : want) {
+    for (const auto& codec : caps) {
+      if (webrtc::liquid::LowerCodecName(codec.name) == want_name) {
+        preferred.push_back(codec);
+        break;
       }
-    } else if (name == "opus") {
-      preferred.push_back(std::move(codec));
     }
   }
-  if (preferred.empty()) {
+  bool have_liquid = false;
+  bool have_opus = false;
+  for (const auto& codec : preferred) {
+    const std::string name = webrtc::liquid::LowerCodecName(codec.name);
+    if (name == "liquidcall") have_liquid = true;
+    if (name == "opus") have_opus = true;
+  }
+  if (preferred.empty() || (liquid && (!have_liquid || !have_opus)) || (!liquid && !have_opus)) {
     fprintf(stderr, "audio codec %s is not available in this build\n",
-            liquid ? "liquidcall" : "opus");
+            liquid ? "liquidcall+opus" : "opus");
     RTC_LOG(LS_ERROR) << "Requested audio codec is not available";
     return;
   }
@@ -1047,10 +1101,14 @@ void DirectApplication::ConfigureOutgoingAudio() {
       fprintf(stderr, "audio SetCodecPreferences failed: %s\n", err.message());
     }
   }
-  fprintf(stderr, "audio codec: %s%s\n", preferred.front().name.c_str(),
-          opts_.opus_bitrate_bps > 0
-              ? (" maxaveragebitrate=" + std::to_string(opts_.opus_bitrate_bps)).c_str()
-              : "");
+  if (liquid) {
+    fprintf(stderr, "audio codec: %s (send) + opus (receive)\n", preferred.front().name.c_str());
+  } else {
+    fprintf(stderr, "audio codec: %s%s\n", preferred.front().name.c_str(),
+            opts_.opus_bitrate_bps > 0
+                ? (" maxaveragebitrate=" + std::to_string(opts_.opus_bitrate_bps)).c_str()
+                : "");
+  }
 }
 
 // New method to ensure video send is active with the current source

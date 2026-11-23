@@ -265,6 +265,10 @@ class SSLStreamAdapter : public StreamInterface {
   // that's assumed.
   static bool IsBoringSsl();
 
+  // stderr, RTC_LOG(LS_ERROR), and on iOS NSLog. Release RTC_LOG is off, and
+  // the device syslog only keeps NSLog.
+  static void LogSrtpDiagnostic(const char* line);
+
   // Returns true iff the supplied cipher is deemed to be strong.
   // TODO(torbjorng): Consider removing the KeyType argument.
   static bool IsAcceptableCipher(int cipher, KeyType key_type);

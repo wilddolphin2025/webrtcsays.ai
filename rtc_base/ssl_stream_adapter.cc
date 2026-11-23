@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <optional>
 #include <set>
@@ -24,11 +25,40 @@
 #include "absl/strings/string_view.h"
 #include "api/environment/environment.h"
 #include "api/field_trials_view.h"
+#include "rtc_base/logging.h"
 #include "rtc_base/openssl_stream_adapter.h"
+
+#if defined(WEBRTC_IOS)
+#include <dlfcn.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
+#endif
 #include "rtc_base/ssl_identity.h"
 #include "rtc_base/stream.h"
 
 namespace webrtc {
+
+void SSLStreamAdapter::LogSrtpDiagnostic(const char* line) {
+  if (!line) return;
+  fprintf(stderr, "SRTP %s\n", line);
+  RTC_LOG(LS_ERROR) << "SRTP " << line;
+#if defined(WEBRTC_IOS)
+  // NSLog is resolved from the app. rtc_base does not link Foundation.
+  using NsLogFn = void (*)(id format, ...);
+  static NsLogFn nslog =
+      reinterpret_cast<NsLogFn>(dlsym(RTLD_DEFAULT, "NSLog"));
+  Class nsstring = objc_getClass("NSString");
+  if (!nslog || !nsstring) return;
+  SEL utf8 = sel_registerName("stringWithUTF8String:");
+  auto make = [&](const char* text) -> id {
+    return ((id(*)(id, SEL, const char*))objc_msgSend)((id)nsstring, utf8,
+                                                       text);
+  };
+  id fmt = make("%@");
+  id msg = make(line);
+  if (fmt && msg) nslog(fmt, msg);
+#endif
+}
 
 // Deprecated, prefer SrtpCryptoSuiteToName.
 // https://www.iana.org/assignments/sdp-security-descriptions/sdp-security-descriptions.xhtml

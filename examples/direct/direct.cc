@@ -25,6 +25,7 @@
 #include <sstream>
 #include <memory>
 #include <cstdlib>
+#include "rtc_base/ssl_stream_adapter.h"
 #include "rtc_base/time_utils.h"
 #include "api/video_codecs/video_decoder_factory_template.h"
 #include "api/video_codecs/video_decoder_factory_template_libvpx_vp8_adapter.h"
@@ -42,6 +43,7 @@
 #include "mac_vpio_audio_device.h"
 #endif
 #include "option.h"
+#include "srtp_policy.h"
 #include "audio_tap.h"
 #include "impair.h"
 #include "modules/audio_coding/codecs/liquidcall/liquid_offer.h"
@@ -549,20 +551,37 @@ bool DirectApplication::CreatePeerConnection() {
     peer_connection_factory_->SetOptions(options);
   }
 
-  // Low-bitrate transport for LiquidCall (none of these add latency):
-  // the 4-byte SRTP tag (used only when both peers allow it; otherwise
-  // SHA1_80's 10 bytes) and a slower audio RTCP report interval.
+  // One configuration for every signaling path (caller and callee, direct
+  // TCP and the room WebSocket). LiquidCall offers only
+  // AES_CM_128_HMAC_SHA1_32. Leaving the WebRTC defaults (SHA1_80, then
+  // AES-256-GCM, then AES-128-GCM) lets a Mac WebRTC peer match AES-256-GCM
+  // or SHA1_80, while Pion's ClientHello (AES-128-GCM, SHA1_80, SHA1_32, no
+  // AES-256-GCM) can fail to select a profile. BoringSSL then omits use_srtp
+  // from the ServerHello. SHA1_80 is not a fallback: as DTLS server we would
+  // pick it, because Pion lists it before SHA1_32.
   {
     const bool liquid = opts_.audio_codec == "liquidcall";
-    const bool tag32 = opts_.srtp_tag32 < 0 ? liquid : opts_.srtp_tag32 != 0;
-    if (opts_.encryption && tag32) {
+    const direct_srtp::Policy srtp =
+        direct_srtp::PolicyFor(opts_.audio_codec, opts_.srtp_tag32, opts_.encryption);
+    const std::vector<int> suites = direct_srtp::SuiteIds(srtp);
+    if (opts_.encryption) {
       webrtc::CryptoOptions crypto;
-      crypto.srtp.enable_aes128_sha1_32_crypto_cipher = true;
+      crypto.srtp.enable_aes128_sha1_32_crypto_cipher = srtp.sha1_32;
+      crypto.srtp.enable_aes128_sha1_80_crypto_cipher = srtp.sha1_80;
+      crypto.srtp.enable_gcm_crypto_suites = srtp.gcm;
+      crypto.srtp.prefer_gcm_crypto_suites = false;
       config.crypto_options = crypto;
+      static_assert(webrtc::kSrtpAes128CmSha1_32 == direct_srtp::kSha1_32, "SRTP id");
+      static_assert(webrtc::kSrtpAes128CmSha1_80 == direct_srtp::kSha1_80, "SRTP id");
+      if (suites.empty()) {
+        fprintf(stderr, "Transport: SRTP profile list is empty\n");
+      }
     }
     const int rtcp_ms = opts_.audio_rtcp_ms > 0 ? opts_.audio_rtcp_ms : (liquid ? 10000 : 5000);
     config.set_audio_rtcp_report_interval_ms(rtcp_ms);
-    fprintf(stderr, "Transport: srtp_tag32=%s audio_rtcp=%d ms\n", tag32 ? "on" : "off", rtcp_ms);
+    fprintf(stderr, "Transport: srtp_suites=%zu sha1_32=%s sha1_80=%s gcm=%s audio_rtcp=%d ms\n",
+            suites.size(), srtp.sha1_32 ? "on" : "off", srtp.sha1_80 ? "on" : "off",
+            srtp.gcm ? "on" : "off", rtcp_ms);
   }
 
   // Host, srflx and relay candidates so LAN calls connect directly.

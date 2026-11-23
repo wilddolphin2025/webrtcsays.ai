@@ -13,6 +13,7 @@
 
 #include <opus/opus.h>
 
+#include "examples/direct/srtp_policy.h"
 #include "modules/audio_coding/codecs/liquidcall/liquid_codec.h"
 #include "modules/audio_coding/codecs/liquidcall/liquid_offer.h"
 
@@ -185,6 +186,34 @@ void TestAnswerDecodesOpus() {
   Expect(!saw_legacy, "factory does not advertise the legacy payload name");
 }
 
+void TestLiquidCallRoomSrtp() {
+  // Caller and callee, direct TCP and the room WebSocket, all use
+  // CreatePeerConnection, which installs PolicyFor(). DtlsTransportInternalImpl
+  // copies SuiteIds() into srtp_ciphers_ and will not call
+  // SSL_CTX_set_tlsext_use_srtp if that vector is empty.
+  const direct_srtp::Policy room =
+      direct_srtp::PolicyFor("liquidcall", /*srtp_tag32=*/-1, /*encryption=*/true);
+  const std::vector<int> suites = direct_srtp::SuiteIds(room);
+  Expect(!suites.empty(), "liquidcall room SRTP list is non-empty");
+  Expect(suites.front() == direct_srtp::kSha1_32, "liquidcall offers SHA1_32 first");
+  bool has_32 = false;
+  bool has_80 = false;
+  bool has_gcm = false;
+  for (int id : suites) {
+    if (id == direct_srtp::kSha1_32) has_32 = true;
+    if (id == direct_srtp::kSha1_80) has_80 = true;
+    if (id == direct_srtp::kAeadAes128Gcm || id == direct_srtp::kAeadAes256Gcm) has_gcm = true;
+  }
+  Expect(has_32, "liquidcall SRTP list contains SHA1_32");
+  Expect(!has_80 && !has_gcm, "liquidcall does not offer SHA1_80 or GCM ahead of SHA1_32");
+  const auto tcp = direct_srtp::PolicyFor("liquidcall", -1, true);
+  Expect(direct_srtp::SuiteIds(tcp) == suites, "direct TCP uses the same SRTP list as the room path");
+  const auto opus = direct_srtp::SuiteIds(direct_srtp::PolicyFor("opus", -1, true));
+  Expect(!opus.empty() && opus.front() == direct_srtp::kSha1_80, "opus keeps SHA1_80");
+  const auto plain = direct_srtp::SuiteIds(direct_srtp::PolicyFor("liquidcall", -1, false));
+  Expect(plain.empty(), "encryption off installs no SRTP profiles");
+}
+
 void TestWiring(const std::string& root) {
   if (root.empty()) {
     std::cout << "ok  skipped source wiring check (no LIQUID_REPO_ROOT)\n";
@@ -199,6 +228,8 @@ void TestWiring(const std::string& root) {
          "liquidcall mode wraps the builtin decoder factory");
   Expect(Contains(direct, "AudioCodecPreferenceNames"),
          "codec preferences come from AudioCodecPreferenceNames");
+  Expect(Contains(direct, "direct_srtp::PolicyFor"),
+         "peer connection installs the shared SRTP policy");
   Expect(Contains(option, "bool liquid_dtx = false"), "DTX default stays off");
   Expect(Contains(option, "kLiquidJitterMaxMs = 80"), "80 ms jitter cap unchanged");
   Expect(Contains(factory, "PrependLiquidCall"), "factories prepend LIQUIDCALL and keep the inner list");
@@ -217,6 +248,7 @@ int main(int argc, char** argv) {
   TestPreferences();
   TestOfferLines();
   TestAnswerDecodesOpus();
+  TestLiquidCallRoomSrtp();
   TestWiring(root);
   if (g_fails) {
     std::cout << g_fails << " failure(s)\n";

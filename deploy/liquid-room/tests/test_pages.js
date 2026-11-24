@@ -68,6 +68,8 @@ function runRedirect(search) {
   await test("www: no token, password, or IP in the page", () => {
     assert(!/token=|password|\b\d{1,3}(\.\d{1,3}){3}\b/i.test(www.replace(/2\.2\.19|6\.0\.0/g, "")));
     assert(!/LiquidCodec/.test(www));
+    assert(/<title>CetaCall Demo \| Wilddolphin LLC<\/title>/.test(www));
+    assert(/Opening the CetaCall demo/.test(www));
   });
 
   // ---------------------------------------------------------------- page/index.html

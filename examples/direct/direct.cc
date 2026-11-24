@@ -1142,7 +1142,10 @@ void DirectApplication::ConfigureOutgoingAudio() {
     }
   }
   if (liquid) {
-    fprintf(stderr, "audio codec: %s (send) + opus (receive)\n", preferred.front().name.c_str());
+    // Preference order only; what each direction actually uses is in GetStats
+    // (outbound/inbound codec in --stats-jsonl and the "codec" field of --stats).
+    fprintf(stderr, "audio codec preference: %s first, opus fallback (negotiated codec per direction: see stats)\n",
+            preferred.front().name.c_str());
   } else {
     fprintf(stderr, "audio codec: %s%s\n", preferred.front().name.c_str(),
             opts_.opus_bitrate_bps > 0

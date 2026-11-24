@@ -50,7 +50,7 @@ void WriteJsonl(const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& repor
     const std::string type = st.type();
     if (type != "inbound-rtp" && type != "outbound-rtp" && type != "remote-inbound-rtp" &&
         type != "candidate-pair" && type != "media-playout" && type != "media-source" &&
-        type != "transport") {
+        type != "transport" && type != "codec") {
       continue;
     }
     if (!first) line += ',';

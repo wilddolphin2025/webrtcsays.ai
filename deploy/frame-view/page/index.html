@@ -9,7 +9,7 @@
   <title>Frame viewer</title>
   <script>
     (function () {
-      if (location.hostname === "ls.wilddolphin.us") document.title = "LiquidServer demo";
+      if (location.hostname === "ls.wilddolphin.us") document.title = "CetaBridge demo";
     })();
   </script>
   <link rel="stylesheet" href="/demo/view/assets/view.css">
@@ -30,7 +30,7 @@
         (function () {
           if (location.hostname !== "ls.wilddolphin.us") return;
           var wm = document.querySelector("header .wm");
-          if (wm) wm.textContent = "LiquidServer";
+          if (wm) wm.textContent = "CetaBridge";
           var heading = document.getElementById("view-heading");
           if (heading) {
             var room = (location.pathname.match(/^\/demo\/view\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/?$/) || [])[1];

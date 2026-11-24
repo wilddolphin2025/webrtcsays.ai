@@ -186,13 +186,19 @@ function runRedirect(search) {
     assert.strictEqual(p.ctx.location.assigned, "/demo/login?next=/demo/room/room101");
   });
 
-  await test("page: LiquidServer wordmark and title", () => {
-    assert(/<title>LiquidServer demo<\/title>/.test(page));
-    assert(/<h1 class="wm">LiquidServer<\/h1>/.test(page));
+  await test("page: CetaBridge wordmark and title", () => {
+    assert(/<title>CetaBridge demo<\/title>/.test(page));
+    assert(/<h1 class="wm">CetaBridge<\/h1>/.test(page));
     assert(/by Wilddolphin LLC/.test(page));
-    assert(/LiquidServer demo · ls\.wilddolphin\.us/.test(page));
-    assert(!/<h1 class="wm">LiquidCall<\/h1>/.test(page));
-    assert(!/<title>LiquidCall room<\/title>/.test(page));
+    assert(/CetaBridge demo · ls\.wilddolphin\.us/.test(page));
+    assert(/CetaCall iPhone app/.test(page));
+    assert(/CetaBridge turns the iPhone's CetaCall audio/.test(page));
+    const brand = [
+      page.match(/<title>([^<]*)<\/title>/)[1],
+      page.match(/<h1 class="wm">([^<]*)<\/h1>/)[1],
+      page.match(/<p class="foot">([^<]*)<\/p>/)[1],
+    ];
+    for (const text of brand) assert.strictEqual(/liquid/i.test(text), false, text);
   });
 
   await test("page: no secrets, IPs or legacy name", () => {

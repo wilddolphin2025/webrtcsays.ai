@@ -39,8 +39,8 @@ ALLOWED_NEXT = frozenset({"/demo/", "/demo/index.html", "/demo/turn"})
 VIEW_PAGE_RE = re.compile(r"^/demo/view/(?!ws$|assets$)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 VIEW_ASSET_RE = re.compile(r"^/demo/view/assets/view\.(?:css|js)$")
 VIEW_WS_RE = re.compile(r"^/demo/view/ws/[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
-# LiquidServer rooms (deploy/liquid-room). The page is a caller; the socket is
-# proxied by nginx to LiquidServer. The room label "ws" is reserved.
+# CetaBridge rooms (deploy/liquid-room). The page is a caller; the socket is
+# proxied by nginx to CetaBridge. The room label "ws" is reserved.
 ROOM_PAGE_RE = re.compile(r"^/demo/room/(?!ws$)[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 ROOM_WS_RE = re.compile(r"^/demo/room/ws/[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -535,14 +535,14 @@ WEBRTCSAYS_BRAND = {
     "view_heading": "Frame viewer",
 }
 
-LIQUIDSERVER_BRAND = {
-    "product": "LiquidServer",
+CETABRIDGE_BRAND = {
+    "product": "CetaBridge",
     "byline": "by Wilddolphin LLC",
-    "title_prefix": "LiquidServer demo",
+    "title_prefix": "CetaBridge demo",
     "view_heading": "Demo room",
 }
 
-LIQUIDSERVER_HOSTS = frozenset({"ls.wilddolphin.us"})
+CETABRIDGE_HOSTS = frozenset({"ls.wilddolphin.us"})
 
 
 def hostname_from_headers(headers, peer: str | None = None) -> str:
@@ -558,16 +558,16 @@ def demo_brand(host: str | None = None) -> dict[str, str]:
     """Pick the public wordmark for this deployment.
 
     Defaults to the WebRTCSays / rtc pages. ls.wilddolphin.us, or
-    DEMO_BRAND=liquidserver, switches the same templates to LiquidServer
+    DEMO_BRAND=liquidserver, switches the same templates to CetaBridge
     without changing the rtc Babelfish demo.
     """
     preset = os.environ.get("DEMO_BRAND", "").strip().lower()
     if preset in ("liquidserver", "ls"):
-        return dict(LIQUIDSERVER_BRAND)
+        return dict(CETABRIDGE_BRAND)
     if preset in ("webrtcsays", "rtc"):
         return dict(WEBRTCSAYS_BRAND)
-    if (host or "").split(":")[0].strip().lower() in LIQUIDSERVER_HOSTS:
-        return dict(LIQUIDSERVER_BRAND)
+    if (host or "").split(":")[0].strip().lower() in CETABRIDGE_HOSTS:
+        return dict(CETABRIDGE_BRAND)
     return dict(WEBRTCSAYS_BRAND)
 
 

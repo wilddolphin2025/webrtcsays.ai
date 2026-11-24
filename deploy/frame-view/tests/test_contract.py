@@ -42,8 +42,8 @@ class ContractTests(unittest.TestCase):
         self.assertIn('<h2 id="view-heading">Frame viewer</h2>', page)
         self.assertIn("by Wilddolphin LLC", page)
         self.assertIn('location.hostname === "ls.wilddolphin.us"', page)
-        self.assertIn('document.title = "LiquidServer demo"', page)
-        self.assertIn('wm.textContent = "LiquidServer"', page)
+        self.assertIn('document.title = "CetaBridge demo"', page)
+        self.assertIn('wm.textContent = "CetaBridge"', page)
         self.assertIn('room || "Demo room"', page)
         self.assertNotIn("LiquidCodec", page)
 

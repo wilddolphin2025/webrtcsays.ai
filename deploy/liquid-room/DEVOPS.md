@@ -1,4 +1,4 @@
-# DevOps handoff: room101 demo (Phase A now, Phase B when LiquidServer is ready)
+# DevOps handoff: room101 demo (Phase A now, Phase B when CetaBridge is ready)
 
 Every step needs the founder's approval in the DevOps chat first. Nothing here restarts Slim,
 coturn, the frame-view router or the karaoke/babelfish services. No secret is printed by any script.
@@ -46,16 +46,16 @@ bash deploy/liquid-room/host/check-phase-a.sh
   the Server room mode). Nobody else places calls.
 
 ---------------------------------------------------------------------------------------------------
-## Phase B: LiquidServer behind rtc (only after the founder approves phase 1 on the LiquidServer VPS)
+## Phase B: CetaBridge behind rtc (only after the founder approves phase 1 on the CetaBridge VPS)
 
-Prerequisites: DNS `ls.wilddolphin.us A <liquidserver-vps IPv4>`; Caddy on the LiquidServer VPS; ufw
-`80/tcp 443/tcp 7881/tcp 7882/udp` (22/tcp stays); the LiquidServer binary and unit from the
-LiquidServer repo (env `LIQUID_HTTP_BIND=127.0.0.1:7880`, `LIQUID_GATE_FILE=/etc/liquidserver/gate`,
+Prerequisites: DNS `ls.wilddolphin.us A <liquidserver-vps IPv4>`; Caddy on the CetaBridge VPS; ufw
+`80/tcp 443/tcp 7881/tcp 7882/udp` (22/tcp stays); the CetaBridge binary and unit from the
+CetaBridge repo (env `LIQUID_HTTP_BIND=127.0.0.1:7880`, `LIQUID_GATE_FILE=/etc/liquidserver/gate`,
 `LIQUID_PUBLIC_IP=<public IPv4>`, `LIQUID_ICE_UDP_PORT=7882`, `LIQUID_ICE_TCP_PORT=7881`). Until the
 Go server exists, `deploy/liquid-room/tools/signaling_ref.py` (signaling only, no media) can stand in
 on 127.0.0.1:7880 as user `liquid` to prove the path end to end.
 
-### B1. Gate secret (rtc → LiquidServer)
+### B1. Gate secret (rtc → CetaBridge)
 
 ```bash
 # rtc.wilddolphin.us, root:
@@ -66,7 +66,7 @@ ssh root@rtc.wilddolphin.us 'cat /root/liquid-gate.hex' | ssh root@<liquidserver
 # -> /etc/liquidserver/gate, root:liquid 0640. Compare the two printed sha256 prefixes.
 ```
 
-### B2. Caddy on the LiquidServer VPS
+### B2. Caddy on the CetaBridge VPS
 
 | File | Destination |
 |---|---|
@@ -115,15 +115,15 @@ bash deploy/liquid-room/host/check-phase-b.sh        # from the box or the Mac (
 ### B rollback
 1. rtc: `/root/backups/liquid-room-<ts>/rollback.sh` (restores the site file, removes the 3 files, `nginx -t && reload`).
    Auth: re-run the previous image tag with the same arguments.
-2. LiquidServer VPS: restore `/root/backups/Caddyfile.<ts>`, `systemctl reload caddy`; stop the LiquidServer unit.
+2. CetaBridge VPS: restore `/root/backups/Caddyfile.<ts>`, `systemctl reload caddy`; stop the CetaBridge unit.
 3. www (phase A): restore `~/site-backups/demo.html.<ts>`.
 
-## LiquidServer brand on ls.wilddolphin.us (no rtc change)
+## CetaBridge brand on ls.wilddolphin.us (no rtc change)
 
 The login, viewer, and `/demo/` pages are the same templates as rtc. They show
-**LiquidServer** / **by Wilddolphin LLC** when the Host is `ls.wilddolphin.us`
+**CetaBridge** / **by Wilddolphin LLC** when the Host is `ls.wilddolphin.us`
 (or `DEMO_BRAND=liquidserver`). rtc stays **WebRTCSays**. The `/demo/room/`
-page is LiquidServer-only and is hardcoded.
+page is CetaBridge-only and is hardcoded.
 
 Do not deploy these files to rtc. On 186 only, after founder approval in the
 DevOps chat:

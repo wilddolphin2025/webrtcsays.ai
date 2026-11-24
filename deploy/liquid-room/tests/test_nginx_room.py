@@ -278,12 +278,12 @@ http {{
         self.assertTrue(headers["Location"].endswith(":%d/demo/login?next=/demo/room/room101" % self.port), headers["Location"])
         code, body, headers = self.http("/demo/room/room101", {"Authorization": f"Bearer {TOKEN}"})
         self.assertEqual(code, 200)
-        self.assertIn(b"<title>LiquidServer demo</title>", body)
+        self.assertIn(b"<title>CetaBridge demo</title>", body)
         self.assertEqual(headers["Cache-Control"], "no-store, private")
         code, _, headers = self.http("/demo/room")
         self.assertEqual((code, headers["Location"].rsplit(":%d" % self.port, 1)[-1]), (301, "/demo/room/room101"))
 
-    def test_socket_without_credential_never_reaches_liquidserver(self) -> None:
+    def test_socket_without_credential_never_reaches_upstream(self) -> None:
         for headers in ([], [("Authorization", "Bearer wrongwrongwrongwrong")], [("Cookie", "wsdemo=v1.1.x.y")]):
             status, _ = self.ws("/demo/room/ws/room101", headers, [])
             self.assertIn(" 401 ", status + " ")

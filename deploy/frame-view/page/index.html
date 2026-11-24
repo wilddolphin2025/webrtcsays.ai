@@ -7,6 +7,11 @@
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="base-uri 'none'; object-src 'none'; form-action 'none'; frame-ancestors 'none'">
   <title>Frame viewer</title>
+  <script>
+    (function () {
+      if (location.hostname === "ls.wilddolphin.us") document.title = "CetaBridge demo";
+    })();
+  </script>
   <link rel="stylesheet" href="/demo/view/assets/view.css">
 </head>
 <body class="wsdemo">
@@ -21,6 +26,18 @@
   <main class="wrap">
     <section class="card" aria-labelledby="view-heading">
       <h2 id="view-heading">Frame viewer</h2>
+      <script>
+        (function () {
+          if (location.hostname !== "ls.wilddolphin.us") return;
+          var wm = document.querySelector("header .wm");
+          if (wm) wm.textContent = "CetaBridge";
+          var heading = document.getElementById("view-heading");
+          if (heading) {
+            var room = (location.pathname.match(/^\/demo\/view\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/?$/) || [])[1];
+            heading.textContent = room || "Demo room";
+          }
+        })();
+      </script>
       <p>Receives the Frame's call in this room. No camera or microphone is requested. Playback starts from the Connect button so iPhone Safari can show the picture.</p>
       <div class="row">
         <button id="view-connect" class="btn primary" type="button">Connect</button>

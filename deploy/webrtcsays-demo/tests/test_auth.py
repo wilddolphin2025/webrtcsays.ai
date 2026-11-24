@@ -496,6 +496,59 @@ class AuthTests(unittest.TestCase):
         self.assertNotIn("steampowered", page.lower())
         self.assertNotIn('class="steam"', page)
 
+    def test_login_brand_defaults_to_webrtcsays(self) -> None:
+        page = demo_auth.login_page("csrf-token", "/demo/", "").decode()
+        self.assertIn("<title>WebRTCSays demo login</title>", page)
+        self.assertIn('<h1 class="wm">WebRTCSays</h1>', page)
+        self.assertIn("by Wilddolphin LLC", page)
+        self.assertNotIn("CetaBridge", page)
+        self.assertNotIn("LiquidCodec", page)
+        self.assertEqual(demo_auth.demo_brand(), demo_auth.WEBRTCSAYS_BRAND)
+        self.assertEqual(demo_auth.demo_brand("rtc.wilddolphin.us"), demo_auth.WEBRTCSAYS_BRAND)
+
+    def test_login_brand_is_cetabridge_on_ls_host(self) -> None:
+        page = demo_auth.login_page("csrf-token", "/demo/", "", "ls.wilddolphin.us").decode()
+        self.assertIn("<title>CetaBridge demo login</title>", page)
+        self.assertIn('<h1 class="wm">CetaBridge</h1>', page)
+        self.assertIn("by Wilddolphin LLC", page)
+        self.assertNotIn("WebRTCSays", page)
+        self.assertNotIn("LiquidCodec", page)
+
+    def test_login_brand_env_overrides_host(self) -> None:
+        os.environ["DEMO_BRAND"] = "liquidserver"
+        try:
+            page = demo_auth.login_page("csrf-token", "/demo/", "", "rtc.wilddolphin.us").decode()
+        finally:
+            os.environ.pop("DEMO_BRAND", None)
+        self.assertIn("<title>CetaBridge demo login</title>", page)
+        self.assertIn('<h1 class="wm">CetaBridge</h1>', page)
+        os.environ["DEMO_BRAND"] = "webrtcsays"
+        try:
+            page = demo_auth.login_page("csrf-token", "/demo/", "", "ls.wilddolphin.us").decode()
+        finally:
+            os.environ.pop("DEMO_BRAND", None)
+        self.assertIn("<title>WebRTCSays demo login</title>", page)
+        self.assertIn('<h1 class="wm">WebRTCSays</h1>', page)
+
+    def test_login_http_uses_host_header(self) -> None:
+        code, body, _ = self.request("GET", "/demo/login", headers={"Host": "ls.wilddolphin.us"})
+        self.assertEqual(code, 200)
+        page = body.decode()
+        self.assertIn("<title>CetaBridge demo login</title>", page)
+        self.assertIn('<h1 class="wm">CetaBridge</h1>', page)
+        code, body, _ = self.request("GET", "/demo/login")
+        self.assertEqual(code, 200)
+        page = body.decode()
+        self.assertIn("<title>WebRTCSays demo login</title>", page)
+
+    def test_trusted_proxy_forwarded_host_selects_cetabridge(self) -> None:
+        headers = {"Host": "127.0.0.1", "X-Forwarded-Host": "ls.wilddolphin.us"}
+        host = demo_auth.hostname_from_headers(headers, "127.0.0.1")
+        self.assertEqual(host, "ls.wilddolphin.us")
+        self.assertEqual(demo_auth.demo_brand(host)["product"], "CetaBridge")
+        untrusted = demo_auth.hostname_from_headers(headers, "8.8.8.8")
+        self.assertEqual(untrusted, "127.0.0.1")
+
     def test_healthz_has_no_secrets(self) -> None:
         code, body, _ = self.request("GET", "/healthz")
         self.assertEqual(code, 200)

@@ -142,6 +142,8 @@ struct Options {
     std::string record_dir{};           // WAV + stats for a quality run
     std::string inject_wav{};           // replace the mic with this 16-bit PCM wav
     int voice_swap_udp = 0;             // >0: send decoded far-end PCM to 127.0.0.1:<port> (voice-swap sidecar)
+    int voice_swap_return_udp = 0;      // >0: encode translated PCM from 127.0.0.1:<port> instead of the mic
+    int voice_swap_mic_udp = 0;         // >0: send the processed mic (encoder input) to 127.0.0.1:<port>
     bool voice_swap_mute = true;        // with voice_swap_udp: play silence locally (the sidecar plays)
     // Voice swap choice. Caller: voice to ask the callee for, sent as a=x-liquidcall-voice in the SDP offer
     // ("" or "me": attribute omitted). Callee: "" / "auto" follows the caller's offer (missing = no conversion);

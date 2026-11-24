@@ -416,6 +416,8 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --opus-dtx / --no-opus-dtx        Opus discontinuous transmission\n"
       "  --record-dir=<path>                Write input/output WAVs and stats for a quality run\n"
       "  --voice-swap-udp=<port>            Send decoded far-end audio to 127.0.0.1:<port> (voice-swap sidecar)\n"
+      "  --voice-swap-return-udp=<port>     Encode translated 48 kHz PCM from 127.0.0.1:<port> instead of the mic\n"
+      "  --voice-swap-mic-udp=<port>        Send the processed mic (encoder input) to 127.0.0.1:<port>\n"
       "  --no-voice-swap-mute               With --voice-swap-udp, still play the original voice locally\n"
       "  --voice-swap=<voice>               Caller: ask the callee to hear us in <voice> (female, male, or a Piper id;\n"
       "                                     sent in the SDP offer). Callee: auto (default, follow the caller), off,\n"
@@ -471,7 +473,10 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--audio", "--stats", "--duration",
     "--audio-codec", "--audio_codec", "--opus-bitrate", "--opus_bitrate",
     "--record-dir", "--record_dir", "--inject-wav", "--inject_wav",
-    "--voice-swap-udp", "--voice_swap_udp", "--voice-swap-mute", "--no-voice-swap-mute",
+    "--voice-swap-udp", "--voice_swap_udp",
+    "--voice-swap-return-udp", "--voice_swap_return_udp",
+    "--voice-swap-mic-udp", "--voice_swap_mic_udp",
+    "--voice-swap-mute", "--no-voice-swap-mute",
     "--voice-swap", "--voice_swap", "--voice-swap-voices", "--voice_swap_voices",
     "--voice-swap-script", "--voice_swap_script",
     "--liquid-model-dir", "--liquid_model_dir", "--liquid-manifest", "--liquid_manifest",
@@ -929,6 +934,11 @@ Options parseOptions(const std::vector<std::string>& args) {
         opts.record_dir = arg.substr(eq + 1);
     } else if (arg.find("--voice-swap-udp=") == 0 || arg.find("--voice_swap_udp=") == 0) {
         opts.voice_swap_udp = std::atoi(arg.substr(arg.find('=') + 1).c_str());
+    } else if (arg.find("--voice-swap-return-udp=") == 0 ||
+               arg.find("--voice_swap_return_udp=") == 0) {
+        opts.voice_swap_return_udp = std::atoi(arg.substr(arg.find('=') + 1).c_str());
+    } else if (arg.find("--voice-swap-mic-udp=") == 0 || arg.find("--voice_swap_mic_udp=") == 0) {
+        opts.voice_swap_mic_udp = std::atoi(arg.substr(arg.find('=') + 1).c_str());
     } else if (arg.find("--voice-swap-script=") == 0 || arg.find("--voice_swap_script=") == 0) {
         opts.voice_swap_script = arg.substr(arg.find('=') + 1);
     } else if (arg.find("--voice-swap-voices=") == 0 || arg.find("--voice_swap_voices=") == 0) {

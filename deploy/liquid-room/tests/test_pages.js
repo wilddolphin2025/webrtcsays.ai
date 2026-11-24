@@ -260,7 +260,7 @@ function runRedirect(search) {
     assert(/<title>CetaBridge demo<\/title>/.test(page));
     assert(/<h1 class="wm">CetaBridge<\/h1>/.test(page));
     assert(/by Wilddolphin LLC/.test(page));
-    assert(/CetaBridge demo · ls\.wilddolphin\.us/.test(page));
+    assert(/CetaBridge demo · cb\.wilddolphin\.us/.test(page));
     assert(/CetaCall iPhone app/.test(page));
     assert(/CetaBridge turns the iPhone's CetaCall audio/.test(page));
     const brand = [

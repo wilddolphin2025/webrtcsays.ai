@@ -542,7 +542,7 @@ CETABRIDGE_BRAND = {
     "view_heading": "Demo room",
 }
 
-CETABRIDGE_HOSTS = frozenset({"ls.wilddolphin.us"})
+CETABRIDGE_HOSTS = frozenset({"cb.wilddolphin.us", "ls.wilddolphin.us"})
 
 
 def hostname_from_headers(headers, peer: str | None = None) -> str:
@@ -557,9 +557,9 @@ def hostname_from_headers(headers, peer: str | None = None) -> str:
 def demo_brand(host: str | None = None) -> dict[str, str]:
     """Pick the public wordmark for this deployment.
 
-    Defaults to the WebRTCSays / rtc pages. ls.wilddolphin.us, or
-    DEMO_BRAND=liquidserver, switches the same templates to CetaBridge
-    without changing the rtc Babelfish demo.
+    Defaults to the WebRTCSays / rtc pages. cb.wilddolphin.us or
+    ls.wilddolphin.us, or DEMO_BRAND=liquidserver, switches the same
+    templates to CetaBridge without changing the rtc Babelfish demo.
     """
     preset = os.environ.get("DEMO_BRAND", "").strip().lower()
     if preset in ("liquidserver", "ls"):

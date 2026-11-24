@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phase B on the LiquidServer VPS (root). Dry run by default.
-# Needs Caddy installed (apt install caddy) and DNS ls.wilddolphin.us -> this host.
+# Needs Caddy installed (apt install caddy) and DNS cb.wilddolphin.us and ls.wilddolphin.us -> this host.
 #   RTC_VPS_IP=<rtc address> bash host/install-liquid-caddy.sh
 #   RTC_VPS_IP=<rtc address> INSTALL_CADDY_CONFIRM=liquidserver-site bash host/install-liquid-caddy.sh
 set -euo pipefail

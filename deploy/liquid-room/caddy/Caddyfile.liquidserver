@@ -4,8 +4,12 @@
 # LiquidServer listens on 127.0.0.1:7880 (HTTP/WebSocket) and on the public
 # ICE ports 7882/udp and 7881/tcp itself; Caddy does not touch media.
 # No access log: request headers include X-Liquid-Gate.
+# Primary public host is cb.wilddolphin.us. ls.wilddolphin.us stays accepted
+# (same site, own cert) so the Nov 25–26 test and the current iPhone defaults
+# keep working. A later DevOps cutover may redirect ls. to cb.; do not deploy
+# that redirect until after the test, and not while rtc nginx still targets ls.
 
-ls.wilddolphin.us {
+cb.wilddolphin.us, ls.wilddolphin.us {
 	@rtc_ws {
 		path /ws/*
 		remote_ip RTC_VPS_IP_PLACEHOLDER

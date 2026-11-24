@@ -514,6 +514,15 @@ class AuthTests(unittest.TestCase):
         self.assertNotIn("WebRTCSays", page)
         self.assertNotIn("LiquidCodec", page)
 
+    def test_login_brand_is_cetabridge_on_cb_host(self) -> None:
+        page = demo_auth.login_page("csrf-token", "/demo/", "", "cb.wilddolphin.us").decode()
+        self.assertIn("<title>CetaBridge demo login</title>", page)
+        self.assertIn('<h1 class="wm">CetaBridge</h1>', page)
+        self.assertIn("by Wilddolphin LLC", page)
+        self.assertNotIn("WebRTCSays", page)
+        self.assertIn("cb.wilddolphin.us", demo_auth.CETABRIDGE_HOSTS)
+        self.assertIn("ls.wilddolphin.us", demo_auth.CETABRIDGE_HOSTS)
+
     def test_login_brand_env_overrides_host(self) -> None:
         os.environ["DEMO_BRAND"] = "liquidserver"
         try:
@@ -536,6 +545,11 @@ class AuthTests(unittest.TestCase):
         page = body.decode()
         self.assertIn("<title>CetaBridge demo login</title>", page)
         self.assertIn('<h1 class="wm">CetaBridge</h1>', page)
+        code, body, _ = self.request("GET", "/demo/login", headers={"Host": "cb.wilddolphin.us"})
+        self.assertEqual(code, 200)
+        page = body.decode()
+        self.assertIn("<title>CetaBridge demo login</title>", page)
+        self.assertIn('<h1 class="wm">CetaBridge</h1>', page)
         code, body, _ = self.request("GET", "/demo/login")
         self.assertEqual(code, 200)
         page = body.decode()
@@ -546,6 +560,10 @@ class AuthTests(unittest.TestCase):
         host = demo_auth.hostname_from_headers(headers, "127.0.0.1")
         self.assertEqual(host, "ls.wilddolphin.us")
         self.assertEqual(demo_auth.demo_brand(host)["product"], "CetaBridge")
+        headers_cb = {"Host": "127.0.0.1", "X-Forwarded-Host": "cb.wilddolphin.us"}
+        host_cb = demo_auth.hostname_from_headers(headers_cb, "127.0.0.1")
+        self.assertEqual(host_cb, "cb.wilddolphin.us")
+        self.assertEqual(demo_auth.demo_brand(host_cb)["product"], "CetaBridge")
         untrusted = demo_auth.hostname_from_headers(headers, "8.8.8.8")
         self.assertEqual(untrusted, "127.0.0.1")
 

@@ -48,7 +48,7 @@ bash deploy/liquid-room/host/check-phase-a.sh
 ---------------------------------------------------------------------------------------------------
 ## Phase B: CetaBridge behind rtc (only after the founder approves phase 1 on the CetaBridge VPS)
 
-Prerequisites: DNS `ls.wilddolphin.us A <liquidserver-vps IPv4>`; Caddy on the CetaBridge VPS; ufw
+Prerequisites: DNS `cb.wilddolphin.us A <liquidserver-vps IPv4>` (primary) and `ls.wilddolphin.us A <liquidserver-vps IPv4>` (kept during the Nov 25–26 test; may later redirect to `cb.`). Caddy on the CetaBridge VPS; ufw
 `80/tcp 443/tcp 7881/tcp 7882/udp` (22/tcp stays); the CetaBridge binary and unit from the
 CetaBridge repo (env `LIQUID_HTTP_BIND=127.0.0.1:7880`, `LIQUID_GATE_FILE=/etc/liquidserver/gate`,
 `LIQUID_PUBLIC_IP=<public IPv4>`, `LIQUID_ICE_UDP_PORT=7882`, `LIQUID_ICE_TCP_PORT=7881`). Until the
@@ -105,7 +105,7 @@ The script backs up the site file to `/root/backups/liquid-room-<ts>/` with `rol
 bash deploy/liquid-room/host/check-phase-b.sh        # from the box or the Mac (not from rtc)
 ```
 - `/demo/room/room101` → 302 to `/demo/login?next=/demo/room/room101`; `/demo/room/ws/room101` → 401.
-- `https://ls.wilddolphin.us/healthz` → 200; `/ws/room101` from a non-rtc address → 404.
+- `https://cb.wilddolphin.us/healthz` → 200 (and `https://ls.wilddolphin.us/healthz` → 200 while `ls.` is still accepted); `/ws/room101` from a non-rtc address → 404.
 - On rtc, as root, with the founder's token file (never echo it):
   `curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $(cat <tokenfile>)" -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' https://rtc.wilddolphin.us/demo/room/ws/room101` → `101`.
 - `grep -c token= /var/log/nginx/demo-room.log` → 0. `/demo/`, `/demo/ws`, `/demo/view/*`, `/ws/`, `/`,
@@ -118,12 +118,14 @@ bash deploy/liquid-room/host/check-phase-b.sh        # from the box or the Mac (
 2. CetaBridge VPS: restore `/root/backups/Caddyfile.<ts>`, `systemctl reload caddy`; stop the CetaBridge unit.
 3. www (phase A): restore `~/site-backups/demo.html.<ts>`.
 
-## CetaBridge brand on ls.wilddolphin.us (no rtc change)
+## CetaBridge brand on cb.wilddolphin.us and ls.wilddolphin.us (no rtc change)
 
 The login, viewer, and `/demo/` pages are the same templates as rtc. They show
-**CetaBridge** / **by Wilddolphin LLC** when the Host is `ls.wilddolphin.us`
-(or `DEMO_BRAND=liquidserver`). rtc stays **WebRTCSays**. The `/demo/room/`
-page is CetaBridge-only and is hardcoded.
+**CetaBridge** / **by Wilddolphin LLC** when the Host is `cb.wilddolphin.us` or
+`ls.wilddolphin.us` (or `DEMO_BRAND=liquidserver`). The public display name is
+`cb.wilddolphin.us`. rtc stays **WebRTCSays**. The `/demo/room/`
+page is CetaBridge-only and is hardcoded. Do not deploy until after the
+Nov 25–26 test / DevOps cutover.
 
 Do not deploy these files to rtc. On 186 only, after founder approval in the
 DevOps chat:

@@ -130,7 +130,9 @@ private:
     
     // Frame handling
     bool send_websocket_frame(const std::string& message);
+    bool write_raw_frame(const std::vector<unsigned char>& frame, const char* what);
     std::vector<std::string> process_websocket_frames();
+    void schedule_keepalive_ping(int delay_s);
     
     // Async operations
     void async_read();

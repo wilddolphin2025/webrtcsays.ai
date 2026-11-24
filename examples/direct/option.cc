@@ -446,6 +446,8 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --impair-jitter-ms=<ms>           Delay packets by 0, half, then full\n"
       "  --liquid-encoder=int8|fp16        Core ML encoder package (default int8)\n"
       "  --stats=<seconds>                  Log a GetStats JSON line on this interval\n"
+      "  --stats-jsonl=<path>               Append raw W3C GetStats objects per interval + at call end\n"
+      "                                     (default <record-dir>/webrtc_stats.jsonl)\n"
       "  --duration=<seconds>               Hang up and exit after this many seconds\n"
       "  --help                             Show this help message\n\n"
       "Examples (callee called first, encryption is recommended):\n"
@@ -470,7 +472,7 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--token-query", "--no-token-query", "--turns-file", "--turns_file",
     "--token-env", "--token_env", "--ca-file", "--ca_file", "--stun",
     "--codec", "--res", "--fps", "--video-source", "--video_source",
-    "--audio", "--stats", "--duration",
+    "--audio", "--stats", "--stats-jsonl", "--stats_jsonl", "--duration",
     "--audio-codec", "--audio_codec", "--opus-bitrate", "--opus_bitrate",
     "--record-dir", "--record_dir", "--inject-wav", "--inject_wav",
     "--voice-swap-udp", "--voice_swap_udp",
@@ -993,6 +995,8 @@ Options parseOptions(const std::vector<std::string>& args) {
         opts.liquid_frames_per_packet = std::atoi(arg.substr(eq + 1).c_str());
     } else if (arg.find("--audio=") == 0) {
         opts.audio = arg.substr(8);
+    } else if (arg.find("--stats-jsonl=") == 0) {
+        opts.stats_jsonl = arg.substr(14);
     } else if (arg.find("--stats=") == 0) {
         opts.stats_interval_sec = std::atoi(arg.substr(8).c_str());
     } else if (arg.find("--duration=") == 0) {

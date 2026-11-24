@@ -132,6 +132,7 @@ struct Options {
     int video_height = 0;
     int video_fps = 0;                  // 1..60, 30 if video is on and unset
     int stats_interval_sec = 1;
+    std::string stats_jsonl{};          // raw GetStats JSONL (default <record_dir>/webrtc_stats.jsonl)
     int call_duration_sec = 0;
     std::string audio{};                // "dummy" forces the fake audio device
     // These fields are the iOS direct.framework API the RobotPhone app sets.

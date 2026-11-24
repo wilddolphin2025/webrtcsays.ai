@@ -486,7 +486,9 @@ bool DirectApplication::CreatePeerConnection() {
       liquid.paths.model_dir = model_dir;
       liquid.paths.compute = opts_.liquid_decode.empty() ? "ane" : opts_.liquid_decode;
       liquid.record_dir = opts_.record_dir;
-      liquid.inject_wav = opts_.inject_wav;
+      // --audio=file already plays --inject-wav as the microphone; replacing the
+      // encoder input as well would bypass --voice-swap-return-udp.
+      liquid.inject_wav = opts_.audio == "file" ? std::string() : opts_.inject_wav;
       const std::string manifest = opts_.liquid_manifest.empty()
                                        ? webrtc::liquid::ManifestPath(liquid.paths.model_dir)
                                        : opts_.liquid_manifest;
@@ -534,7 +536,8 @@ bool DirectApplication::CreatePeerConnection() {
     if (!opts_.record_dir.empty() || !opts_.inject_wav.empty() || opts_.voice_swap_udp > 0 ||
         opts_.voice_swap_return_udp > 0 || opts_.voice_swap_mic_udp > 0) {
       audio_encoder_factory = webrtc::CreateTappingAudioEncoderFactory(
-          audio_encoder_factory, opts_.record_dir, opts_.inject_wav, opts_.voice_swap_return_udp,
+          audio_encoder_factory, opts_.record_dir,
+          opts_.audio == "file" ? std::string() : opts_.inject_wav, opts_.voice_swap_return_udp,
           opts_.voice_swap_mic_udp);
       audio_decoder_factory = webrtc::CreateTappingAudioDecoderFactory(
           audio_decoder_factory, opts_.record_dir, opts_.voice_swap_udp, opts_.voice_swap_mute);

@@ -340,8 +340,9 @@ class TapEncoder final : public AudioEncoder {
       if (enc_rate == 48000 && src_n == audio.size()) {
         std::memcpy(replaced.data(), src.data(), audio.size() * sizeof(int16_t));
       } else {
-        PushResampler<int16_t> rs;
-        rs.Resample(std::span<const int16_t>(src.data(), src.size()),
+        // Persistent resampler: a fresh one per 10 ms block restarts the filter
+        // state every block and puts a 100 Hz buzz on the return speech.
+        ret_rs_.Resample(std::span<const int16_t>(src.data(), src.size()),
                     std::span<int16_t>(replaced.data(), replaced.size()));
       }
       view = replaced;
@@ -353,8 +354,7 @@ class TapEncoder final : public AudioEncoder {
           std::memcpy(replaced.data(), inject_.data() + inject_pos_,
                       static_cast<size_t>(src_n) * sizeof(int16_t));
         } else {
-          PushResampler<int16_t> rs;
-          rs.Resample(std::span<const int16_t>(inject_.data() + inject_pos_, src_n),
+          inject_rs_.Resample(std::span<const int16_t>(inject_.data() + inject_pos_, src_n),
                       std::span<int16_t>(replaced.data(), replaced.size()));
         }
         inject_pos_ += static_cast<size_t>(src_n);
@@ -397,6 +397,8 @@ class TapEncoder final : public AudioEncoder {
   PcmWav wav_;
   std::vector<int16_t> inject_;
   int inject_rate_ = 0;
+  PushResampler<int16_t> ret_rs_;
+  PushResampler<int16_t> inject_rs_;
   size_t inject_pos_ = 0;
   int64_t samples_ = 0;
   int64_t packets_ = 0;

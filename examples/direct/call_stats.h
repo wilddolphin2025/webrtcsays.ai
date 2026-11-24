@@ -12,6 +12,14 @@
 
 #include "api/peer_connection_interface.h"
 
+#include <string>
+
+// --stats-jsonl: every GetStats report (interval and final) appended as one JSON
+// line {"t_us","final","stats":[...]} with the audio-relevant RTCStats objects
+// (inbound-rtp, outbound-rtp, remote-inbound-rtp, candidate-pair, media-playout,
+// media-source, transport) in their W3C JSON form. Empty path disables it.
+void DirectCallStatsSetJsonlPath(const std::string& path);
+
 class DirectCallStats {
  public:
   virtual ~DirectCallStats() = default;

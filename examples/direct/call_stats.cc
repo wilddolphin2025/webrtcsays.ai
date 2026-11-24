@@ -27,6 +27,41 @@
 
 namespace {
 
+struct JsonlSink {
+  std::mutex mu;
+  std::string path;
+  FILE* f = nullptr;
+};
+JsonlSink& Jsonl() {
+  static JsonlSink* sink = new JsonlSink();  // leaked on purpose: no exit-time destructor
+  return *sink;
+}
+
+void WriteJsonl(const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report, bool final) {
+  JsonlSink& j = Jsonl();
+  std::lock_guard<std::mutex> lock(j.mu);
+  if (j.path.empty() || !report) return;
+  if (!j.f) j.f = std::fopen(j.path.c_str(), "ab");
+  if (!j.f) return;
+  std::string line = "{\"t_us\":" + std::to_string(report->timestamp().us()) +
+                     ",\"final\":" + (final ? "true" : "false") + ",\"stats\":[";
+  bool first = true;
+  for (const webrtc::RTCStats& st : *report) {
+    const std::string type = st.type();
+    if (type != "inbound-rtp" && type != "outbound-rtp" && type != "remote-inbound-rtp" &&
+        type != "candidate-pair" && type != "media-playout" && type != "media-source" &&
+        type != "transport") {
+      continue;
+    }
+    if (!first) line += ',';
+    first = false;
+    line += st.ToJson();
+  }
+  line += "]}\n";
+  std::fwrite(line.data(), 1, line.size(), j.f);
+  std::fflush(j.f);
+}
+
 int64_t ElapsedMs(std::chrono::steady_clock::time_point origin,
                   std::chrono::steady_clock::time_point when) {
   if (origin.time_since_epoch().count() == 0 || when.time_since_epoch().count() == 0) {
@@ -180,6 +215,10 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
  public:
   void OnStatsDelivered(
       const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report) override {
+    Deliver(report, false);
+  }
+  void Deliver(const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report, bool final) {
+    WriteJsonl(report, final);
     Snapshot snap = Build(report);
     std::lock_guard<std::recursive_mutex> lock(mu_);
     last_ = std::move(snap);
@@ -727,7 +766,7 @@ class FinalStats : public webrtc::RTCStatsCollectorCallback {
       : inner_(std::move(inner)), done_(done) {}
   void OnStatsDelivered(
       const webrtc::scoped_refptr<const webrtc::RTCStatsReport>& report) override {
-    inner_->OnStatsDelivered(report);
+    inner_->Deliver(report, true);
     if (done_) done_->Set();
   }
   webrtc::scoped_refptr<StatsCollector> inner_;
@@ -901,6 +940,16 @@ class DirectCallStatsImpl : public DirectCallStats {
 };
 
 }  // namespace
+
+void DirectCallStatsSetJsonlPath(const std::string& path) {
+  JsonlSink& j = Jsonl();
+  std::lock_guard<std::mutex> lock(j.mu);
+  if (j.f) {
+    std::fclose(j.f);
+    j.f = nullptr;
+  }
+  j.path = path;
+}
 
 std::unique_ptr<DirectCallStats> DirectCallStats::Create(
     int interval_sec,

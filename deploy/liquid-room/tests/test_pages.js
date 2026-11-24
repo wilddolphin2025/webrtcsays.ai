@@ -76,11 +76,17 @@ function runRedirect(search) {
   const page = fs.readFileSync(path.join(ROOT, "page", "index.html"), "utf8");
   const pageScript = lastScript(page);
 
-  function makePage(pathname) {
+  function makePage(pathname, options) {
+    const store = Object.assign({}, options && options.storage);
     const els = {};
     const el = (id) => els[id] || (els[id] = {
-      id, textContent: "", scrollTop: 0, scrollHeight: 0, srcObject: null, listeners: {},
-      addEventListener(t, f) { this.listeners[t] = f; }, play() { return Promise.resolve(); },
+      id, textContent: "", hidden: false, className: "", scrollTop: 0, scrollHeight: 0, srcObject: null,
+      listeners: {}, attrs: {}, children: [],
+      addEventListener(t, f) { this.listeners[t] = f; },
+      setAttribute(name, value) { this.attrs[name] = value; },
+      replaceChildren() { this.children = []; },
+      appendChild(child) { this.children.push(child); },
+      play() { return Promise.resolve(); },
     });
     const sockets = [];
     class FakeWS {
@@ -108,7 +114,14 @@ function runRedirect(search) {
     const gum = [];
     const ctx = {
       location: { pathname, hostname: "rtc.wilddolphin.us", host: "rtc.wilddolphin.us", protocol: "https:", assign(u) { this.assigned = u; } },
-      document: { getElementById: el },
+      document: {
+        getElementById: el,
+        createElement() { return { textContent: "", hidden: false }; },
+      },
+      localStorage: {
+        getItem(key) { return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
+        setItem(key, value) { store[key] = String(value); },
+      },
       window: { addEventListener() {} },
       navigator: { mediaDevices: { getUserMedia: async (c) => { gum.push(c); return { getTracks: () => [{ stop() {} }], getAudioTracks: () => [{ kind: "audio" }] }; } } },
       fetch: async () => ({ status: 503, ok: false, type: "basic" }),
@@ -116,7 +129,11 @@ function runRedirect(search) {
       setTimeout, clearTimeout, setInterval, clearInterval, console, JSON, Number, Date,
     };
     vm.runInNewContext(pageScript, ctx);
-    return { els, el, sockets, pcs, gum, ctx };
+    return { els, el, sockets, pcs, gum, ctx, store };
+  }
+
+  function guestNames(p) {
+    return p.el("guestList").children.map((item) => item.textContent);
   }
 
   await test("page: full caller sequence for room101", async () => {
@@ -186,6 +203,57 @@ function runRedirect(search) {
     await p.sockets[0].recv("200 OK"); await settle();
     await p.sockets[0].recv("WAITING"); await settle();
     assert.strictEqual(p.ctx.location.assigned, "/demo/login?next=/demo/room/room101");
+  });
+
+  await test("page: guests follow PEERS and the log stays hidden", async () => {
+    const p = makePage("/demo/room/room101");
+    assert.strictEqual(p.el("logCard").hidden, true);
+    assert.strictEqual(p.el("logToggle").textContent, "Show log");
+    assert.strictEqual(p.el("logToggle").attrs["aria-expanded"], "false");
+    assert.deepStrictEqual(guestNames(p), ["You"]);
+    assert.strictEqual(p.el("guestWait").hidden, true);
+    assert.strictEqual(p.el("guestSummary").hidden, true);
+    p.el("startBtn").listeners.click(); await settle();
+    const ws = p.sockets[0];
+    ws.open();
+    await ws.recv("200 OK"); await settle();
+    await ws.recv("PEERS 1"); await settle();
+    assert.strictEqual(p.el("guestSummary").textContent, "In room101: 1");
+    assert.deepStrictEqual(guestNames(p), ["You"]);
+    assert.strictEqual(p.el("guestWait").hidden, false);
+    assert.strictEqual(p.el("guestWait").textContent, "Waiting for others");
+    await ws.recv("PEERS   3  extra"); await settle();
+    assert.strictEqual(p.el("guestSummary").textContent, "In room101: 3");
+    assert.deepStrictEqual(guestNames(p), ["You", "Guest 2", "Guest 3"]);
+    assert.strictEqual(p.el("guestWait").hidden, true);
+    assert(/PEERS\s+3/.test(p.el("log").textContent), "PEERS is written to the hidden log");
+    await ws.recv("NOBODY home"); await settle();
+    assert.deepStrictEqual(guestNames(p), ["You", "Guest 2", "Guest 3"]);
+    assert.strictEqual(ws.sent.length, 2);
+    p.el("hangupBtn").listeners.click();
+    assert.deepStrictEqual(guestNames(p), ["You"]);
+    assert.strictEqual(p.el("guestSummary").hidden, true);
+    assert.strictEqual(p.el("guestWait").hidden, true);
+  });
+
+  await test("page: disconnect clears guests and the log toggle is remembered", async () => {
+    const first = makePage("/demo/room/room101");
+    first.el("logToggle").listeners.click();
+    assert.strictEqual(first.el("logCard").hidden, false);
+    assert.strictEqual(first.el("logToggle").textContent, "Hide log");
+    assert.strictEqual(first.store["cetabridge-room-show-log"], "1");
+    const again = makePage("/demo/room/room101", { storage: { "cetabridge-room-show-log": "1" } });
+    assert.strictEqual(again.el("logCard").hidden, false);
+    assert.strictEqual(again.el("panels").className, "panels show-log");
+    again.el("startBtn").listeners.click(); await settle();
+    const ws = again.sockets[0];
+    ws.open();
+    await ws.recv("PEERS 2"); await settle();
+    assert.deepStrictEqual(guestNames(again), ["You", "Guest 2"]);
+    ws.onclose();
+    await settle();
+    assert.deepStrictEqual(guestNames(again), ["You"]);
+    assert.strictEqual(again.el("guestSummary").hidden, true);
   });
 
   await test("page: CetaBridge wordmark and title", () => {

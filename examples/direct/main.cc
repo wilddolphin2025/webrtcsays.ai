@@ -722,6 +722,7 @@ int main(int argc, char* argv[]) {
       const int fast = opts.jitter_fast_accelerate < 0 ? (jitter_max > 0 ? 1 : 0)
                                                        : opts.jitter_fast_accelerate;
       DirectQualitySetJitterBuffer(jitter_max, fast);
+      DirectQualitySetEncoderCompute(opts.liquid_encoder_compute.c_str());
     }
     const int rc = DirectQualityRun(
         opts.quality.c_str(), opts.inject_wav.c_str(), wav_out.c_str(), stats_path.c_str(), codec,

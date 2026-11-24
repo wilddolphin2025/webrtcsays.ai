@@ -160,7 +160,8 @@ struct Options {
     int liquid_ctx = 0;                 // 0 = manifest default
     int liquid_new = 0;                 // 0 = manifest default
     std::string liquid_decode{"ane"};   // ane, cpu, all
-    std::string liquid_encoder{"int8"};  // int8 or fp16 Core ML encoder package
+    std::string liquid_encoder{"auto"};  // auto (fp32 if built, else int8), int8, fp16, fp32
+    std::string liquid_encoder_compute{"cpu"};  // cpu (default), ane, all
     std::string liquid_pack{"tight"};   // tight (17 bytes/frame, default) or u16 (28 bytes/frame)
     int liquid_frames_per_packet = 1;   // 1-4 (80-320 ms per packet)
     bool liquid_dtx = false;            // skip LiquidCall packets during silence

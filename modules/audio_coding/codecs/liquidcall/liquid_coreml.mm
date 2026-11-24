@@ -404,8 +404,10 @@ class CoreMlBackend final : public LiquidBackend {
     std::string dec_path;
     if (!PrepareModelPath(enc_src, &enc_path, error)) return false;
     if (!PrepareModelPath(dec_src, &dec_path, error)) return false;
+    MLModelConfiguration* enc_cfg = [[MLModelConfiguration alloc] init];
+    enc_cfg.computeUnits = Units(paths.encoder_compute.empty() ? paths.compute : paths.encoder_compute);
     MLModel* enc = [MLModel modelWithContentsOfURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:enc_path.c_str()]]
-                                    configuration:cfg
+                                    configuration:enc_cfg
                                             error:&err];
     if (!enc) {
       if (error) *error = "encoder model failed to load: " + NsError(err);

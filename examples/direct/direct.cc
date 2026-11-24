@@ -505,8 +505,12 @@ bool DirectApplication::CreatePeerConnection() {
                 "(published decoder geometry) until the fork ships liquidcall.json\n",
                 manifest.c_str());
       }
-      liquid.paths.encoder_model = webrtc::liquid::EncoderModelForPrecision(
-          liquid.paths.encoder_model, opts_.liquid_encoder);
+      liquid.paths.encoder_model = webrtc::liquid::ResolveEncoderModel(
+          model_dir, liquid.paths.encoder_model, opts_.liquid_encoder);
+      liquid.paths.encoder_compute = opts_.liquid_encoder_compute;
+      fprintf(stderr, "LiquidCall encoder: %s on %s (decoder on %s)\n",
+              liquid.paths.encoder_model.c_str(), liquid.paths.encoder_compute.c_str(),
+              liquid.paths.compute.c_str());
       if (opts_.liquid_ctx > 0) liquid.chunk.ctx_frames = opts_.liquid_ctx;
       if (opts_.liquid_new > 0) liquid.chunk.new_frames = opts_.liquid_new;
       liquid.pack = opts_.liquid_pack == "tight" ? webrtc::liquid::WirePack::kTight

@@ -40,6 +40,8 @@
 #endif
 
 namespace {
+
+const char* g_encoder_compute = "cpu";  // DirectQualitySetEncoderCompute
 struct Pcm {
   int rate = 0;
   std::vector<int16_t> mono;
@@ -276,7 +278,9 @@ int RunOffline(const Pcm& in, const char* wav_out, const char* model_dir, const 
     return 1;
   }
   cfg.paths.encoder_model =
-      webrtc::liquid::EncoderModelForPrecision(cfg.paths.encoder_model, precision ? precision : "int8");
+      webrtc::liquid::ResolveEncoderModel(cfg.paths.model_dir, cfg.paths.encoder_model,
+                                          precision ? precision : "auto");
+  cfg.paths.encoder_compute = g_encoder_compute;
   cfg.paths.model_dir = model_dir;
   if (!webrtc::ConfigureLiquidRuntime(cfg, &error)) {
     stats->detail = error;
@@ -377,8 +381,9 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
       stats->detail = error.empty() ? "manifest" : error;
       return 1;
     }
-    cfg.paths.encoder_model = webrtc::liquid::EncoderModelForPrecision(
-        cfg.paths.encoder_model, precision ? precision : "int8");
+    cfg.paths.encoder_model = webrtc::liquid::ResolveEncoderModel(
+        cfg.paths.model_dir, cfg.paths.encoder_model, precision ? precision : "auto");
+    cfg.paths.encoder_compute = g_encoder_compute;
     cfg.paths.model_dir = model_dir;
     if (!webrtc::ConfigureLiquidRuntime(cfg, &error)) {
       stats->detail = error;
@@ -562,6 +567,10 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
 }
 
 }  // namespace
+
+extern "C" void DirectQualitySetEncoderCompute(const char* units) {
+  g_encoder_compute = units && units[0] ? units : "cpu";
+}
 
 extern "C" void DirectQualitySetJitterBuffer(int max_delay_ms, int fast_accelerate) {
   g_jitter_max_ms = max_delay_ms < 0 ? 500 : max_delay_ms;

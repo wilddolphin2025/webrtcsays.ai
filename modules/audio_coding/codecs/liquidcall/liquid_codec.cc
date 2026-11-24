@@ -389,6 +389,14 @@ std::string EncoderModelForPrecision(const std::string& model, const std::string
   return out;
 }
 
+std::string ResolveEncoderModel(const std::string& model_dir, const std::string& model,
+                                const std::string& precision) {
+  if (precision != "auto" && !precision.empty()) return EncoderModelForPrecision(model, precision);
+  const std::string fp32 = EncoderModelForPrecision(model, "fp32");
+  if (fp32 != model && FileExists(JoinPath(model_dir, fp32))) return fp32;
+  return model;
+}
+
 namespace {
 std::atomic<int> g_out_of_codebook{0};
 std::atomic<int> g_clamped_codes{0};

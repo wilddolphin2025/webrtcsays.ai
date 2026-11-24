@@ -12,8 +12,31 @@
 
 #include "wsock.h"
 
+#include "signaling_log.h"
+#include "wsock_frame.h"
+
 #include <openssl/x509.h>
 #include <openssl/x509_vfy.h>
+
+namespace {
+
+void LogWsEvent(const char* event, const std::string& text) {
+  APP_LOG(AS_INFO) << "WebSocket " << event << " " << text;
+  DirectSignalingLog(event, text);
+}
+
+void LogWsClose(int code, const std::string& reason) {
+  LogWsEvent("ws-close", "code=" + std::to_string(code) + " reason=" + reason);
+}
+
+void FillRandomMask(unsigned char mask[4]) {
+  std::random_device rd;
+  std::mt19937 gen(rd());
+  std::uniform_int_distribution<int> dis(0, 255);
+  for (int i = 0; i < 4; ++i) mask[i] = static_cast<unsigned char>(dis(gen));
+}
+
+}  // namespace
 
 const absl::string_view base64_chars =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -129,21 +152,9 @@ void WebSocketClient::start_listening() {
   // Capture shared ownership so the object stays alive until callbacks finish.
   auto self = shared_from_this();
 
-  // Start keep-alive pings (first fire after 10 s, then every 5 s).
-  network_thread_->PostDelayedTask(
-      [self]() {
-        if (self->running_.load() && self->is_connected()) {
-          self->send_ping();
-          self->network_thread_->PostDelayedTask(
-              [self]() {
-                if (self->running_.load()) {
-                  self->start_listening();  // schedules next ping cycle / read
-                }
-              },
-              webrtc::TimeDelta::Seconds(5));
-        }
-      },
-      webrtc::TimeDelta::Seconds(10));
+  // First keepalive ping after 10 s, then every 5 s. start_listening()
+  // cannot reschedule itself: it returns immediately once running_ is set.
+  schedule_keepalive_ping(10);
 
   network_thread_->PostTask([self]() {
     APP_LOG(AS_INFO) << "WebSocketClient::start_listening: Initial async_read posted";
@@ -710,24 +721,33 @@ std::vector<std::string> WebSocketClient::process_websocket_frames() {
         accumulated_payload = payload;
         is_continuation = true;
       }
-    } else if (opcode == 0x09) {
-      std::vector<unsigned char> ping_payload(
+    } else if (opcode == 0x09 || opcode == 0x08) {
+      std::vector<unsigned char> control_payload(
           buffer_.begin() + pos + header_size + mask_offset,
           buffer_.begin() + pos + total_frame_size);
       if (masked) {
         unsigned char mask_key[4];
         for (int i = 0; i < 4; i++)
           mask_key[i] = buffer_[pos + header_size + i];
-        for (size_t i = 0; i < ping_payload.size(); i++) {
-          ping_payload[i] ^= mask_key[i % 4];
+        for (size_t i = 0; i < control_payload.size(); i++) {
+          control_payload[i] ^= mask_key[i % 4];
         }
       }
-      APP_LOG(AS_INFO) << "Received ping frame, length: " << length;
-      send_pong_frame(ping_payload);
-    } else if (opcode == 0x08) {
-      APP_LOG(AS_INFO) << "Received close frame";
-      running_ = false;
-      messages.push_back("DISCONNECTED");
+      if (opcode == 0x09) {
+        const std::string preview =
+            WsPayloadPreview(control_payload.data(), control_payload.size());
+        LogWsEvent("ws-ping", "direction=in payload=" + preview +
+                                  " bytes=" + std::to_string(control_payload.size()));
+        // Echo the payload. send_pong_frame masks the frame; an unmasked
+        // PONG makes gorilla close the room socket.
+        send_pong_frame(control_payload);
+      } else {
+        const WsCloseInfo info =
+            CloseInfoFromPayload(control_payload.data(), control_payload.size());
+        LogWsClose(info.code, info.reason);
+        running_ = false;
+        messages.push_back("DISCONNECTED");
+      }
     } else {
       APP_LOG(AS_WARNING) << "Skipping unhandled opcode: 0x" << std::to_string((int)opcode);
     }
@@ -742,78 +762,57 @@ std::vector<std::string> WebSocketClient::process_websocket_frames() {
   return messages;
 }
 
-void WebSocketClient::send_ping() {
-  std::vector<unsigned char> frame;
-  frame.push_back(0x89);  // FIN + Ping frame
-  frame.push_back(0x00);  // Unmasked, length 0 (no payload)
+void WebSocketClient::schedule_keepalive_ping(int delay_s) {
+  if (!network_thread_) return;
+  auto self = shared_from_this();
+  network_thread_->PostDelayedTask(
+      [self]() {
+        if (!self->running_.load() || !self->is_connected()) return;
+        self->send_ping();
+        self->schedule_keepalive_ping(5);
+      },
+      webrtc::TimeDelta::Seconds(delay_s));
+}
 
+bool WebSocketClient::write_raw_frame(const std::vector<unsigned char>& frame, const char* what) {
   std::lock_guard<std::mutex> lock(ssl_mutex_);
-  int bytes_written;
+  int bytes_written = 0;
   if (use_ssl_) {
     if (!ssl_) {
-      APP_LOG(AS_ERROR) << "SSL object is null in send_ping";
-      return;
+      APP_LOG(AS_ERROR) << "SSL object is null in " << what;
+      return false;
     }
     bytes_written = SSL_write(ssl_, frame.data(), frame.size());
     if (bytes_written <= 0) {
-      log_ssl_error("SSL_write failed in send_ping");
-      return;
+      log_ssl_error(std::string("SSL_write failed in ") + what);
+      return false;
     }
   } else {
     bytes_written = send(sockfd_, frame.data(), frame.size(), 0);
     if (bytes_written <= 0) {
-      APP_LOG(AS_ERROR) << "send failed in send_ping: " << strerror(errno);
-      return;
+      APP_LOG(AS_ERROR) << "send failed in " << what << ": " << strerror(errno);
+      return false;
     }
   }
-  APP_LOG(AS_INFO) << "Sent ping frame";
+  return true;
+}
+
+void WebSocketClient::send_ping() {
+  unsigned char mask[4];
+  FillRandomMask(mask);
+  const std::vector<unsigned char> frame = BuildMaskedClientFrame(0x9, nullptr, 0, mask);
+  if (!write_raw_frame(frame, "ping")) return;
+  LogWsEvent("ws-ping", "direction=out payload= bytes=0");
 }
 
 void WebSocketClient::send_pong_frame(const std::vector<unsigned char>& ping_payload) {
-  std::vector<unsigned char> frame;
-  frame.push_back(0x8A);  // FIN + Pong frame
-
-  size_t length = ping_payload.size();
-  if (length <= 125) {
-    frame.push_back(0x00 | length);  // Unmasked + length
-  } else if (length <= 65535) {
-    frame.push_back(0x00 | 126);
-    frame.push_back((length >> 8) & 0xFF);
-    frame.push_back(length & 0xFF);
-  } else {
-    frame.push_back(0x00 | 127);
-    frame.push_back(0);
-    frame.push_back(0);
-    frame.push_back(0);
-    frame.push_back(0);
-    frame.push_back((length >> 24) & 0xFF);
-    frame.push_back((length >> 16) & 0xFF);
-    frame.push_back((length >> 8) & 0xFF);
-    frame.push_back(length & 0xFF);
-  }
-
-  frame.insert(frame.end(), ping_payload.begin(), ping_payload.end());
-
-  std::lock_guard<std::mutex> lock(ssl_mutex_);
-  int bytes_written;
-  if (use_ssl_) {
-    if (!ssl_) {
-      APP_LOG(AS_ERROR) << "SSL object is null in send_pong_frame";
-      return;
-    }
-    bytes_written = SSL_write(ssl_, frame.data(), frame.size());
-    if (bytes_written <= 0) {
-      log_ssl_error("SSL_write failed in send_pong_frame");
-      return;
-    }
-  } else {
-    bytes_written = send(sockfd_, frame.data(), frame.size(), 0);
-    if (bytes_written <= 0) {
-      APP_LOG(AS_ERROR) << "send failed in send_pong_frame: " << strerror(errno);
-      return;
-    }
-  }
-  APP_LOG(AS_INFO) << "Sent pong frame in response to ping";
+  unsigned char mask[4];
+  FillRandomMask(mask);
+  const std::vector<unsigned char> frame = BuildMaskedClientFrame(
+      0xA, ping_payload.empty() ? nullptr : ping_payload.data(), ping_payload.size(), mask);
+  if (!write_raw_frame(frame, "pong")) return;
+  const std::string preview = WsPayloadPreview(ping_payload.data(), ping_payload.size());
+  LogWsEvent("ws-pong", "payload=" + preview + " bytes=" + std::to_string(ping_payload.size()));
 }
 
 void WebSocketClient::async_read() {
@@ -842,6 +841,7 @@ void WebSocketClient::async_read() {
     APP_LOG(AS_ERROR) << "WebSocketClient::async_read: Socket closed or invalid, attempting reconnect";
     running_ = false;
     read_in_progress_ = false;
+    LogWsClose(1006, "socket closed or invalid");
     if (message_callback_)
       message_callback_("DISCONNECTED");
     {
@@ -864,6 +864,7 @@ void WebSocketClient::async_read() {
         APP_LOG(AS_ERROR) << "WebSocketClient::async_read: SSL object is null";
         running_ = false;
         read_in_progress_ = false;
+        LogWsClose(1006, "SSL object is null");
         if (message_callback_)
           message_callback_("DISCONNECTED");
         return;
@@ -885,6 +886,7 @@ void WebSocketClient::async_read() {
           log_ssl_error("SSL_read failed in async_read");
           running_ = false;
           read_in_progress_ = false;
+          LogWsClose(1006, "SSL_read failed");
           if (message_callback_)
             message_callback_("DISCONNECTED");
           {
@@ -910,6 +912,7 @@ void WebSocketClient::async_read() {
           APP_LOG(AS_ERROR) << "WebSocketClient::async_read: Connection lost: " << strerror(errno);
           running_ = false;
           read_in_progress_ = false;
+          LogWsClose(1006, std::string("recv failed: ") + strerror(errno));
           if (message_callback_)
             message_callback_("DISCONNECTED");
           {
@@ -918,6 +921,14 @@ void WebSocketClient::async_read() {
           }
           return;
         }
+      } else if (bytes_read == 0) {
+        APP_LOG(AS_INFO) << "WebSocketClient::async_read: Connection closed";
+        running_ = false;
+        read_in_progress_ = false;
+        LogWsClose(1006, "connection closed without a close frame");
+        if (message_callback_)
+          message_callback_("DISCONNECTED");
+        return;
       }
     }
 
@@ -994,6 +1005,7 @@ void WebSocketClient::force_sync_read(int timeout_ms) {
       } else if (bytes_read == 0) {
         APP_LOG(AS_INFO) << "WebSocketClient::force_sync_read: Connection closed";
         running_ = false;
+        LogWsClose(1006, "connection closed without a close frame");
         if (message_callback_)
           message_callback_("DISCONNECTED");
         break;

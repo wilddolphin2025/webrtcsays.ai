@@ -7,7 +7,7 @@ only below USD 10M annual revenue (Section 5). The license text ships with the
 model repository, not in this tree:
 
   https://huggingface.co/LiquidAI/Liquid-Codec
-  https://github.com/shershah1024/liquidcodec-ane/blob/master/LICENSE-LFM-Open-v1.0.txt
+  https://github.com/wilddolphin2025/liquidcodec-ane/blob/master/LICENSE-LFM-Open-v1.0.txt
 
 The Apple Neural Engine packages are a separate conversion. The published
 decoder conversion is shershah1024/liquidcodec-ane (decoder only, fixed

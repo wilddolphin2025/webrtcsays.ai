@@ -468,7 +468,7 @@ bool DirectApplication::CreatePeerConnection() {
         webrtc::CreateBuiltinAudioDecoderFactory();
     if (opts_.audio_codec == "cetacall") {
 #if defined(WEBRTC_USE_CETACALL)
-      webrtc::cetacall::RuntimeConfig cetacall_cfg;
+      webrtc::cetacall::RuntimeConfig cetacall;
       std::string model_dir = opts_.cetacall_model_dir;
       if (model_dir.empty()) {
         const char* candidates[] = {

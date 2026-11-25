@@ -132,6 +132,7 @@ struct Options {
     int video_height = 0;
     int video_fps = 0;                  // 1..60, 30 if video is on and unset
     int stats_interval_sec = 1;
+    std::string stats_jsonl{};          // raw GetStats JSONL (default <record_dir>/webrtc_stats.jsonl)
     int call_duration_sec = 0;
     std::string audio{};                // "dummy" forces the fake audio device
     // These fields are the iOS direct.framework API the RobotPhone app sets.
@@ -142,6 +143,8 @@ struct Options {
     std::string record_dir{};           // WAV + stats for a quality run
     std::string inject_wav{};           // replace the mic with this 16-bit PCM wav
     int voice_swap_udp = 0;             // >0: send decoded far-end PCM to 127.0.0.1:<port> (voice-swap sidecar)
+    int voice_swap_return_udp = 0;      // >0: encode translated PCM from 127.0.0.1:<port> instead of the mic
+    int voice_swap_mic_udp = 0;         // >0: send the processed mic (encoder input) to 127.0.0.1:<port>
     bool voice_swap_mute = true;        // with voice_swap_udp: play silence locally (the sidecar plays)
     // Voice swap choice. Caller: voice to ask the callee for, sent as a=x-cetacall-voice in the SDP offer
     // ("" or "me": attribute omitted). Callee: "" / "auto" follows the caller's offer (missing = no conversion);
@@ -157,7 +160,8 @@ struct Options {
     int cetacall_ctx = 0;                 // 0 = manifest default
     int cetacall_new = 0;                 // 0 = manifest default
     std::string cetacall_decode{"ane"};   // ane, cpu, all
-    std::string cetacall_encoder{"int8"};  // int8 or fp16 Core ML encoder package
+    std::string cetacall_encoder{"auto"};  // auto (fp32 if built, else int8), int8, fp16, fp32
+    std::string cetacall_encoder_compute{"cpu"};  // cpu (default), ane, all
     std::string cetacall_pack{"tight"};   // tight (17 bytes/frame, default) or u16 (28 bytes/frame)
     int cetacall_frames_per_packet = 1;   // 1-4 (80-320 ms per packet)
     bool cetacall_dtx = false;            // skip CetaCall packets during silence

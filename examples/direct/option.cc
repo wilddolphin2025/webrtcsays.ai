@@ -416,6 +416,8 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --opus-dtx / --no-opus-dtx        Opus discontinuous transmission\n"
       "  --record-dir=<path>                Write input/output WAVs and stats for a quality run\n"
       "  --voice-swap-udp=<port>            Send decoded far-end audio to 127.0.0.1:<port> (voice-swap sidecar)\n"
+      "  --voice-swap-return-udp=<port>     Encode translated 48 kHz PCM from 127.0.0.1:<port> instead of the mic\n"
+      "  --voice-swap-mic-udp=<port>        Send the processed mic (encoder input) to 127.0.0.1:<port>\n"
       "  --no-voice-swap-mute               With --voice-swap-udp, still play the original voice locally\n"
       "  --voice-swap=<voice>               Caller: ask the callee to hear us in <voice> (female, male, or a Piper id;\n"
       "                                     sent in the SDP offer). Callee: auto (default, follow the caller), off,\n"
@@ -442,8 +444,11 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --quality=offline|factory|aec     Codec or NetEq loop, or echo-canceller loop; no call\n"
       "  --impair-loss=<0-100>             Drop that percent of packets, no sudo\n"
       "  --impair-jitter-ms=<ms>           Delay packets by 0, half, then full\n"
-      "  --cetacall-encoder=int8|fp16        Core ML encoder package (default int8)\n"
+      "  --cetacall-encoder=auto|int8|fp16|fp32  Core ML step encoder (default auto: fp32 if built, else int8)\n"
+      "  --cetacall-encoder-compute=cpu|ane|all  Encoder compute units (default cpu; ANE fp16 corrupts codes)\n"
       "  --stats=<seconds>                  Log a GetStats JSON line on this interval\n"
+      "  --stats-jsonl=<path>               Append raw W3C GetStats objects per interval + at call end\n"
+      "                                     (default <record-dir>/webrtc_stats.jsonl)\n"
       "  --duration=<seconds>               Hang up and exit after this many seconds\n"
       "  --help                             Show this help message\n\n"
       "Examples (callee called first, encryption is recommended):\n"
@@ -468,17 +473,20 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--token-query", "--no-token-query", "--turns-file", "--turns_file",
     "--token-env", "--token_env", "--ca-file", "--ca_file", "--stun",
     "--codec", "--res", "--fps", "--video-source", "--video_source",
-    "--audio", "--stats", "--duration",
+    "--audio", "--stats", "--stats-jsonl", "--stats_jsonl", "--duration",
     "--audio-codec", "--audio_codec", "--opus-bitrate", "--opus_bitrate",
     "--record-dir", "--record_dir", "--inject-wav", "--inject_wav",
-    "--voice-swap-udp", "--voice_swap_udp", "--voice-swap-mute", "--no-voice-swap-mute",
+    "--voice-swap-udp", "--voice_swap_udp",
+    "--voice-swap-return-udp", "--voice_swap_return_udp",
+    "--voice-swap-mic-udp", "--voice_swap_mic_udp",
+    "--voice-swap-mute", "--no-voice-swap-mute",
     "--voice-swap", "--voice_swap", "--voice-swap-voices", "--voice_swap_voices",
     "--voice-swap-script", "--voice_swap_script",
-    "--cetacall-model-dir", "--cetacall-model-dir", "--cetacall-manifest", "--cetacall-manifest",
-    "--cetacall-ctx", "--cetacall-ctx", "--cetacall-new", "--cetacall-new",
-    "--cetacall-decode", "--cetacall-decode",
-    "--cetacall-pack", "--cetacall-pack", "--cetacall-frames-per-packet", "--cetacall-frames-per-packet",
-    "--aec", "--cetacall-encoder", "--cetacall-encoder",
+    "--cetacall-model-dir", "--cetacall_model_dir", "--cetacall-manifest", "--cetacall_manifest",
+    "--cetacall-ctx", "--cetacall_ctx", "--cetacall-new", "--cetacall_new",
+    "--cetacall-decode", "--cetacall_decode",
+    "--cetacall-pack", "--cetacall_pack", "--cetacall-frames-per-packet", "--cetacall_frames_per_packet",
+    "--aec", "--cetacall-encoder", "--cetacall_encoder", "--cetacall-encoder-compute", "--cetacall_encoder_compute",
     "--quality", "--impair-loss", "--impair_loss", "--impair-jitter-ms", "--impair_jitter_ms",
     "--opus-ptime", "--opus_ptime", "--opus-dtx", "--no-opus-dtx",
     "--cetacall-dtx", "--no-cetacall-dtx", "--srtp-tag32", "--no-srtp-tag32",
@@ -929,6 +937,11 @@ Options parseOptions(const std::vector<std::string>& args) {
         opts.record_dir = arg.substr(eq + 1);
     } else if (arg.find("--voice-swap-udp=") == 0 || arg.find("--voice_swap_udp=") == 0) {
         opts.voice_swap_udp = std::atoi(arg.substr(arg.find('=') + 1).c_str());
+    } else if (arg.find("--voice-swap-return-udp=") == 0 ||
+               arg.find("--voice_swap_return_udp=") == 0) {
+        opts.voice_swap_return_udp = std::atoi(arg.substr(arg.find('=') + 1).c_str());
+    } else if (arg.find("--voice-swap-mic-udp=") == 0 || arg.find("--voice_swap_mic_udp=") == 0) {
+        opts.voice_swap_mic_udp = std::atoi(arg.substr(arg.find('=') + 1).c_str());
     } else if (arg.find("--voice-swap-script=") == 0 || arg.find("--voice_swap_script=") == 0) {
         opts.voice_swap_script = arg.substr(arg.find('=') + 1);
     } else if (arg.find("--voice-swap-voices=") == 0 || arg.find("--voice_swap_voices=") == 0) {
@@ -957,7 +970,9 @@ Options parseOptions(const std::vector<std::string>& args) {
     } else if (arg.find("--cetacall-decode=") == 0 || arg.find("--cetacall-decode=") == 0) {
         const auto eq = arg.find('=');
         opts.cetacall_decode = arg.substr(eq + 1);
-    } else if (arg.find("--cetacall-encoder=") == 0 || arg.find("--cetacall-encoder=") == 0) {
+    } else if (arg.find("--cetacall-encoder-compute=") == 0 || arg.find("--cetacall_encoder_compute=") == 0) {
+        opts.cetacall_encoder_compute = arg.substr(arg.find('=') + 1);
+    } else if (arg.find("--cetacall-encoder=") == 0 || arg.find("--cetacall_encoder=") == 0) {
         const auto eq = arg.find('=');
         opts.cetacall_encoder = arg.substr(eq + 1);
     } else if (arg.find("--quality=") == 0) {
@@ -983,6 +998,8 @@ Options parseOptions(const std::vector<std::string>& args) {
         opts.cetacall_frames_per_packet = std::atoi(arg.substr(eq + 1).c_str());
     } else if (arg.find("--audio=") == 0) {
         opts.audio = arg.substr(8);
+    } else if (arg.find("--stats-jsonl=") == 0) {
+        opts.stats_jsonl = arg.substr(14);
     } else if (arg.find("--stats=") == 0) {
         opts.stats_interval_sec = std::atoi(arg.substr(8).c_str());
     } else if (arg.find("--duration=") == 0) {
@@ -1197,9 +1214,13 @@ Options parseOptions(const std::vector<std::string>& args) {
   for (char& c : opts.cetacall_encoder) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   }
-  if (opts.cetacall_encoder != "int8" && opts.cetacall_encoder != "fp16" &&
+  if (opts.cetacall_encoder != "auto" && opts.cetacall_encoder != "int8" && opts.cetacall_encoder != "fp16" &&
       opts.cetacall_encoder != "fp32") {
-    opts.parse_error = "cetacall-encoder must be int8, fp16, or fp32";
+    opts.parse_error = "cetacall-encoder must be auto, int8, fp16, or fp32";
+  }
+  if (opts.cetacall_encoder_compute != "cpu" && opts.cetacall_encoder_compute != "ane" &&
+      opts.cetacall_encoder_compute != "all") {
+    opts.parse_error = "cetacall-encoder-compute must be cpu, ane, or all";
   }
   if (!opts.quality.empty() && opts.quality != "offline" && opts.quality != "factory" &&
       opts.quality != "aec") {

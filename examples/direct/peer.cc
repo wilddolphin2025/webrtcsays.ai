@@ -456,6 +456,9 @@ void DirectPeer::MarkSessionStart() {
 void DirectPeer::StartCallStatsIfEnabled() {
     if (opts_.stats_interval_sec <= 0 || call_stats_) return;
     MarkSessionStart();
+    DirectCallStatsSetJsonlPath(!opts_.stats_jsonl.empty() ? opts_.stats_jsonl
+                                : !opts_.record_dir.empty() ? opts_.record_dir + "/webrtc_stats.jsonl"
+                                                             : std::string());
     call_stats_ = DirectCallStats::Create(
         opts_.stats_interval_sec, session_origin_, signaling_thread(),
         [this] { return peer_connection_.get(); }, opts_.encryption);

@@ -486,7 +486,9 @@ bool DirectApplication::CreatePeerConnection() {
       cetacall.paths.model_dir = model_dir;
       cetacall.paths.compute = opts_.cetacall_decode.empty() ? "ane" : opts_.cetacall_decode;
       cetacall.record_dir = opts_.record_dir;
-      cetacall.inject_wav = opts_.inject_wav;
+      // --audio=file already plays --inject-wav as the microphone; replacing the
+      // encoder input as well would bypass --voice-swap-return-udp.
+      cetacall.inject_wav = opts_.audio == "file" ? std::string() : opts_.inject_wav;
       const std::string manifest = opts_.cetacall_manifest.empty()
                                        ? webrtc::cetacall::ManifestPath(cetacall.paths.model_dir)
                                        : opts_.cetacall_manifest;
@@ -503,8 +505,12 @@ bool DirectApplication::CreatePeerConnection() {
                 "(published decoder geometry) until the fork ships cetacall.json\n",
                 manifest.c_str());
       }
-      cetacall.paths.encoder_model = webrtc::cetacall::EncoderModelForPrecision(
-          cetacall.paths.encoder_model, opts_.cetacall_encoder);
+      cetacall.paths.encoder_model = webrtc::cetacall::ResolveEncoderModel(
+          model_dir, cetacall.paths.encoder_model, opts_.cetacall_encoder);
+      cetacall.paths.encoder_compute = opts_.cetacall_encoder_compute;
+      fprintf(stderr, "CetaCall encoder: %s on %s (decoder on %s)\n",
+              cetacall.paths.encoder_model.c_str(), cetacall.paths.encoder_compute.c_str(),
+              cetacall.paths.compute.c_str());
       if (opts_.cetacall_ctx > 0) cetacall.chunk.ctx_frames = opts_.cetacall_ctx;
       if (opts_.cetacall_new > 0) cetacall.chunk.new_frames = opts_.cetacall_new;
       cetacall.pack = opts_.cetacall_pack == "tight" ? webrtc::cetacall::WirePack::kTight
@@ -531,9 +537,12 @@ bool DirectApplication::CreatePeerConnection() {
       return false;
 #endif
     }
-    if (!opts_.record_dir.empty() || !opts_.inject_wav.empty() || opts_.voice_swap_udp > 0) {
+    if (!opts_.record_dir.empty() || !opts_.inject_wav.empty() || opts_.voice_swap_udp > 0 ||
+        opts_.voice_swap_return_udp > 0 || opts_.voice_swap_mic_udp > 0) {
       audio_encoder_factory = webrtc::CreateTappingAudioEncoderFactory(
-          audio_encoder_factory, opts_.record_dir, opts_.inject_wav);
+          audio_encoder_factory, opts_.record_dir,
+          opts_.audio == "file" ? std::string() : opts_.inject_wav, opts_.voice_swap_return_udp,
+          opts_.voice_swap_mic_udp);
       audio_decoder_factory = webrtc::CreateTappingAudioDecoderFactory(
           audio_decoder_factory, opts_.record_dir, opts_.voice_swap_udp, opts_.voice_swap_mute);
     }
@@ -1133,7 +1142,10 @@ void DirectApplication::ConfigureOutgoingAudio() {
     }
   }
   if (cetacall) {
-    fprintf(stderr, "audio codec: %s (send) + opus (receive)\n", preferred.front().name.c_str());
+    // Preference order only; what each direction actually uses is in GetStats
+    // (outbound/inbound codec in --stats-jsonl and the "codec" field of --stats).
+    fprintf(stderr, "audio codec preference: %s first, opus fallback (negotiated codec per direction: see stats)\n",
+            preferred.front().name.c_str());
   } else {
     fprintf(stderr, "audio codec: %s%s\n", preferred.front().name.c_str(),
             opts_.opus_bitrate_bps > 0

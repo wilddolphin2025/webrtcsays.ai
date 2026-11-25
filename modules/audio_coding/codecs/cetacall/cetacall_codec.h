@@ -136,7 +136,12 @@ struct ModelPaths {
   // "codebook_time" (default) or "time_codebook", used only when both axes
   // have the same length.
   std::string encoder_codes_layout = "codebook_time";
-  std::string compute = "ane";  // ane, cpu, all
+  std::string compute = "ane";  // ane, cpu, all (decoder; also the encoder when encoder_compute is empty)
+  // The step encoder runs on the CPU by default: on the Neural Engine its fp16
+  // math moves ~20% of the FSQ digits by one level (35% code match with
+  // Liquid's encode(), vs 92-95% for fp32 on the CPU) and the far end hears a
+  // rough, metallic voice. The decoder is fine on the ANE (27-39 dB vs PyTorch).
+  std::string encoder_compute = "cpu";
   // Empty or "window": stateless chunk. "stateful_io": one-frame step plus
   // the state tensors named below. lookahead_samples > 0 also selects it.
   std::string encoder_kind;
@@ -199,6 +204,11 @@ bool QuantizeCode(float raw, int codebook_size, int32_t* quantized, bool* clampe
 
 // Swap an _int8 / _fp16 / _fp32 token in an encoder path. Other names are unchanged.
 std::string EncoderModelForPrecision(const std::string& model, const std::string& precision);
+// "auto": the fp32 step encoder (models/stream/lc_enc_step_fp32.mlmodelc, built by
+// CetaCall scripts/build_liquid_encoder_fp32.sh) when it exists in model_dir,
+// otherwise `model` unchanged. Other values: EncoderModelForPrecision.
+std::string ResolveEncoderModel(const std::string& model_dir, const std::string& model,
+                                const std::string& precision);
 
 // Process-wide counts for one quality run. Core ML increments them. Consume
 // returns the count and resets it so the next run starts at zero.

@@ -12,9 +12,14 @@ namespace webrtc {
 // Wraps an encoder and decoder factory so a quality run can record the PCM
 // that entered the encoder and the PCM that left the decoder, and so
 // `--inject-wav` replaces the microphone for every codec (Opus and CetaCall).
+// voice_swap_return_udp > 0: accept [uint32 sample_rate][int16 mono PCM, <= 10 ms]
+// datagrams from the translation sidecar on 127.0.0.1:<port> and encode them
+// instead of the microphone. The stream is 48 kHz mono; underruns encode silence.
+// voice_swap_mic_udp > 0: also send the original encoder input (the processed
+// microphone) to 127.0.0.1:<port> in the same datagram format, before replacement.
 scoped_refptr<AudioEncoderFactory> CreateTappingAudioEncoderFactory(
     scoped_refptr<AudioEncoderFactory> inner, const std::string& record_dir,
-    const std::string& inject_wav);
+    const std::string& inject_wav, int voice_swap_return_udp = 0, int voice_swap_mic_udp = 0);
 
 // voice_swap_udp > 0: every decoded block is also sent to 127.0.0.1:voice_swap_udp as datagrams of
 // [uint32 sample_rate][int16 mono PCM, <= 10 ms] for the voice-swap sidecar; voice_swap_mute then zeroes the

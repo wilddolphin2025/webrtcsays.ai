@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -169,10 +170,116 @@ bool ReadMonoWav(const std::string& path, int* rate, std::vector<int16_t>* mono)
   return true;
 }
 
+// Translated PCM from the local sidecar. The socket is drained on the encode
+// thread; a short queue absorbs generation jitter, and the sidecar is expected
+// to pace itself so this never holds seconds of audio.
+class ReturnSource {
+ public:
+  explicit ReturnSource(int port) {
+    if (port <= 0) return;
+    fd_ = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd_ < 0) return;
+    int flags = fcntl(fd_, F_GETFL, 0);
+    if (flags >= 0) fcntl(fd_, F_SETFL, flags | O_NONBLOCK);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(fd_, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+      fprintf(stderr, "voice swap return: cannot bind 127.0.0.1:%d\n", port);
+      close(fd_);
+      fd_ = -1;
+      return;
+    }
+    fprintf(stderr, "voice swap return: translated PCM <- 127.0.0.1:%d (48 kHz)\n", port);
+  }
+  ~ReturnSource() {
+    if (fd_ >= 0) close(fd_);
+  }
+  bool active() const { return fd_ >= 0; }
+
+  // Fills exactly n samples. Returns false (and leaves silence) on underrun.
+  bool Read(int16_t* out, size_t n) {
+    if (fd_ < 0 || !out || n == 0) return false;
+    uint8_t buf[4 + 2 * 960];
+    for (;;) {
+      const ssize_t got = recv(fd_, buf, sizeof(buf), MSG_DONTWAIT);
+      if (got < 4) break;
+      uint32_t rate = 0;
+      std::memcpy(&rate, buf, 4);
+      if (rate != 48000) {
+        if (!warned_rate_) {
+          fprintf(stderr, "voice swap return: ignoring %u Hz (need 48000)\n", rate);
+          warned_rate_ = true;
+        }
+        continue;
+      }
+      const size_t samples = static_cast<size_t>(got - 4) / 2;
+      const int16_t* pcm = reinterpret_cast<const int16_t*>(buf + 4);
+      for (size_t i = 0; i < samples; ++i) q_.push_back(pcm[i]);
+      while (q_.size() > kMaxSamples) q_.pop_front();
+    }
+    if (q_.size() < n) {
+      std::fill(out, out + n, static_cast<int16_t>(0));
+      return false;
+    }
+    for (size_t i = 0; i < n; ++i) {
+      out[i] = q_.front();
+      q_.pop_front();
+    }
+    return true;
+  }
+
+ private:
+  static constexpr size_t kMaxSamples = 48000 / 2;  // 500 ms cap
+  int fd_ = -1;
+  bool warned_rate_ = false;
+  std::deque<int16_t> q_;
+};
+
+// The encoder-input (post-APM) microphone, forwarded to the translation sidecar
+// on 127.0.0.1:<port> as [uint32 sample_rate][int16 mono PCM, 10 ms] datagrams,
+// so the Mac user's speech can be translated and returned via ReturnSource.
+class MicSink {
+ public:
+  explicit MicSink(int port) {
+    if (port <= 0) return;
+    fd_ = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd_ < 0) return;
+    int flags = fcntl(fd_, F_GETFL, 0);
+    if (flags >= 0) fcntl(fd_, F_SETFL, flags | O_NONBLOCK);
+    addr_.sin_family = AF_INET;
+    addr_.sin_port = htons(static_cast<uint16_t>(port));
+    addr_.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    fprintf(stderr, "voice swap mic: encoder input -> 127.0.0.1:%d\n", port);
+  }
+  ~MicSink() {
+    if (fd_ >= 0) close(fd_);
+  }
+  void Send(int rate, const int16_t* pcm, size_t n) {
+    if (fd_ < 0 || !pcm || n == 0) return;
+    uint8_t buf[4 + 2 * 960];
+    const uint32_t r = static_cast<uint32_t>(rate);
+    for (size_t off = 0; off < n;) {
+      const size_t m = std::min<size_t>(960, n - off);
+      std::memcpy(buf, &r, 4);
+      std::memcpy(buf + 4, pcm + off, m * 2);
+      sendto(fd_, buf, 4 + m * 2, 0, reinterpret_cast<const sockaddr*>(&addr_), sizeof(addr_));
+      off += m;
+    }
+  }
+
+ private:
+  int fd_ = -1;
+  sockaddr_in addr_{};
+};
+
 class TapEncoder final : public AudioEncoder {
  public:
-  TapEncoder(std::unique_ptr<AudioEncoder> inner, std::string record_dir, std::string inject)
-      : inner_(std::move(inner)), record_dir_(std::move(record_dir)), inject_path_(std::move(inject)) {
+  TapEncoder(std::unique_ptr<AudioEncoder> inner, std::string record_dir, std::string inject,
+             std::shared_ptr<ReturnSource> ret, std::shared_ptr<MicSink> mic)
+      : inner_(std::move(inner)), record_dir_(std::move(record_dir)), inject_path_(std::move(inject)),
+        ret_(std::move(ret)), mic_(std::move(mic)) {
     if (!record_dir_.empty()) {
       EnsureDir(record_dir_);
       wav_.Open(record_dir_ + "/input_48k.wav", inner_->SampleRateHz());
@@ -221,7 +328,25 @@ class TapEncoder final : public AudioEncoder {
                          Buffer* encoded) override {
     std::vector<int16_t> replaced;
     std::span<const int16_t> view = audio;
-    if (!inject_.empty() && inject_rate_ > 0) {
+    if (mic_) mic_->Send(SampleRateHz(), audio.data(), audio.size());
+    if (ret_ && ret_->active()) {
+      // The sidecar sends 48 kHz; resample to the encoder rate if the codec asks
+      // for something else. On underrun this encodes silence, never the Mac mic.
+      replaced.assign(audio.size(), 0);
+      const int enc_rate = std::max(1, SampleRateHz());
+      const size_t src_n = std::max<size_t>(1, (48000 * audio.size()) / static_cast<size_t>(enc_rate));
+      std::vector<int16_t> src(src_n, 0);
+      ret_->Read(src.data(), src.size());
+      if (enc_rate == 48000 && src_n == audio.size()) {
+        std::memcpy(replaced.data(), src.data(), audio.size() * sizeof(int16_t));
+      } else {
+        // Persistent resampler: a fresh one per 10 ms block restarts the filter
+        // state every block and puts a 100 Hz buzz on the return speech.
+        ret_rs_.Resample(std::span<const int16_t>(src.data(), src.size()),
+                    std::span<int16_t>(replaced.data(), replaced.size()));
+      }
+      view = replaced;
+    } else if (!inject_.empty() && inject_rate_ > 0) {
       replaced.assign(audio.size(), 0);
       const int src_n = std::max(1, inject_rate_ / 100);
       if (inject_pos_ + static_cast<size_t>(src_n) <= inject_.size()) {
@@ -229,8 +354,7 @@ class TapEncoder final : public AudioEncoder {
           std::memcpy(replaced.data(), inject_.data() + inject_pos_,
                       static_cast<size_t>(src_n) * sizeof(int16_t));
         } else {
-          PushResampler<int16_t> rs;
-          rs.Resample(std::span<const int16_t>(inject_.data() + inject_pos_, src_n),
+          inject_rs_.Resample(std::span<const int16_t>(inject_.data() + inject_pos_, src_n),
                       std::span<int16_t>(replaced.data(), replaced.size()));
         }
         inject_pos_ += static_cast<size_t>(src_n);
@@ -268,9 +392,13 @@ class TapEncoder final : public AudioEncoder {
   std::unique_ptr<AudioEncoder> inner_;
   std::string record_dir_;
   std::string inject_path_;
+  std::shared_ptr<ReturnSource> ret_;
+  std::shared_ptr<MicSink> mic_;
   PcmWav wav_;
   std::vector<int16_t> inject_;
   int inject_rate_ = 0;
+  PushResampler<int16_t> ret_rs_;
+  PushResampler<int16_t> inject_rs_;
   size_t inject_pos_ = 0;
   int64_t samples_ = 0;
   int64_t packets_ = 0;
@@ -418,10 +546,12 @@ class TapDecoder final : public AudioDecoder {
 class TapEncoderFactory : public AudioEncoderFactory {
  public:
   TapEncoderFactory(scoped_refptr<AudioEncoderFactory> inner, std::string record_dir,
-                    std::string inject)
+                    std::string inject, int return_udp, int mic_udp)
       : inner_(std::move(inner)),
         record_dir_(std::move(record_dir)),
-        inject_(std::move(inject)) {}
+        inject_(std::move(inject)),
+        ret_(std::make_shared<ReturnSource>(return_udp)),
+        mic_(mic_udp > 0 ? std::make_shared<MicSink>(mic_udp) : nullptr) {}
   std::vector<AudioCodecSpec> GetSupportedEncoders() override {
     return inner_->GetSupportedEncoders();
   }
@@ -432,13 +562,15 @@ class TapEncoderFactory : public AudioEncoderFactory {
                                       Options options) override {
     auto enc = inner_->Create(env, format, options);
     if (!enc) return nullptr;
-    return std::make_unique<TapEncoder>(std::move(enc), record_dir_, inject_);
+    return std::make_unique<TapEncoder>(std::move(enc), record_dir_, inject_, ret_, mic_);
   }
 
  private:
   scoped_refptr<AudioEncoderFactory> inner_;
   std::string record_dir_;
   std::string inject_;
+  std::shared_ptr<ReturnSource> ret_;
+  std::shared_ptr<MicSink> mic_;
 };
 
 class TapDecoderFactory : public AudioDecoderFactory {
@@ -469,8 +601,9 @@ class TapDecoderFactory : public AudioDecoderFactory {
 
 scoped_refptr<AudioEncoderFactory> CreateTappingAudioEncoderFactory(
     scoped_refptr<AudioEncoderFactory> inner, const std::string& record_dir,
-    const std::string& inject_wav) {
-  return make_ref_counted<TapEncoderFactory>(std::move(inner), record_dir, inject_wav);
+    const std::string& inject_wav, int voice_swap_return_udp, int voice_swap_mic_udp) {
+  return make_ref_counted<TapEncoderFactory>(std::move(inner), record_dir, inject_wav,
+                                             voice_swap_return_udp, voice_swap_mic_udp);
 }
 
 scoped_refptr<AudioDecoderFactory> CreateTappingAudioDecoderFactory(

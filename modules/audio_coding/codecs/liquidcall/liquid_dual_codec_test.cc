@@ -1,7 +1,7 @@
-// LiquidCall offer: send LIQUIDCALL/48000/1 PT 96, and keep Opus/48000/2 PT 111
+// LiquidCall offer: send CETACALL/48000/1 PT 96, and keep Opus/48000/2 PT 111
 // so an answer that includes both can be decoded as Opus on the receive side.
 // Opus-only (--audio-codec=opus, and the default which sets no preference)
-// must not grow a LIQUIDCALL payload.
+// must not grow a CETACALL payload.
 
 #include <cmath>
 #include <cstdlib>
@@ -102,8 +102,8 @@ void TestPreferences() {
   Expect(def.empty(), "default audio codec sets no preference");
   const auto opus = webrtc::liquid::AudioCodecPreferenceNames("opus");
   Expect(opus.size() == 1 && opus[0] == "opus", "opus preference is opus only");
-  Expect(webrtc::liquid::OpusOnlyOfferCodecLines("\n").find("LIQUIDCALL") == std::string::npos,
-         "opus-only offer has no LIQUIDCALL");
+  Expect(webrtc::liquid::OpusOnlyOfferCodecLines("\n").find("CETACALL") == std::string::npos,
+         "opus-only offer has no CETACALL");
   const auto opus_lines = webrtc::liquid::AudioCodecLinesFromSdp(webrtc::liquid::OpusOnlyOfferCodecLines());
   Expect(opus_lines.size() == 1 && opus_lines[0].payload_type == 111 &&
              webrtc::liquid::LowerCodecName(opus_lines[0].name) == "opus" &&
@@ -112,13 +112,13 @@ void TestPreferences() {
          "opus-only offer is opus/48000/2 PT 111 with minptime=10;useinbandfec=1");
 
   const auto liquid = webrtc::liquid::AudioCodecPreferenceNames("liquidcall");
-  Expect(liquid.size() == 2 && liquid[0] == "liquidcall" && liquid[1] == "opus",
-         "liquidcall preference is LIQUIDCALL then Opus");
+  Expect(liquid.size() == 2 && liquid[0] == "cetacall" && liquid[1] == "opus",
+         "liquidcall preference is CETACALL then Opus");
 }
 
 void TestOfferLines() {
   Expect(webrtc::liquid::kPreferredPayloadType == webrtc::liquid::kLiquidCallPayloadType,
-         "frozen LIQUIDCALL payload type is 96");
+         "frozen CETACALL payload type is 96");
   const auto tight = webrtc::liquid::LiquidFmtp("tight", 1, false);
   Expect(tight.count("usedtx") == 0, "DTX stays off the fmtp by default");
   Expect(webrtc::liquid::FormatFmtp(tight) == "fpp=1;pack=tight", "default fmtp is fpp=1;pack=tight");
@@ -128,7 +128,7 @@ void TestOfferLines() {
 
   const std::string offer = webrtc::liquid::LiquidCallOfferCodecLines("tight", 1, false);
   Expect(Contains(offer, "m=audio 9 UDP/TLS/RTP/SAVPF 96 111"), "offer m-line is PT 96 then 111");
-  Expect(Contains(offer, "a=rtpmap:96 LIQUIDCALL/48000/1"), "offer rtpmap LIQUIDCALL/48000/1");
+  Expect(Contains(offer, "a=rtpmap:96 CETACALL/48000/1"), "offer rtpmap CETACALL/48000/1");
   Expect(Contains(offer, "a=fmtp:96 fpp=1;pack=tight"), "offer liquidcall fmtp");
   Expect(!Contains(offer, "usedtx"), "default offer has no usedtx");
   Expect(Contains(offer, "a=rtpmap:111 opus/48000/2"), "offer rtpmap opus/48000/2");
@@ -136,8 +136,8 @@ void TestOfferLines() {
 
   const auto lines = webrtc::liquid::AudioCodecLinesFromSdp(offer);
   Expect(lines.size() == 2, "offer has two audio codecs");
-  Expect(lines[0].payload_type == 96 && lines[0].name == "LIQUIDCALL" && lines[0].channels == 1,
-         "first offered codec is LIQUIDCALL PT 96 (the one we send)");
+  Expect(lines[0].payload_type == 96 && lines[0].name == "CETACALL" && lines[0].channels == 1,
+         "first offered codec is CETACALL PT 96 (the one we send)");
   Expect(lines[1].payload_type == 111 && webrtc::liquid::OpusFmtpAccepted(lines[1].fmtp),
          "second offered codec is Opus PT 111");
 }
@@ -150,7 +150,7 @@ void TestAnswerDecodesOpus() {
       "m=audio 9 UDP/TLS/RTP/SAVPF 111 96\r\n"
       "a=rtpmap:111 opus/48000/2\r\n"
       "a=fmtp:111 minptime=10;useinbandfec=1\r\n"
-      "a=rtpmap:96 LIQUIDCALL/48000/1\r\n"
+      "a=rtpmap:96 CETACALL/48000/1\r\n"
       "a=fmtp:96 fpp=1;pack=tight\r\n";
   const auto codecs = webrtc::liquid::AudioCodecLinesFromSdp(answer);
   const auto* opus = webrtc::liquid::FindCodecByPayload(codecs, 111);
@@ -159,7 +159,7 @@ void TestAnswerDecodesOpus() {
   Expect(opus && webrtc::liquid::LowerCodecName(opus->name) == "opus" && opus->clockrate_hz == 48000 &&
              opus->channels == 2 && webrtc::liquid::OpusFmtpAccepted(opus->fmtp),
          "answer Opus fmtp minptime=10;useinbandfec=1 is accepted");
-  Expect(liquid && liquid->name == "LIQUIDCALL" && liquid->channels == 1, "answer still has LIQUIDCALL");
+  Expect(liquid && liquid->name == "CETACALL" && liquid->channels == 1, "answer still has CETACALL");
   // A reordered fmtp, which some stacks write, is the same contract.
   Expect(webrtc::liquid::OpusFmtpAccepted("useinbandfec=1; minptime=10"),
          "opus fmtp parameter order does not matter");
@@ -171,19 +171,19 @@ void TestAnswerDecodesOpus() {
   std::string detail;
   Expect(DecodeOpusTone(&detail), detail.empty() ? "receive side decodes Opus PT 111" : detail);
 
-  // The wrapped factory lists LIQUIDCALL and then the builtin codecs, Opus included.
-  const std::vector<std::string> builtin = {"opus", "G722", "PCMU", "LIQUIDCODEC"};
+  // The wrapped factory lists CETACALL and then the builtin codecs, Opus included.
+  const std::vector<std::string> builtin = {"opus", "G722", "PCMU", "cetacall"};
   const auto wrapped = webrtc::liquid::PrependLiquidCall(
-      builtin, std::string("LIQUIDCALL"), [](const std::string& name) { return name; });
-  Expect(!wrapped.empty() && wrapped[0] == "LIQUIDCALL", "factory lists LIQUIDCALL first");
+      builtin, std::string("CETACALL"), [](const std::string& name) { return name; });
+  Expect(!wrapped.empty() && wrapped[0] == "CETACALL", "factory lists CETACALL first");
   bool saw_opus = false;
   bool saw_legacy = false;
   for (const auto& name : wrapped) {
     if (name == "opus") saw_opus = true;
-    if (name == "LIQUIDCODEC") saw_legacy = true;
+    if (name == "cetacall") saw_legacy = true;
   }
   Expect(saw_opus, "factory decoder list keeps Opus");
-  Expect(!saw_legacy, "factory does not advertise the legacy payload name");
+  Expect(!saw_legacy, "factory lists CETACALL once");
 }
 
 void TestLiquidCallRoomSrtp() {
@@ -254,11 +254,11 @@ void TestWiring(const std::string& root) {
          "SSL setup has the SHA1_32 fallback profile");
   Expect(Contains(option, "bool liquid_dtx = false"), "DTX default stays off");
   Expect(Contains(option, "kLiquidJitterMaxMs = 80"), "80 ms jitter cap unchanged");
-  Expect(Contains(factory, "PrependLiquidCall"), "factories prepend LIQUIDCALL and keep the inner list");
+  Expect(Contains(factory, "PrependLiquidCall"), "factories prepend CETACALL and keep the inner list");
   const std::string tap = ReadFile(root + "/examples/direct/audio_tap.h");
   if (Contains(tap, "kVoiceSdpAttr")) {
-    Expect(Contains(tap, "a=x-liquidcall-voice:"), "voice attribute text is unchanged");
-    Expect(Contains(tap, "a=x-liquidcall-voices:"), "voices attribute text is unchanged");
+    Expect(Contains(tap, "a=x-cetacall-voice:"), "voice attribute text is unchanged");
+    Expect(Contains(tap, "a=x-cetacall-voices:"), "voices attribute text is unchanged");
   }
 }
 

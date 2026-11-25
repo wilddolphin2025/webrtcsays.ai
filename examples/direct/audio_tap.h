@@ -29,18 +29,18 @@ scoped_refptr<AudioDecoderFactory> CreateTappingAudioDecoderFactory(
 void SetVoiceSwapVoice(const std::string& voice);
 std::string GetVoiceSwapVoice();
 // Callee policy: the voice to use given our --voice-swap option, the caller's request (the offer's
-// a=x-liquidcall-voice) and the voices our sidecar has (--voice-swap-voices, comma list). A non-auto option wins;
+// a=x-cetacall-voice) and the voices our sidecar has (--voice-swap-voices, comma list). A non-auto option wins;
 // a request we don't have (or none) means no conversion. An empty list accepts any request.
 std::string ResolveVoiceSwap(const std::string& callee_option, const std::string& caller_request,
                              const std::string& available = std::string());
-// Voice negotiation, SDP only (audio m-section, keyed to the LIQUIDCALL payload type <pt>):
-//   offer  a=x-liquidcall-voice:<pt> female           caller's choice; absent or "me" = no conversion
-//   answer a=x-liquidcall-voices:<pt> me,female,male  callee's preloaded voices (only with a sidecar)
-//          a=x-liquidcall-voice:<pt> female           callee's active voice ("me" when it lacks the one asked)
+// Voice negotiation, SDP only (audio m-section, keyed to the CETACALL payload type <pt>):
+//   offer  a=x-cetacall-voice:<pt> female           caller's choice; absent or "me" = no conversion
+//   answer a=x-cetacall-voices:<pt> me,female,male  callee's preloaded voices (only with a sidecar)
+//          a=x-cetacall-voice:<pt> female           callee's active voice ("me" when it lacks the one asked)
 // WebRTC ignores unknown media attributes, so peers without voice support are unaffected.
 inline constexpr char kVoiceMe[] = "me";
-inline constexpr char kVoiceSdpAttr[] = "a=x-liquidcall-voice:";
-inline constexpr char kVoicesSdpAttr[] = "a=x-liquidcall-voices:";
+inline constexpr char kVoiceSdpAttr[] = "a=x-cetacall-voice:";
+inline constexpr char kVoicesSdpAttr[] = "a=x-cetacall-voices:";
 std::string AddVoiceRequestToSdp(const std::string& sdp, const std::string& voice);
 std::string AddVoicesToSdp(const std::string& sdp, const std::string& voices, const std::string& active);
 std::string VoicesFromSdp(const std::string& sdp);   // "" when absent

@@ -8,7 +8,7 @@
 #include <vector>
 
 // A client-to-server WebSocket frame. RFC 6455 section 5.1 requires the mask
-// bit on every frame a client sends. LiquidServer's gorilla/websocket reader
+// bit on every frame a client sends. CetaBridge's gorilla/websocket reader
 // closes the socket when a PING or PONG arrives unmasked, which is what the
 // room client did: the server's 20 s PING (payload "ls") was answered with an
 // unmasked PONG, and the server then closed.

@@ -23,10 +23,9 @@
 namespace webrtc {
 namespace {
 
-// LIQUIDCALL, or the pre-rename LIQUIDCODEC from an older peer.
+// CETACALL only (no older SDP names, founder Nov 25 12:05 PM ET).
 bool IsLiquidPayloadName(absl::string_view name) {
-  return absl::EqualsIgnoreCase(name, liquid::kPayloadName) ||
-         absl::EqualsIgnoreCase(name, liquid::kLegacyPayloadName);
+  return absl::EqualsIgnoreCase(name, liquid::kPayloadName);
 }
 
 SdpAudioFormat MakeLiquidFormat() {
@@ -97,7 +96,7 @@ class LiquidEncoderFactory : public AudioEncoderFactory {
   std::vector<AudioCodecSpec> GetSupportedEncoders() override {
     std::vector<AudioCodecSpec> inner;
     if (inner_) inner = inner_->GetSupportedEncoders();
-    // LIQUIDCALL, then the builtin list with Opus kept.
+    // CETACALL, then the builtin list with Opus kept.
     return liquid::PrependLiquidCall(std::move(inner), MakeLiquidSpec(),
                                      [](const AudioCodecSpec& spec) { return spec.format.name; });
   }

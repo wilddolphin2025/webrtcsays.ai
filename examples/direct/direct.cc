@@ -520,7 +520,7 @@ bool DirectApplication::CreatePeerConnection() {
         fprintf(stderr, "%s\n", liquid_error.c_str());
         return false;
       }
-      // Keep Opus (and the rest of the builtin factories). LIQUIDCALL is added
+      // Keep Opus (and the rest of the builtin factories). CETACALL is added
       // in front so this client sends it and can still decode Opus.
       audio_encoder_factory = webrtc::CreateLiquidAudioEncoderFactory(audio_encoder_factory);
       audio_decoder_factory = webrtc::CreateLiquidAudioDecoderFactory(audio_decoder_factory);
@@ -1094,7 +1094,7 @@ void DirectApplication::ConfigureOutgoingAudio() {
   if (!liquid && !opus) return;
   const auto caps =
       peer_connection_factory_->GetRtpSenderCapabilities(webrtc::MediaType::AUDIO).codecs;
-  // liquidcall: LIQUIDCALL/48000/1 (PT 96, sent) then opus/48000/2 (PT 111).
+  // liquidcall: CETACALL/48000/1 (PT 96, sent) then opus/48000/2 (PT 111).
   // opus: Opus only, same as before. Default never reaches here.
   // pack, fpp, and usedtx are already on the factory's SdpAudioFormat, so they
   // are part of the capability. Adding them again is a different codec and
@@ -1114,7 +1114,7 @@ void DirectApplication::ConfigureOutgoingAudio() {
   bool have_opus = false;
   for (const auto& codec : preferred) {
     const std::string name = webrtc::liquid::LowerCodecName(codec.name);
-    if (name == "liquidcall") have_liquid = true;
+    if (name == "cetacall") have_liquid = true;  // SDP codec name
     if (name == "opus") have_opus = true;
   }
   if (preferred.empty() || (liquid && (!have_liquid || !have_opus)) || (!liquid && !have_opus)) {

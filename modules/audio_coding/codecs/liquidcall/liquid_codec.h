@@ -79,9 +79,8 @@ inline constexpr int kBins = kFft / 2 + 1;  // 641
 inline constexpr int kLinear = kBins * 2;   // 1282
 inline constexpr int kUpsample = 6;         // 12.5 Hz -> 75 Hz
 inline constexpr int kTrim = (kFft - kHop) / 2;  // 480 samples, 20 ms
-inline constexpr char kPayloadName[] = "LIQUIDCALL";
-// Pre-rename SDP name. Accepted when parsing; never offered.
-inline constexpr char kLegacyPayloadName[] = "LIQUIDCODEC";
+inline constexpr char kPayloadName[] = "CETACALL";
+// SDP codec name (founder, Nov 25 12:05 PM ET). No older name is accepted.
 inline constexpr int kPreferredPayloadType = 96;
 
 // Left context does not add delay. `new_frames` does: the sender must collect

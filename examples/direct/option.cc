@@ -1182,8 +1182,9 @@ Options parseOptions(const std::vector<std::string>& args) {
   for (char& c : opts.audio_codec) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   }
-  // "liquid" and the pre-rename "liquidcodec" are aliases.
-  if (opts.audio_codec == "liquid" || opts.audio_codec == "liquidcodec") {
+  // "cetacall" (the SDP name since Nov 25), "liquid" and "liquidcodec" are aliases
+  // of the internal option value "liquidcall".
+  if (opts.audio_codec == "cetacall" || opts.audio_codec == "liquid" || opts.audio_codec == "liquidcodec") {
     opts.audio_codec = "liquidcall";
   }
   if (!opts.audio_codec.empty() && opts.audio_codec != "opus" &&

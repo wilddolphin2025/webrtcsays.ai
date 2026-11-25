@@ -823,10 +823,10 @@ void DirectPeer::OnIceCandidate(const webrtc::IceCandidateInterface* candidate) 
 }
 
 // ---- Voice swap, negotiated in SDP only ------------------------------------------------------------
-// Caller offer:  a=x-liquidcall-voice:<pt> <voice>          (absent or "me" = no conversion)
-// Callee answer: a=x-liquidcall-voices:<pt> me,female,male  (what its sidecar has preloaded)
-//                a=x-liquidcall-voice:<pt> <active>         (the voice it really uses; "me" if it lacks the one asked)
-// Both sit in the audio m-section keyed to the LIQUIDCALL payload type; WebRTC ignores unknown attributes, so
+// Caller offer:  a=x-cetacall-voice:<pt> <voice>          (absent or "me" = no conversion)
+// Callee answer: a=x-cetacall-voices:<pt> me,female,male  (what its sidecar has preloaded)
+//                a=x-cetacall-voice:<pt> <active>         (the voice it really uses; "me" if it lacks the one asked)
+// Both sit in the audio m-section keyed to the CETACALL payload type; WebRTC ignores unknown attributes, so
 // peers without voice support just don't see them. A mid-call switch is a new offer/answer on the same
 // PeerConnection (RequestVoiceSwap).
 

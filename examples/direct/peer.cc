@@ -50,7 +50,11 @@
 #if !defined(WEBRTC_IOS) && !defined(WEBRTC_MAC)
 #include "test/platform_video_capturer.h"
 #include "test/vcm_capturer.h"
+
 #endif
+namespace {
+std::string AddLangRequestToSdp(const std::string& sdp, const std::string& value);  // room translation, below
+}  // namespace
 
 namespace {
 
@@ -647,7 +651,7 @@ void DirectPeer::Start() {
                         fprintf(stderr, "%s\n", RedactedSignalingLine(std::string(Msg::kOfferPrefix) + sdp).c_str());
                         // Now that both descriptions may be in place, process any queued ICE candidates.
                         DrainPendingIceCandidates();
-                        const std::string wire_sdp = webrtc::AddVoiceRequestToSdp(sdp, voice_request());
+                        const std::string wire_sdp = AddLangRequestToSdp(webrtc::AddVoiceRequestToSdp(sdp, voice_request()), lang_request());
                         DirectSignalingLog("local-offer", wire_sdp);
                         SendMessage(std::string(Msg::kOfferPrefix) + wire_sdp);
                     });
@@ -857,6 +861,90 @@ void DirectPeer::ApplyOfferedVoice(const std::string& offer_sdp) {
             use.empty() ? webrtc::kVoiceMe : use.c_str());
 }
 
+// ---- Room translation, CetaBridge protocol v0.1 ------------------------------------------------------
+// Offer: a=x-cetacall-lang:<pt> <speak>;<hear>. The bridge answers with a=x-cetacall-langs and, when
+// asked, a=x-cetacall-lang ...;state=ok|unsupported|off; the app reads those from the answer text.
+
+namespace {
+// "es;en" -> the same, lowercased; "" if a tag is not 1-35 of [A-Za-z0-9-] or extra fields are malformed.
+std::string CleanLangValue(const std::string& value) {
+  std::string out;
+  for (char c : value) {
+    const unsigned char u = static_cast<unsigned char>(c);
+    if (std::isalnum(u) || c == '-' || c == ';' || c == '=') out.push_back(static_cast<char>(std::tolower(u)));
+    else if (c != ' ' && c != '\t') return "";
+  }
+  const size_t semi = out.find(';');
+  if (semi == std::string::npos || semi == 0 || semi > 35 || semi + 1 >= out.size()) return "";
+  return out;
+}
+
+std::string AddLangRequestToSdp(const std::string& sdp, const std::string& value) {
+  const std::string v = CleanLangValue(value);
+  if (v.empty()) return sdp;
+  std::string liquid_pt, opus_pt;
+  std::vector<std::string> lines;
+  size_t i = 0;
+  while (i < sdp.size()) {
+    size_t eol = sdp.find('\n', i);
+    if (eol == std::string::npos) eol = sdp.size();
+    std::string line = sdp.substr(i, eol - i);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    lines.push_back(line);
+    i = eol + 1;
+  }
+  for (const auto& line : lines) {
+    if (line.rfind("a=rtpmap:", 0) != 0) continue;
+    const size_t sp = line.find(' ');
+    if (sp == std::string::npos) continue;
+    std::string codec = line.substr(sp + 1);
+    for (auto& c : codec) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const std::string pt = line.substr(9, sp - 9);
+    if (liquid_pt.empty() && codec.rfind("cetacall/", 0) == 0) liquid_pt = pt;
+    if (opus_pt.empty() && codec.rfind("opus/", 0) == 0) opus_pt = pt;
+  }
+  const std::string pt = liquid_pt.empty() ? opus_pt : liquid_pt;
+  if (pt.empty()) return sdp;
+  const std::string rtpmap = "a=rtpmap:" + pt + " ";
+  std::string out;
+  bool inserted = false;
+  for (const auto& line : lines) {
+    if (line.rfind("a=x-cetacall-lang:", 0) == 0) continue;   // one per m-section; ours replaces it
+    out += line + "\r\n";
+    if (!inserted && line.rfind(rtpmap, 0) == 0) {
+      out += "a=x-cetacall-lang:" + pt + " " + v + "\r\n";
+      inserted = true;
+    }
+  }
+  return inserted ? out : sdp;
+}
+}  // namespace
+
+void DirectPeer::SetLangRequest(const std::string& value) {
+  std::lock_guard<std::mutex> l(voice_info_mu_);
+  lang_request_ = CleanLangValue(value);
+}
+
+std::string DirectPeer::lang_request() const {
+  std::lock_guard<std::mutex> l(voice_info_mu_);
+  return lang_request_;
+}
+
+void DirectPeer::RequestLang(const std::string& value) {
+  SetLangRequest(value);
+  if (!is_caller()) return;
+  signaling_thread()->PostTask([this]() {
+    auto pc = peer_connection();
+    if (!pc || !pc->current_remote_description()) return;   // not up yet: the first offer carries it
+    if (pc->signaling_state() != webrtc::PeerConnectionInterface::kStable) {
+      voice_reoffer_pending_ = true;                          // re-offer when the current exchange settles
+      return;
+    }
+    fprintf(stderr, "Translation: re-offer with lang '%s'\n", lang_request().c_str());
+    SendVoiceReoffer();
+  });
+}
+
 std::string DirectPeer::voice_request() const {
   std::lock_guard<std::mutex> l(voice_info_mu_);
   return voice_request_.empty() ? opts_.voice_swap : voice_request_;   // --voice-swap until the app changes it
@@ -906,7 +994,7 @@ void DirectPeer::SendVoiceReoffer() {
                 return;
               }
               const std::string req = voice_request();
-              const std::string wire_sdp = webrtc::AddVoiceRequestToSdp(sdp, req);
+              const std::string wire_sdp = AddLangRequestToSdp(webrtc::AddVoiceRequestToSdp(sdp, req), lang_request());
               DirectSignalingLog("local-offer", wire_sdp);
               SendMessage(std::string(Msg::kOfferPrefix) + wire_sdp);
               const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();

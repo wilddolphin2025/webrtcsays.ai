@@ -13,6 +13,9 @@
 #ifndef WEBRTC_DIRECT_DIRECT_H_
 #define WEBRTC_DIRECT_DIRECT_H_
 
+// Apps can test for DirectPeer::SetLangRequest / RequestLang (room translation, protocol v0.1).
+#define DIRECT_HAS_LANG_REQUEST 1
+
 #include <future>
 #include <memory>
 #include <optional>
@@ -415,6 +418,13 @@ class DIRECT_API DirectPeer : public DirectApplication {
   // Voice swap (SDP only). Caller: the voice to ask the callee to hear us in ("me" = no conversion); before the
   // call it rides in the first offer, during a call it triggers a re-offer. Thread-safe.
   void RequestVoiceSwap(const std::string& voice);
+  // Room translation (CetaBridge protocol v0.1). Caller: "<speak>;<hear>" (e.g. "es;en") sent as
+  // a=x-cetacall-lang:<pt> in every offer, on the CETACALL payload type, else Opus's; "" omits it.
+  // SetLangRequest only stores it for the next offer; RequestLang also re-offers on the same
+  // PeerConnection mid-call (the voice-swap path), whether or not the far side listed voices.
+  void SetLangRequest(const std::string& value);
+  void RequestLang(const std::string& value);
+  std::string lang_request() const;
   std::string voice_request() const;
   DirectPeer(Options opts);
   ~DirectPeer() override;
@@ -493,6 +503,7 @@ class DIRECT_API DirectPeer : public DirectApplication {
   void ApplyOfferedVoice(const std::string& offer_sdp);   // callee: pick the voice from an offer
   void NoteAnswerVoices(const std::string& answer_sdp);   // caller: remote voices + confirmed voice
   void SendVoiceReoffer();                                    // caller, signaling thread
+  std::string lang_request_;                                  // guarded by voice_info_mu_; "" = no attribute
   std::string voice_request_;                                 // guarded by voice_info_mu_; "" = opts_.voice_swap
   bool voice_reoffer_pending_ = false;                        // signaling thread
   webrtc::scoped_refptr<LambdaCreateSessionDescriptionObserver> voice_offer_observer_;

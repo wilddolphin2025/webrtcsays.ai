@@ -410,7 +410,7 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --video-source=pattern|camera|screen  pattern if no camera; screen falls back to pattern\n"
       "  --audio=dummy                      Use a fake audio device (no Pulse/PipeWire)\n"
       "  --audio=file                       Headless clocked test device: mic = --inject-wav, playout discarded\n"
-      "  --audio-codec=opus|liquidcall     Opus is the default. liquidcall is macOS-only.\n"
+      "  --audio-codec=opus|cetacall     Opus is the default. cetacall is macOS-only.\n"
       "  --opus-bitrate=<bps>               Opus maxaveragebitrate (6000..510000)\n"
       "  --opus-ptime=<ms>                 Opus frame size 20, 40, or 60\n"
       "  --opus-dtx / --no-opus-dtx        Opus discontinuous transmission\n"
@@ -425,18 +425,18 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --voice-swap-voices=<a,b>          Callee: voices the sidecar has (advertised in the SDP answer; others fall back to me)\n"
       "  --voice-swap-script=<s:v,...>      Caller: switch voice <s> seconds into the call (SDP re-offer), e.g. 4:male,8:me\n"
       "  --inject-wav=<path>                Send this 16-bit PCM WAV instead of the microphone\n"
-      "  --liquid-model-dir=<path>          Fetched Core ML models (default scripts/liquidcall/models)\n"
-      "  --liquid-manifest=<path>           liquidcall.json from the model fetch\n"
-      "  --liquid-ctx=<frames>              Left-context frames (0 = manifest)\n"
-      "  --liquid-new=<frames>              New frames per Core ML call (0 = manifest)\n"
-      "  --liquid-decode=ane|cpu|all        Core ML compute units\n"
-      "  --liquid-pack=tight|u16           tight (default) is 17 bytes/frame, no header; u16 is 28\n"
-      "  --liquid-frames-per-packet=<n>    1-4 codec frames (80-320 ms) in each RTP packet\n"
-      "  --liquid-dtx / --no-liquid-dtx    Send nothing during silence (default off)\n"
-      "  --srtp-tag32 / --no-srtp-tag32    4-byte SRTP auth tag (AES_CM_128_HMAC_SHA1_32); default on for liquidcall\n"
-      "  --audio-rtcp-ms=<ms>              Audio RTCP report interval (default 10000 liquidcall, 5000 otherwise)\n"
-      "  --rtp-extensions / --no-rtp-extensions  Audio RTP header extensions (default off for liquidcall)\n"
-      "  --jitter-max-ms=<ms>              Jitter buffer cap: low-latency mode (default 80 for liquidcall;\n"
+      "  --cetacall-model-dir=<path>          Fetched Core ML models (default scripts/cetacall/models)\n"
+      "  --cetacall-manifest=<path>           cetacall.json from the model fetch\n"
+      "  --cetacall-ctx=<frames>              Left-context frames (0 = manifest)\n"
+      "  --cetacall-new=<frames>              New frames per Core ML call (0 = manifest)\n"
+      "  --cetacall-decode=ane|cpu|all        Core ML compute units\n"
+      "  --cetacall-pack=tight|u16           tight (default) is 17 bytes/frame, no header; u16 is 28\n"
+      "  --cetacall-frames-per-packet=<n>    1-4 codec frames (80-320 ms) in each RTP packet\n"
+      "  --cetacall-dtx / --no-cetacall-dtx    Send nothing during silence (default off)\n"
+      "  --srtp-tag32 / --no-srtp-tag32    4-byte SRTP auth tag (AES_CM_128_HMAC_SHA1_32); default on for cetacall\n"
+      "  --audio-rtcp-ms=<ms>              Audio RTCP report interval (default 10000 cetacall, 5000 otherwise)\n"
+      "  --rtp-extensions / --no-rtp-extensions  Audio RTP header extensions (default off for cetacall)\n"
+      "  --jitter-max-ms=<ms>              Jitter buffer cap: low-latency mode (default 80 for cetacall;\n"
       "                                    0 = stock NetEq, unlimited). NetEq adapts below the cap.\n"
       "  --jitter-fast-accelerate / --no-jitter-fast-accelerate  Drain buffer spikes quickly (default on when capped)\n"
       "  --aec=on|off|vpio|aec3            Echo cancel, NS, AGC (default on: macOS Voice\n"
@@ -444,8 +444,8 @@ Options parseOptions(const std::vector<std::string>& args) {
       "  --quality=offline|factory|aec     Codec or NetEq loop, or echo-canceller loop; no call\n"
       "  --impair-loss=<0-100>             Drop that percent of packets, no sudo\n"
       "  --impair-jitter-ms=<ms>           Delay packets by 0, half, then full\n"
-      "  --liquid-encoder=auto|int8|fp16|fp32  Core ML step encoder (default auto: fp32 if built, else int8)\n"
-      "  --liquid-encoder-compute=cpu|ane|all  Encoder compute units (default cpu; ANE fp16 corrupts codes)\n"
+      "  --cetacall-encoder=auto|int8|fp16|fp32  Core ML step encoder (default auto: fp32 if built, else int8)\n"
+      "  --cetacall-encoder-compute=cpu|ane|all  Encoder compute units (default cpu; ANE fp16 corrupts codes)\n"
       "  --stats=<seconds>                  Log a GetStats JSON line on this interval\n"
       "  --stats-jsonl=<path>               Append raw W3C GetStats objects per interval + at call end\n"
       "                                     (default <record-dir>/webrtc_stats.jsonl)\n"
@@ -482,14 +482,14 @@ Options parseOptions(const std::vector<std::string>& args) {
     "--voice-swap-mute", "--no-voice-swap-mute",
     "--voice-swap", "--voice_swap", "--voice-swap-voices", "--voice_swap_voices",
     "--voice-swap-script", "--voice_swap_script",
-    "--liquid-model-dir", "--liquid_model_dir", "--liquid-manifest", "--liquid_manifest",
-    "--liquid-ctx", "--liquid_ctx", "--liquid-new", "--liquid_new",
-    "--liquid-decode", "--liquid_decode",
-    "--liquid-pack", "--liquid_pack", "--liquid-frames-per-packet", "--liquid_frames_per_packet",
-    "--aec", "--liquid-encoder", "--liquid_encoder", "--liquid-encoder-compute", "--liquid_encoder_compute",
+    "--cetacall-model-dir", "--cetacall-model-dir", "--cetacall-manifest", "--cetacall-manifest",
+    "--cetacall-ctx", "--cetacall-ctx", "--cetacall-new", "--cetacall-new",
+    "--cetacall-decode", "--cetacall-decode",
+    "--cetacall-pack", "--cetacall-pack", "--cetacall-frames-per-packet", "--cetacall-frames-per-packet",
+    "--aec", "--cetacall-encoder", "--cetacall-encoder", "--cetacall-encoder-compute", "--cetacall-encoder-compute",
     "--quality", "--impair-loss", "--impair_loss", "--impair-jitter-ms", "--impair_jitter_ms",
     "--opus-ptime", "--opus_ptime", "--opus-dtx", "--no-opus-dtx",
-    "--liquid-dtx", "--no-liquid-dtx", "--srtp-tag32", "--no-srtp-tag32",
+    "--cetacall-dtx", "--no-cetacall-dtx", "--srtp-tag32", "--no-srtp-tag32",
     "--rtp-extensions", "--no-rtp-extensions", "--audio-rtcp-ms", "--audio_rtcp_ms",
     "--jitter-max-ms", "--jitter_max_ms", "--jitter-fast-accelerate", "--no-jitter-fast-accelerate",
     "--help"
@@ -594,26 +594,26 @@ Options parseOptions(const std::vector<std::string>& args) {
         if (config_json.isMember("inject_wav") && config_json["inject_wav"].isString()) {
              opts.inject_wav = expandHomePath(config_json["inject_wav"].asString());
         }
-        if (config_json.isMember("liquid_model_dir") && config_json["liquid_model_dir"].isString()) {
-             opts.liquid_model_dir = expandHomePath(config_json["liquid_model_dir"].asString());
+        if (config_json.isMember("cetacall_model_dir") && config_json["cetacall_model_dir"].isString()) {
+             opts.cetacall_model_dir = expandHomePath(config_json["cetacall_model_dir"].asString());
         }
-        if (config_json.isMember("liquid_manifest") && config_json["liquid_manifest"].isString()) {
-             opts.liquid_manifest = expandHomePath(config_json["liquid_manifest"].asString());
+        if (config_json.isMember("cetacall_manifest") && config_json["cetacall_manifest"].isString()) {
+             opts.cetacall_manifest = expandHomePath(config_json["cetacall_manifest"].asString());
         }
-        if (config_json.isMember("liquid_ctx") && config_json["liquid_ctx"].isInt()) {
-             opts.liquid_ctx = config_json["liquid_ctx"].asInt();
+        if (config_json.isMember("cetacall_ctx") && config_json["cetacall_ctx"].isInt()) {
+             opts.cetacall_ctx = config_json["cetacall_ctx"].asInt();
         }
-        if (config_json.isMember("liquid_new") && config_json["liquid_new"].isInt()) {
-             opts.liquid_new = config_json["liquid_new"].asInt();
+        if (config_json.isMember("cetacall_new") && config_json["cetacall_new"].isInt()) {
+             opts.cetacall_new = config_json["cetacall_new"].asInt();
         }
-        if (config_json.isMember("liquid_decode") && config_json["liquid_decode"].isString()) {
-             opts.liquid_decode = config_json["liquid_decode"].asString();
+        if (config_json.isMember("cetacall_decode") && config_json["cetacall_decode"].isString()) {
+             opts.cetacall_decode = config_json["cetacall_decode"].asString();
         }
-        if (config_json.isMember("liquid_pack") && config_json["liquid_pack"].isString()) {
-             opts.liquid_pack = config_json["liquid_pack"].asString();
+        if (config_json.isMember("cetacall_pack") && config_json["cetacall_pack"].isString()) {
+             opts.cetacall_pack = config_json["cetacall_pack"].asString();
         }
-        if (config_json.isMember("liquid_frames_per_packet") && config_json["liquid_frames_per_packet"].isInt()) {
-             opts.liquid_frames_per_packet = config_json["liquid_frames_per_packet"].asInt();
+        if (config_json.isMember("cetacall_frames_per_packet") && config_json["cetacall_frames_per_packet"].isInt()) {
+             opts.cetacall_frames_per_packet = config_json["cetacall_frames_per_packet"].asInt();
         }
         if (config_json.isMember("jitter_max_ms") && config_json["jitter_max_ms"].isInt()) {
              opts.jitter_max_ms = config_json["jitter_max_ms"].asInt();
@@ -908,10 +908,10 @@ Options parseOptions(const std::vector<std::string>& args) {
     } else if (arg.find("--opus-ptime=") == 0 || arg.find("--opus_ptime=") == 0) {
         const auto eq = arg.find('=');
         opts.opus_ptime_ms = std::atoi(arg.substr(eq + 1).c_str());
-    } else if (arg == "--liquid-dtx" || arg == "--liquid_dtx") {
-        opts.liquid_dtx = true;
-    } else if (arg == "--no-liquid-dtx" || arg == "--no-liquid_dtx") {
-        opts.liquid_dtx = false;
+    } else if (arg == "--cetacall-dtx" || arg == "--cetacall-dtx") {
+        opts.cetacall_dtx = true;
+    } else if (arg == "--no-cetacall-dtx" || arg == "--no-cetacall-dtx") {
+        opts.cetacall_dtx = false;
     } else if (arg == "--srtp-tag32" || arg == "--srtp_tag32") {
         opts.srtp_tag32 = 1;
     } else if (arg == "--no-srtp-tag32" || arg == "--no-srtp_tag32") {
@@ -955,26 +955,26 @@ Options parseOptions(const std::vector<std::string>& args) {
     } else if (arg.find("--inject-wav=") == 0 || arg.find("--inject_wav=") == 0) {
         const auto eq = arg.find('=');
         opts.inject_wav = arg.substr(eq + 1);
-    } else if (arg.find("--liquid-model-dir=") == 0 || arg.find("--liquid_model_dir=") == 0) {
+    } else if (arg.find("--cetacall-model-dir=") == 0 || arg.find("--cetacall-model-dir=") == 0) {
         const auto eq = arg.find('=');
-        opts.liquid_model_dir = arg.substr(eq + 1);
-    } else if (arg.find("--liquid-manifest=") == 0 || arg.find("--liquid_manifest=") == 0) {
+        opts.cetacall_model_dir = arg.substr(eq + 1);
+    } else if (arg.find("--cetacall-manifest=") == 0 || arg.find("--cetacall-manifest=") == 0) {
         const auto eq = arg.find('=');
-        opts.liquid_manifest = arg.substr(eq + 1);
-    } else if (arg.find("--liquid-ctx=") == 0 || arg.find("--liquid_ctx=") == 0) {
+        opts.cetacall_manifest = arg.substr(eq + 1);
+    } else if (arg.find("--cetacall-ctx=") == 0 || arg.find("--cetacall-ctx=") == 0) {
         const auto eq = arg.find('=');
-        opts.liquid_ctx = std::atoi(arg.substr(eq + 1).c_str());
-    } else if (arg.find("--liquid-new=") == 0 || arg.find("--liquid_new=") == 0) {
+        opts.cetacall_ctx = std::atoi(arg.substr(eq + 1).c_str());
+    } else if (arg.find("--cetacall-new=") == 0 || arg.find("--cetacall-new=") == 0) {
         const auto eq = arg.find('=');
-        opts.liquid_new = std::atoi(arg.substr(eq + 1).c_str());
-    } else if (arg.find("--liquid-decode=") == 0 || arg.find("--liquid_decode=") == 0) {
+        opts.cetacall_new = std::atoi(arg.substr(eq + 1).c_str());
+    } else if (arg.find("--cetacall-decode=") == 0 || arg.find("--cetacall-decode=") == 0) {
         const auto eq = arg.find('=');
-        opts.liquid_decode = arg.substr(eq + 1);
-    } else if (arg.find("--liquid-encoder-compute=") == 0 || arg.find("--liquid_encoder_compute=") == 0) {
-        opts.liquid_encoder_compute = arg.substr(arg.find('=') + 1);
-    } else if (arg.find("--liquid-encoder=") == 0 || arg.find("--liquid_encoder=") == 0) {
+        opts.cetacall_decode = arg.substr(eq + 1);
+    } else if (arg.find("--cetacall-encoder-compute=") == 0 || arg.find("--cetacall-encoder-compute=") == 0) {
+        opts.cetacall_encoder_compute = arg.substr(arg.find('=') + 1);
+    } else if (arg.find("--cetacall-encoder=") == 0 || arg.find("--cetacall-encoder=") == 0) {
         const auto eq = arg.find('=');
-        opts.liquid_encoder = arg.substr(eq + 1);
+        opts.cetacall_encoder = arg.substr(eq + 1);
     } else if (arg.find("--quality=") == 0) {
         opts.quality = arg.substr(10);
     } else if (arg.find("--impair-loss=") == 0 || arg.find("--impair_loss=") == 0) {
@@ -989,13 +989,13 @@ Options parseOptions(const std::vector<std::string>& args) {
         else if (value == "off" || value == "0" || value == "false") opts.aec = false;
         else if (value == "vpio" || value == "aec3") { opts.aec = true; opts.aec_mode = value; }
         else opts.parse_error = "aec must be on, off, vpio, or aec3";
-    } else if (arg.find("--liquid-pack=") == 0 || arg.find("--liquid_pack=") == 0) {
+    } else if (arg.find("--cetacall-pack=") == 0 || arg.find("--cetacall-pack=") == 0) {
         const auto eq = arg.find('=');
-        opts.liquid_pack = arg.substr(eq + 1);
-    } else if (arg.find("--liquid-frames-per-packet=") == 0 ||
-               arg.find("--liquid_frames_per_packet=") == 0) {
+        opts.cetacall_pack = arg.substr(eq + 1);
+    } else if (arg.find("--cetacall-frames-per-packet=") == 0 ||
+               arg.find("--cetacall-frames-per-packet=") == 0) {
         const auto eq = arg.find('=');
-        opts.liquid_frames_per_packet = std::atoi(arg.substr(eq + 1).c_str());
+        opts.cetacall_frames_per_packet = std::atoi(arg.substr(eq + 1).c_str());
     } else if (arg.find("--audio=") == 0) {
         opts.audio = arg.substr(8);
     } else if (arg.find("--stats-jsonl=") == 0) {
@@ -1199,27 +1199,27 @@ Options parseOptions(const std::vector<std::string>& args) {
   for (char& c : opts.audio_codec) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   }
-  // "liquid" and the pre-rename "liquidcodec" are aliases.
-  if (opts.audio_codec == "liquid" || opts.audio_codec == "liquidcodec") {
-    opts.audio_codec = "liquidcall";
+  // "cetacall" and the pre-rename "cetacall" are aliases.
+  if (opts.audio_codec == "cetacall" || opts.audio_codec == "cetacall") {
+    opts.audio_codec = "cetacall";
   }
   if (!opts.audio_codec.empty() && opts.audio_codec != "opus" &&
-      opts.audio_codec != "liquidcall") {
-    opts.parse_error = "audio-codec must be opus or liquidcall";
+      opts.audio_codec != "cetacall") {
+    opts.parse_error = "audio-codec must be opus or cetacall";
   }
-  for (char& c : opts.liquid_decode) {
+  for (char& c : opts.cetacall_decode) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   }
-  for (char& c : opts.liquid_encoder) {
+  for (char& c : opts.cetacall_encoder) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   }
-  if (opts.liquid_encoder != "auto" && opts.liquid_encoder != "int8" && opts.liquid_encoder != "fp16" &&
-      opts.liquid_encoder != "fp32") {
-    opts.parse_error = "liquid-encoder must be auto, int8, fp16, or fp32";
+  if (opts.cetacall_encoder != "auto" && opts.cetacall_encoder != "int8" && opts.cetacall_encoder != "fp16" &&
+      opts.cetacall_encoder != "fp32") {
+    opts.parse_error = "cetacall-encoder must be auto, int8, fp16, or fp32";
   }
-  if (opts.liquid_encoder_compute != "cpu" && opts.liquid_encoder_compute != "ane" &&
-      opts.liquid_encoder_compute != "all") {
-    opts.parse_error = "liquid-encoder-compute must be cpu, ane, or all";
+  if (opts.cetacall_encoder_compute != "cpu" && opts.cetacall_encoder_compute != "ane" &&
+      opts.cetacall_encoder_compute != "all") {
+    opts.parse_error = "cetacall-encoder-compute must be cpu, ane, or all";
   }
   if (!opts.quality.empty() && opts.quality != "offline" && opts.quality != "factory" &&
       opts.quality != "aec") {
@@ -1235,9 +1235,9 @@ Options parseOptions(const std::vector<std::string>& args) {
   if (opts.impair_jitter_ms < 0 || opts.impair_jitter_ms > 500) {
     opts.parse_error = "impair-jitter-ms must be 0..500";
   }
-  if (opts.liquid_decode != "ane" && opts.liquid_decode != "cpu" &&
-      opts.liquid_decode != "all") {
-    opts.parse_error = "liquid-decode must be ane, cpu, or all";
+  if (opts.cetacall_decode != "ane" && opts.cetacall_decode != "cpu" &&
+      opts.cetacall_decode != "all") {
+    opts.parse_error = "cetacall-decode must be ane, cpu, or all";
   }
   if (opts.opus_bitrate_bps != 0 &&
       (opts.opus_bitrate_bps < 6000 || opts.opus_bitrate_bps > 510000)) {
@@ -1246,14 +1246,14 @@ Options parseOptions(const std::vector<std::string>& args) {
   if (opts.opus_ptime_ms != 20 && opts.opus_ptime_ms != 40 && opts.opus_ptime_ms != 60) {
     opts.parse_error = "opus-ptime must be 20, 40, or 60";
   }
-  for (char& c : opts.liquid_pack) {
+  for (char& c : opts.cetacall_pack) {
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   }
-  if (opts.liquid_pack != "u16" && opts.liquid_pack != "tight") {
-    opts.parse_error = "liquid-pack must be u16 or tight";
+  if (opts.cetacall_pack != "u16" && opts.cetacall_pack != "tight") {
+    opts.parse_error = "cetacall-pack must be u16 or tight";
   }
-  if (opts.liquid_frames_per_packet < 1 || opts.liquid_frames_per_packet > 4) {
-    opts.parse_error = "liquid-frames-per-packet must be 1, 2, 3, or 4";
+  if (opts.cetacall_frames_per_packet < 1 || opts.cetacall_frames_per_packet > 4) {
+    opts.parse_error = "cetacall-frames-per-packet must be 1, 2, 3, or 4";
   }
 
   RTC_LOG(LS_INFO) << "Mode used " << opts.mode; // Log final mode value

@@ -713,20 +713,20 @@ int main(int argc, char* argv[]) {
     DirectApplication::rtcInitialize();
     const std::string wav_out = opts.record_dir + "/quality_out.wav";
     const std::string stats_path = opts.record_dir + "/quality_stats.json";
-    const char* codec = opts.audio_codec.empty() ? "liquidcall" : opts.audio_codec.c_str();
+    const char* codec = opts.audio_codec.empty() ? "cetacall" : opts.audio_codec.c_str();
     {
       // Same jitter buffer as a live call: 80 ms low-latency cap for
-      // liquidcall unless --jitter-max-ms says otherwise.
-      const bool liquid_jb = std::string(codec) == "liquidcall";
-      const int jitter_max = opts.jitter_max_ms < 0 ? (liquid_jb ? kLiquidJitterMaxMs : -1) : opts.jitter_max_ms;
+      // cetacall unless --jitter-max-ms says otherwise.
+      const bool cetacall_jb = std::string(codec) == "cetacall";
+      const int jitter_max = opts.jitter_max_ms < 0 ? (cetacall_jb ? kCetaCallJitterMaxMs : -1) : opts.jitter_max_ms;
       const int fast = opts.jitter_fast_accelerate < 0 ? (jitter_max > 0 ? 1 : 0)
                                                        : opts.jitter_fast_accelerate;
       DirectQualitySetJitterBuffer(jitter_max, fast);
-      DirectQualitySetEncoderCompute(opts.liquid_encoder_compute.c_str());
+      DirectQualitySetEncoderCompute(opts.cetacall_encoder_compute.c_str());
     }
     const int rc = DirectQualityRun(
         opts.quality.c_str(), opts.inject_wav.c_str(), wav_out.c_str(), stats_path.c_str(), codec,
-        opts.liquid_model_dir.c_str(), opts.liquid_decode.c_str(), opts.liquid_encoder.c_str(),
+        opts.cetacall_model_dir.c_str(), opts.cetacall_decode.c_str(), opts.cetacall_encoder.c_str(),
         opts.opus_bitrate_bps, opts.impair_loss_pct, opts.impair_jitter_ms);
     DirectApplication::rtcCleanup();
     return rc;

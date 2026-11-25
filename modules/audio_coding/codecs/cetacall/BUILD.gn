@@ -1,0 +1,51 @@
+# CetaCall Core ML is macOS and iOS. rtc_use_cetacall defaults off.
+# The Android path is cetacall_onnx.cc (ONNX Runtime CPU), compiled by the
+# CetaCall Android CMake with WEBRTC_CETACALL_ONNX. It is not a gn source:
+# this tree does not fetch ONNX Runtime. cetacall_backend_select.cc picks
+# Core ML here and ONNX when that flag is set.
+#
+# Labels are absolute. A relative ../../../ from this directory is //modules,
+# so import("../../../webrtc.gni") and deps like "../../../api" do not exist.
+
+import("//webrtc.gni")
+
+if ((is_mac || is_ios) && rtc_use_cetacall) {
+rtc_library("cetacall") {
+  testonly = true
+  visibility = [ "//examples:*" ]
+  defines = [ "WEBRTC_USE_CETACALL" ]
+  sources = [
+    "audio_decoder_cetacall.cc",
+    "audio_decoder_cetacall.h",
+    "audio_encoder_cetacall.cc",
+    "audio_encoder_cetacall.h",
+    "cetacall_codec.cc",
+    "cetacall_codec.h",
+    "cetacall_coreml.mm",
+    "cetacall_factory.cc",
+    "cetacall_factory.h",
+    "cetacall_stream.cc",
+    "cetacall_stream.h",
+    "cetacall_tail.cc",
+    "cetacall_tail.h",
+    "cetacall_backend.h",
+    "cetacall_backend_select.cc",
+  ]
+  deps = [
+    "//api:make_ref_counted",
+    "//api:scoped_refptr",
+    "//api/audio_codecs:audio_codecs_api",
+    "//api/environment",
+    "//api/units:time_delta",
+    "//common_audio",
+    "//rtc_base:buffer",
+    "//rtc_base:checks",
+    "//rtc_base:logging",
+    "//third_party/abseil-cpp/absl/strings",
+  ]
+  frameworks = [
+    "CoreML.framework",
+    "Foundation.framework",
+  ]
+}
+}

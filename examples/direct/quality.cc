@@ -32,11 +32,11 @@
 #include "rtc_base/buffer.h"
 #include "system_wrappers/include/clock.h"
 
-#if defined(WEBRTC_USE_LIQUIDCALL)
-#include "modules/audio_coding/codecs/liquidcall/liquid_backend.h"
-#include "modules/audio_coding/codecs/liquidcall/liquid_codec.h"
-#include "modules/audio_coding/codecs/liquidcall/liquid_factory.h"
-#include "modules/audio_coding/codecs/liquidcall/liquid_stream.h"
+#if defined(WEBRTC_USE_CETACALL)
+#include "modules/audio_coding/codecs/cetacall/cetacall_backend.h"
+#include "modules/audio_coding/codecs/cetacall/cetacall_codec.h"
+#include "modules/audio_coding/codecs/cetacall/cetacall_factory.h"
+#include "modules/audio_coding/codecs/cetacall/cetacall_stream.h"
 #endif
 
 namespace {
@@ -260,54 +260,54 @@ double OnWire(int64_t payload, int packets, double seconds) {
   return bytes * 8.0 / seconds / 1000.0;
 }
 
-#if defined(WEBRTC_USE_LIQUIDCALL)
+#if defined(WEBRTC_USE_CETACALL)
 int RunOffline(const Pcm& in, const char* wav_out, const char* model_dir, const char* compute,
                const char* precision, Stats* stats) {
-  webrtc::liquid::ConsumeOutOfCodebook();
-  webrtc::liquid::ConsumeClampedCodes();
+  webrtc::cetacall::ConsumeOutOfCodebook();
+  webrtc::cetacall::ConsumeClampedCodes();
   std::vector<int16_t> pcm24;
-  ResampleMono(in.mono.data(), in.mono.size(), in.rate, webrtc::liquid::kSampleRateHz, &pcm24);
-  webrtc::liquid::RuntimeConfig cfg;
+  ResampleMono(in.mono.data(), in.mono.size(), in.rate, webrtc::cetacall::kSampleRateHz, &pcm24);
+  webrtc::cetacall::RuntimeConfig cfg;
   cfg.paths.model_dir = model_dir ? model_dir : "";
   cfg.paths.compute = compute && compute[0] ? compute : "cpu";
   const std::string manifest =
-      webrtc::liquid::ManifestPath(cfg.paths.model_dir);
+      webrtc::cetacall::ManifestPath(cfg.paths.model_dir);
   std::string error;
-  if (!webrtc::liquid::LoadManifestFile(manifest, &cfg.paths, &cfg.chunk, &error)) {
+  if (!webrtc::cetacall::LoadManifestFile(manifest, &cfg.paths, &cfg.chunk, &error)) {
     stats->detail = error.empty() ? "manifest" : error;
     return 1;
   }
   cfg.paths.encoder_model =
-      webrtc::liquid::ResolveEncoderModel(cfg.paths.model_dir, cfg.paths.encoder_model,
+      webrtc::cetacall::ResolveEncoderModel(cfg.paths.model_dir, cfg.paths.encoder_model,
                                           precision ? precision : "auto");
   cfg.paths.encoder_compute = g_encoder_compute;
   cfg.paths.model_dir = model_dir;
-  if (!webrtc::ConfigureLiquidRuntime(cfg, &error)) {
+  if (!webrtc::ConfigureCetaCallRuntime(cfg, &error)) {
     stats->detail = error;
     if (precision && std::strcmp(precision, "fp32") == 0) return 3;
     return 1;
   }
-  auto backend = webrtc::liquid::CreateCoreMlBackend();
+  auto backend = webrtc::cetacall::CreateCoreMlBackend();
   if (!backend || !backend->Start(cfg.paths, cfg.chunk, &error)) {
     stats->detail = error.empty() ? "backend start" : error;
     if (precision && std::strcmp(precision, "fp32") == 0) return 3;
     return 1;
   }
-  const auto latency = webrtc::liquid::DescribeLatency(
+  const auto latency = webrtc::cetacall::DescribeLatency(
       cfg.chunk, cfg.paths.decoder_kind != "pcm", cfg.paths);
   stats->algorithmic_ms = latency.algorithmic_ms;
   if (cfg.paths.lookahead_samples > 0) {
     pcm24.insert(pcm24.end(), static_cast<size_t>(cfg.paths.lookahead_samples), 0);
   }
-  webrtc::liquid::StreamEncoder encoder(backend.get(), cfg.chunk, cfg.paths);
-  std::vector<std::array<int32_t, webrtc::liquid::kCodebooks>> codes;
-  webrtc::liquid::WindowTiming timing;
+  webrtc::cetacall::StreamEncoder encoder(backend.get(), cfg.chunk, cfg.paths);
+  std::vector<std::array<int32_t, webrtc::cetacall::kCodebooks>> codes;
+  webrtc::cetacall::WindowTiming timing;
   if (!encoder.Push(pcm24.data(), pcm24.size(), &codes, &timing, &error)) {
     stats->detail = error.empty() ? "encode" : error;
     return 1;
   }
-  stats->out_of_codebook = webrtc::liquid::ConsumeOutOfCodebook();
-  stats->clamped = webrtc::liquid::ConsumeClampedCodes();
+  stats->out_of_codebook = webrtc::cetacall::ConsumeOutOfCodebook();
+  stats->clamped = webrtc::cetacall::ConsumeClampedCodes();
   stats->packets = static_cast<int>(codes.size());
   if (codes.empty()) {
     stats->detail = "encoder produced no codes";
@@ -316,21 +316,21 @@ int RunOffline(const Pcm& in, const char* wav_out, const char* model_dir, const 
   uint8_t packed[128];
   int32_t back[48];
   for (size_t i = 0; i < codes.size(); ++i) {
-    for (auto pack : {webrtc::liquid::WirePack::kU16, webrtc::liquid::WirePack::kTight}) {
+    for (auto pack : {webrtc::cetacall::WirePack::kU16, webrtc::cetacall::WirePack::kTight}) {
       size_t n = 0;
-      webrtc::liquid::WirePack got = pack;
+      webrtc::cetacall::WirePack got = pack;
       int frames = 0;
       uint16_t seq = 0;
-      if (!webrtc::liquid::PackPayload(pack, codes[i].data(), 1, static_cast<uint16_t>(i),
+      if (!webrtc::cetacall::PackPayload(pack, codes[i].data(), 1, static_cast<uint16_t>(i),
                                       cfg.chunk.codebook_size, packed, sizeof(packed), &n) ||
-          !webrtc::liquid::UnpackPayload(packed, n, cfg.chunk.codebook_size, &got, &frames, &seq,
+          !webrtc::cetacall::UnpackPayload(packed, n, cfg.chunk.codebook_size, &got, &frames, &seq,
                                         back) ||
           frames != 1 || std::memcmp(codes[i].data(), back, sizeof(int32_t) * 12) != 0) {
         ++stats->pack_mismatches;
       }
     }
   }
-  webrtc::liquid::StreamDecoder decoder(backend.get(), cfg.chunk);
+  webrtc::cetacall::StreamDecoder decoder(backend.get(), cfg.chunk);
   std::vector<int16_t> decoded;
   for (const auto& frame : codes) {
     if (!decoder.PushFrame(frame.data(), &decoded, &timing, &error)) {
@@ -338,12 +338,12 @@ int RunOffline(const Pcm& in, const char* wav_out, const char* model_dir, const 
       return 1;
     }
   }
-  if (decoded.empty() || !WriteWav(wav_out, webrtc::liquid::kSampleRateHz, decoded.data(),
+  if (decoded.empty() || !WriteWav(wav_out, webrtc::cetacall::kSampleRateHz, decoded.data(),
                                   decoded.size())) {
     stats->detail = "no decoded audio";
     return 1;
   }
-  stats->seconds = static_cast<double>(pcm24.size()) / webrtc::liquid::kSampleRateHz;
+  stats->seconds = static_cast<double>(pcm24.size()) / webrtc::cetacall::kSampleRateHz;
   stats->payload_bytes = static_cast<int64_t>(codes.size()) * 28;
   stats->onwire_kbps = OnWire(stats->payload_bytes, stats->packets, stats->seconds);
   stats->status = stats->pack_mismatches == 0 ? "ok" : "fail";
@@ -361,41 +361,41 @@ struct Scheduled {
 int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char* model_dir,
                const char* compute, const char* precision, int opus_bps, int loss_pct,
                int jitter_ms, Stats* stats) {
-  const bool liquid = std::strcmp(codec, "liquidcall") == 0;
-#if !defined(WEBRTC_USE_LIQUIDCALL)
-  if (liquid) {
-    stats->detail = "this build has no LiquidCall";
+  const bool cetacall = std::strcmp(codec, "cetacall") == 0;
+#if !defined(WEBRTC_USE_CETACALL)
+  if (cetacall) {
+    stats->detail = "this build has no CetaCall";
     return 2;
   }
 #else
-  if (liquid) {
-    webrtc::liquid::ConsumeOutOfCodebook();
-    webrtc::liquid::ConsumeClampedCodes();
-    webrtc::liquid::RuntimeConfig cfg;
+  if (cetacall) {
+    webrtc::cetacall::ConsumeOutOfCodebook();
+    webrtc::cetacall::ConsumeClampedCodes();
+    webrtc::cetacall::RuntimeConfig cfg;
     cfg.paths.model_dir = model_dir ? model_dir : "";
     cfg.paths.compute = compute && compute[0] ? compute : "cpu";
     std::string error;
     const std::string manifest =
-        webrtc::liquid::ManifestPath(cfg.paths.model_dir);
-    if (!webrtc::liquid::LoadManifestFile(manifest, &cfg.paths, &cfg.chunk, &error)) {
+        webrtc::cetacall::ManifestPath(cfg.paths.model_dir);
+    if (!webrtc::cetacall::LoadManifestFile(manifest, &cfg.paths, &cfg.chunk, &error)) {
       stats->detail = error.empty() ? "manifest" : error;
       return 1;
     }
-    cfg.paths.encoder_model = webrtc::liquid::ResolveEncoderModel(
+    cfg.paths.encoder_model = webrtc::cetacall::ResolveEncoderModel(
         cfg.paths.model_dir, cfg.paths.encoder_model, precision ? precision : "auto");
     cfg.paths.encoder_compute = g_encoder_compute;
     cfg.paths.model_dir = model_dir;
-    if (!webrtc::ConfigureLiquidRuntime(cfg, &error)) {
+    if (!webrtc::ConfigureCetaCallRuntime(cfg, &error)) {
       stats->detail = error;
       if (precision && std::strcmp(precision, "fp32") == 0) return 3;
       return 1;
     }
-    stats->algorithmic_ms = webrtc::liquid::DescribeLatency(
+    stats->algorithmic_ms = webrtc::cetacall::DescribeLatency(
                                 cfg.chunk, cfg.paths.decoder_kind != "pcm", cfg.paths)
                                 .algorithmic_ms;
   }
 #endif
-  if (!liquid) stats->algorithmic_ms = 20;
+  if (!cetacall) stats->algorithmic_ms = 20;
 
   std::unique_ptr<webrtc::Clock> clock_owner =
       std::make_unique<webrtc::SimulatedClock>(webrtc::Timestamp::Seconds(10000));
@@ -408,15 +408,15 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
   webrtc::scoped_refptr<webrtc::AudioDecoderFactory> dec_factory;
   webrtc::SdpAudioFormat format("opus", 48000, 1);
   int channels = 1;
-  if (liquid) {
-#if defined(WEBRTC_USE_LIQUIDCALL)
-    enc_factory = webrtc::CreateLiquidAudioEncoderFactory();
-    dec_factory = webrtc::CreateLiquidAudioDecoderFactory();
-    format = webrtc::SdpAudioFormat(webrtc::liquid::kPayloadName, webrtc::liquid::kWebRtcClockHz, 1);
+  if (cetacall) {
+#if defined(WEBRTC_USE_CETACALL)
+    enc_factory = webrtc::CreateCetaCallAudioEncoderFactory();
+    dec_factory = webrtc::CreateCetaCallAudioDecoderFactory();
+    format = webrtc::SdpAudioFormat(webrtc::cetacall::kPayloadName, webrtc::cetacall::kWebRtcClockHz, 1);
     format.parameters["pack"] = "u16";
     format.parameters["fpp"] = "1";
 #else
-    stats->detail = "this build has no LiquidCall";
+    stats->detail = "this build has no CetaCall";
     return 2;
 #endif
   } else {
@@ -429,7 +429,7 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
   webrtc::AudioEncoderFactory::Options opt;
   opt.payload_type = 111;
   std::unique_ptr<webrtc::AudioEncoder> encoder = enc_factory->Create(env, format, opt);
-  if (!encoder && !liquid) {
+  if (!encoder && !cetacall) {
     format.num_channels = 2;
     channels = 2;
     encoder = enc_factory->Create(env, format, opt);
@@ -442,7 +442,7 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
   // Feed the channel count the encoder reports, or Encode() fails its
   // RTC_CHECK on the frame size (960 vs. 480) and aborts the app.
   channels = static_cast<int>(encoder->NumChannels());
-  if (!liquid && opus_bps > 0) encoder->OnReceivedTargetAudioBitrate(opus_bps);
+  if (!cetacall && opus_bps > 0) encoder->OnReceivedTargetAudioBitrate(opus_bps);
 
   webrtc::NetEq::Config neteq_config;
   neteq_config.sample_rate_hz = 48000;
@@ -461,7 +461,7 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
   std::vector<int16_t> pcm48;
   ResampleMono(in.mono.data(), in.mono.size(), in.rate, 48000, &pcm48);
   const int frame = 480;
-  const char* stall_env = std::getenv("LIQUID_QUALITY_STALL_MS");
+  const char* stall_env = std::getenv("CETACALL_QUALITY_STALL_MS");
   const int stall_ms = stall_env ? std::max(0, std::min(1000, std::atoi(stall_env))) : 0;
   const int64_t t0 = clock->CurrentTime().ms();
   int64_t now = t0;
@@ -492,7 +492,7 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
           Scheduled item;
           item.arrival_ms = (now - t0) + webrtc::quality::DelayMs(packet_index, jitter_ms);
           if (stall_ms > 0) {
-            // Test-only (LIQUID_QUALITY_STALL_MS): every 5 s the network
+            // Test-only (CETACALL_QUALITY_STALL_MS): every 5 s the network
             // holds packets for stall_ms, then delivers them in one burst,
             // like a Wi-Fi stall. Shows how fast the buffer drains after.
             const int64_t send_ms = now - t0;
@@ -553,10 +553,10 @@ int RunFactory(const Pcm& in, const char* wav_out, const char* codec, const char
   // Q14 rates over the whole run's output.
   stats->expand_pct = net.expand_rate * 100.0 / 16384.0;
   stats->accelerate_pct = net.accelerate_rate * 100.0 / 16384.0;
-#if defined(WEBRTC_USE_LIQUIDCALL)
-  if (liquid) {
-    stats->out_of_codebook = webrtc::liquid::ConsumeOutOfCodebook();
-    stats->clamped = webrtc::liquid::ConsumeClampedCodes();
+#if defined(WEBRTC_USE_CETACALL)
+  if (cetacall) {
+    stats->out_of_codebook = webrtc::cetacall::ConsumeOutOfCodebook();
+    stats->clamped = webrtc::cetacall::ConsumeClampedCodes();
   }
 #endif
   stats->seconds = static_cast<double>(pcm48.size()) / 48000.0;
@@ -610,21 +610,21 @@ extern "C" int DirectQualityRun(const char* stage, const char* wav_in, const cha
     stats.detail = "could not read wav";
     return finish(1);
   }
-  const bool liquid = !codec || std::strcmp(codec, "liquidcall") == 0 || std::strcmp(codec, "") == 0;
-  if (!liquid && std::strcmp(codec, "opus") != 0) {
-    stats.detail = "codec must be liquidcall or opus";
+  const bool cetacall = !codec || std::strcmp(codec, "cetacall") == 0 || std::strcmp(codec, "") == 0;
+  if (!cetacall && std::strcmp(codec, "opus") != 0) {
+    stats.detail = "codec must be cetacall or opus";
     return finish(1);
   }
-  stats.codec = liquid ? "liquidcall" : "opus";
+  stats.codec = cetacall ? "cetacall" : "opus";
   if (std::strcmp(stage, "offline") == 0) {
-    if (!liquid) {
-      stats.detail = "offline round-trip is LiquidCall only; opus starts at stage 3";
+    if (!cetacall) {
+      stats.detail = "offline round-trip is CetaCall only; opus starts at stage 3";
       return finish(3);
     }
-#if defined(WEBRTC_USE_LIQUIDCALL)
+#if defined(WEBRTC_USE_CETACALL)
     return finish(RunOffline(in, wav_out, model_dir, compute, encoder_precision, &stats));
 #else
-    stats.detail = "offline LiquidCall needs the Apple liquidcall build";
+    stats.detail = "offline CetaCall needs the Apple cetacall build";
     return finish(2);
 #endif
   }

@@ -261,7 +261,7 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
   // bytes/header/packets from RTCStats are totals since the call began; the
   // rate over the last interval needs their deltas. Dividing the totals by dt
   // grew the "on-wire" figure with call length (hundreds of kbps for a
-  // ~7 kbps LiquidCall stream).
+  // ~7 kbps CetaCall stream).
   struct WireCounter {
     uint64_t bytes = 0;
     uint64_t header = 0;
@@ -429,7 +429,7 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
                           in->packets_received.value_or(0), dt, srtp_tag, ipv6);
         std::string mime = codec && codec->mime_type ? *codec->mime_type : audio_codec_;
         for (char& ch : mime) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        const int codec_algo_ms = mime.find("liquid") != std::string::npos ? 120 : 20;
+        const int codec_algo_ms = mime.find("cetacall") != std::string::npos ? 120 : 20;
         const double half_rtt = rtt_ms >= 0 ? rtt_ms / 2.0 : 0;
         const double jb = jitter_buffer_ms >= 0 ? jitter_buffer_ms : 0;
         const double m2e = 10.0 + codec_algo_ms + half_rtt + jb + 10.0;
@@ -538,7 +538,7 @@ class StatsCollector : public webrtc::RTCStatsCollectorCallback {
             const double hdr = static_cast<double>(send_header - audio_out_wire_.header) / dp;
             audio_out.number("send_payload_bytes_per_packet", pay, 1);
             audio_out.number("send_rtp_header_bytes_per_packet", hdr, 1);
-            // LiquidCall payload sizes identify pack and frames per packet.
+            // CetaCall payload sizes identify pack and frames per packet.
             int fpp = 0;
             const int ipay = static_cast<int>(pay + 0.5);
             const int tight[] = {17, 33, 50, 66};

@@ -668,7 +668,7 @@ std::string ResolveVoiceSwap(const std::string& callee_option, const std::string
   return std::find(have.begin(), have.end(), req) != have.end() ? req : std::string();
 }
 
-// Range [begin, end) of the audio m-section and the LIQUIDCALL payload type in it ("" if not offered).
+// Range [begin, end) of the audio m-section and the CETACALL payload type in it ("" if not offered).
 static bool AudioSection(const std::string& sdp, size_t* begin, size_t* end, std::string* pt) {
   size_t m = sdp.rfind("m=audio", 0) == 0 ? 0 : sdp.find("\nm=audio");
   if (m == std::string::npos) return false;
@@ -683,7 +683,7 @@ static bool AudioSection(const std::string& sdp, size_t* begin, size_t* end, std
     r += 9;
     const size_t sp = sec.find(' ', r);
     if (sp == std::string::npos) break;
-    if (sec.compare(sp + 1, 11, "LIQUIDCALL/") == 0) { *pt = sec.substr(r, sp - r); break; }
+    if (sec.compare(sp + 1, 11, "CETACALL/") == 0) { *pt = sec.substr(r, sp - r); break; }
   }
   return true;
 }
@@ -692,7 +692,7 @@ static std::string AddAudioLines(const std::string& sdp, const std::vector<std::
   size_t b = 0, e = 0;
   std::string pt;
   if (lines.empty() || !AudioSection(sdp, &b, &e, &pt)) return sdp;
-  if (pt.empty()) return sdp;   // not a LiquidCall call: nothing to negotiate
+  if (pt.empty()) return sdp;   // not a CetaCall call: nothing to negotiate
   const bool crlf = sdp.find("\r\n") != std::string::npos;
   std::string add;
   for (const auto& l : lines) {
@@ -705,7 +705,7 @@ static std::string AddAudioLines(const std::string& sdp, const std::vector<std::
   return out;
 }
 
-// Value of "<attr><pt> <value>" inside the audio m-section (pt not checked: one LIQUIDCALL payload per call).
+// Value of "<attr><pt> <value>" inside the audio m-section (pt not checked: one CETACALL payload per call).
 static std::string AudioAttr(const std::string& sdp, const char* attr) {
   size_t b = 0, e = 0;
   std::string pt;

@@ -82,7 +82,7 @@ rust-project.json
 .env
 .env.*
 
-# LiquidCall weights (LFM Open License). Fetched by scripts/liquidcall/fetch_models.sh.
-/scripts/liquidcall/models/
-/scripts/liquidcall/out/
-/scripts/liquidcall/.venv/
+# CetaCall weights (LFM Open License). Fetched by scripts/cetacall/fetch_models.sh.
+/scripts/cetacall/models/
+/scripts/cetacall/out/
+/scripts/cetacall/.venv/

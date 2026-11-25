@@ -390,13 +390,13 @@ DirectPeer::~DirectPeer() {
   Cleanup();
 }
 
-// LiquidCall packets carry 28 bytes of payload; the default audio RTP header
+// CetaCall packets carry 28 bytes of payload; the default audio RTP header
 // extensions (audio level, abs-send-time, transport-wide CC, ...) added 16
 // bytes to every packet, and transport-cc also triggers transport feedback
 // RTCP. Keep only MID (sent in the first packets of a call) unless asked.
 static void TrimAudioHeaderExtensions(webrtc::PeerConnectionInterface* pc, const Options& o) {
   if (!pc) return;
-  const bool keep = o.rtp_header_extensions < 0 ? o.audio_codec != "liquidcall"
+  const bool keep = o.rtp_header_extensions < 0 ? o.audio_codec != "cetacall"
                                                 : o.rtp_header_extensions != 0;
   if (keep) return;
   for (const auto& t : pc->GetTransceivers()) {
@@ -822,10 +822,10 @@ void DirectPeer::OnIceCandidate(const webrtc::IceCandidateInterface* candidate) 
 }
 
 // ---- Voice swap, negotiated in SDP only ------------------------------------------------------------
-// Caller offer:  a=x-liquidcall-voice:<pt> <voice>          (absent or "me" = no conversion)
-// Callee answer: a=x-liquidcall-voices:<pt> me,female,male  (what its sidecar has preloaded)
-//                a=x-liquidcall-voice:<pt> <active>         (the voice it really uses; "me" if it lacks the one asked)
-// Both sit in the audio m-section keyed to the LIQUIDCALL payload type; WebRTC ignores unknown attributes, so
+// Caller offer:  a=x-cetacall-voice:<pt> <voice>          (absent or "me" = no conversion)
+// Callee answer: a=x-cetacall-voices:<pt> me,female,male  (what its sidecar has preloaded)
+//                a=x-cetacall-voice:<pt> <active>         (the voice it really uses; "me" if it lacks the one asked)
+// Both sit in the audio m-section keyed to the CETACALL payload type; WebRTC ignores unknown attributes, so
 // peers without voice support just don't see them. A mid-call switch is a new offer/answer on the same
 // PeerConnection (RequestVoiceSwap).
 

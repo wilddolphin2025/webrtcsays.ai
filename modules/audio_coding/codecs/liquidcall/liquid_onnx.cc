@@ -32,10 +32,11 @@ int ThreadCount(const char* name, int fallback) {
   return n > 0 ? n : fallback;
 }
 
-// The decoder runs a 21-frame window for every 80 ms frame and costs about
-// seven encoder steps, so it gets more intra-op threads than the encoder.
+// The streaming decoder (6 steps per frame) runs best on 2 threads on the
+// Xiaomi 11T: 30 ms per frame with the tail, vs 42 ms on 1 and 36 ms on 4.
+// The old 21-frame window decoder wanted 4 (ORT_DEC_THREADS=4).
 constexpr int kEncoderThreads = 2;
-constexpr int kDecoderThreads = 4;
+constexpr int kDecoderThreads = 2;
 
 class OnnxBackend : public LiquidBackend {
  public:
@@ -83,6 +84,13 @@ class OnnxBackend : public LiquidBackend {
     if (!Ok(api_->CreateSession(env_, dec.c_str(), dec_opts_, &dec_), error, "decoder session")) {
       return false;
     }
+    // A decoder with five inputs is the streaming graph from
+    // android/scripts/export_dec_step.py: lat for one frame plus conv and
+    // attention state. It computes 6 steps per frame instead of a 126-step window.
+    size_t dec_inputs = 0;
+    if (!Ok(api_->SessionGetInputCount(dec_, &dec_inputs), error, "decoder inputs")) return false;
+    dec_step_ = dec_inputs == 5;
+    ZeroDecoderState();
     cache_ = paths.encoder_cache_frames > 0 ? paths.encoder_cache_frames : 1024;
     lookback_ = paths.stft_lookback_samples > 0 ? paths.stft_lookback_samples : 1120;
     step_ = paths.EncoderStepSamples(chunk.frame_samples);
@@ -191,6 +199,7 @@ class OnnxBackend : public LiquidBackend {
                     WindowTiming* timing, std::string* error) override {
     std::lock_guard<std::mutex> lock(dec_mu_);
     if (!api_ || !dec_ || !codes || !pcm_out) return false;
+    if (dec_step_) return DecodeStepLocked(codes, chunk, pcm_out, timing, error);
     const auto t0 = std::chrono::steady_clock::now();
     const int fr = chunk.WindowFrames();
     const int t75 = fr * kUpsample;
@@ -240,6 +249,66 @@ class OnnxBackend : public LiquidBackend {
     if (in[1]) api_->ReleaseValue(in[1]);
     if (out) api_->ReleaseValue(out);
     if (!ok) return false;
+    return EmitPcm(pcm, chunk, pcm_out, t0, p0, p1, timing);
+  }
+
+  // Streaming decoder: only the newest chunk.new_frames frames of the window
+  // are read; the context lives in the graph state.
+  bool DecodeStepLocked(const int32_t* codes, const ChunkConfig& chunk, int16_t* pcm_out,
+                        WindowTiming* timing, std::string* error) {
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<float> pcm;
+    double run_ms = 0;
+    for (int j = 0; j < chunk.new_frames; ++j) {
+      const int32_t* frame = codes + (chunk.ctx_frames + j) * chunk.codebooks;
+      std::vector<float> lat(static_cast<size_t>(kLatent));
+      CodesToLatent(frame, 1, chunk.codebooks, lat.data());
+      OrtValue* in[5] = {};
+      OrtValue* out[5] = {};
+      const int64_t lat_shape[] = {1, kLatent, 1, 1};
+      const int64_t conv_shape[] = {5, kHidden, kStepConv};
+      const int64_t kv_shape[] = {3, 2, 64, kStepCache};
+      const int64_t valid_shape[] = {1, kStepCache};
+      bool ok = MakeTensor(lat.data(), lat.size(), lat_shape, 4, &in[0], error) &&
+                MakeTensor(dconv_.data(), dconv_.size(), conv_shape, 3, &in[1], error) &&
+                MakeTensor(dk_.data(), dk_.size(), kv_shape, 4, &in[2], error) &&
+                MakeTensor(dv_.data(), dv_.size(), kv_shape, 4, &in[3], error) &&
+                MakeTensor(dvalid_.data(), dvalid_.size(), valid_shape, 2, &in[4], error);
+      const char* in_names[] = {"lat", "conv_state", "k_cache", "v_cache", "kv_valid"};
+      const char* out_names[] = {"hidden", "conv_state_out", "k_cache_out", "v_cache_out", "kv_valid_out"};
+      const auto p0 = std::chrono::steady_clock::now();
+      if (ok) ok = Ok(api_->Run(dec_, nullptr, in_names, in, 5, out_names, 5, out), error, "decoder step run");
+      run_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count();
+      float* hidden = nullptr;
+      std::vector<float> c2, k2, v2, val2;
+      if (ok) ok = Read(out[0], &hidden, error, "hidden") &&
+                   CopyOut(out[1], &c2, dconv_.size(), error, "conv_state_out") &&
+                   CopyOut(out[2], &k2, dk_.size(), error, "k_cache_out") &&
+                   CopyOut(out[3], &v2, dv_.size(), error, "v_cache_out") &&
+                   CopyOut(out[4], &val2, dvalid_.size(), error, "kv_valid_out");
+      std::vector<float> part;
+      if (ok) part = tail_.PushHidden(hidden, kUpsample);  // hidden is (1,512,1,6) channel-major
+      ReleaseValues(in, 5);
+      ReleaseValues(out, 5);
+      if (!ok) {
+        ZeroDecoderState();
+        return false;
+      }
+      dconv_.swap(c2);
+      dk_.swap(k2);
+      dv_.swap(v2);
+      dvalid_.swap(val2);
+      pcm.insert(pcm.end(), part.begin(), part.end());
+    }
+    const auto p1 = std::chrono::steady_clock::now();
+    const auto p0 = p1 - std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                             std::chrono::duration<double, std::milli>(run_ms));
+    return EmitPcm(pcm, chunk, pcm_out, t0, p0, p1, timing);
+  }
+
+  bool EmitPcm(const std::vector<float>& pcm, const ChunkConfig& chunk, int16_t* pcm_out,
+               std::chrono::steady_clock::time_point t0, std::chrono::steady_clock::time_point p0,
+               std::chrono::steady_clock::time_point p1, WindowTiming* timing) {
     std::vector<int16_t> s16;
     s16.reserve(pcm.size());
     for (float x : pcm) {
@@ -267,6 +336,7 @@ class OnnxBackend : public LiquidBackend {
     std::lock_guard<std::mutex> enc_lock(enc_mu_);
     std::lock_guard<std::mutex> dec_lock(dec_mu_);
     ZeroState();
+    ZeroDecoderState();
     tail_.Reset();
     fifo_.clear();
   }
@@ -372,6 +442,13 @@ class OnnxBackend : public LiquidBackend {
     }
   }
 
+  void ZeroDecoderState() {
+    dconv_.assign(static_cast<size_t>(5 * kHidden * kStepConv), 0.f);
+    dk_.assign(static_cast<size_t>(3 * 2 * 64 * kStepCache), 0.f);
+    dv_.assign(dk_.size(), 0.f);
+    dvalid_.assign(static_cast<size_t>(kStepCache), 0.f);
+  }
+
   void ZeroState() {
     std::fill(hist_.begin(), hist_.end(), 0.f);
     std::fill(k_.begin(), k_.end(), 0.f);
@@ -414,6 +491,12 @@ class OnnxBackend : public LiquidBackend {
   std::vector<float> hist_, k_, v_, conv_, pos_;
   std::vector<double> dft_win_;
   LiquidTail tail_;
+  // Streaming decoder state (export_dec_step.py): 6 past conv inputs for each
+  // of 5 conv layers, 29 past keys/values for each of 3 attention layers.
+  static constexpr int kStepConv = 6;
+  static constexpr int kStepCache = 29;
+  bool dec_step_ = false;
+  std::vector<float> dconv_, dk_, dv_, dvalid_;
   std::vector<int16_t> fifo_;
 };
 

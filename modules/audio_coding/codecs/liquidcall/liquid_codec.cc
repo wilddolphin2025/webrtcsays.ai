@@ -712,7 +712,7 @@ std::string CodecStats::ToJson() const {
   o.setf(std::ios::fixed);
   o.precision(3);
   o << "{\n";
-  o << "  \"codec\": \"LIQUIDCALL\",\n";
+  o << "  \"codec\": \"CETACALL\",\n";
   o << "  \"backend\": \"" << backend << "\",\n";
   o << "  \"compute\": \"" << compute << "\",\n";
   o << "  \"sample_rate_hz\": " << chunk.sample_rate_hz << ",\n";

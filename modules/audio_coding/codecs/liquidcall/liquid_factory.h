@@ -14,12 +14,12 @@ namespace webrtc {
 // the runtime config the factories read. Does not convert models.
 bool ConfigureLiquidRuntime(const liquid::RuntimeConfig& config, std::string* error);
 
-// LIQUIDCALL only. Quality runs use this.
+// CETACALL only. Quality runs use this.
 scoped_refptr<AudioEncoderFactory> CreateLiquidAudioEncoderFactory();
 scoped_refptr<AudioDecoderFactory> CreateLiquidAudioDecoderFactory();
 
-// LIQUIDCALL first, then every codec `builtin` already supports. Opus stays,
-// so a liquidcall call can send LIQUIDCALL and decode Opus. `builtin` is the
+// CETACALL first, then every codec `builtin` already supports. Opus stays,
+// so a liquidcall call can send CETACALL and decode Opus. `builtin` is the
 // factory from CreateBuiltinAudioEncoderFactory / CreateBuiltinAudioDecoderFactory.
 scoped_refptr<AudioEncoderFactory> CreateLiquidAudioEncoderFactory(
     scoped_refptr<AudioEncoderFactory> builtin);

@@ -74,9 +74,9 @@ enum LoggingSeverity {
 
 #endif // DIRECT_EXPORT_H 
 
-// Default jitter buffer cap for liquidcall (low-latency mode): one 80 ms
+// Default jitter buffer cap for cetacall (low-latency mode): one 80 ms
 // packet of target plus NetEq's 20 ms window before it accelerates.
-inline constexpr int kLiquidJitterMaxMs = 80;
+inline constexpr int kCetaCallJitterMaxMs = 80;
 
 // Command line options
 struct Options {
@@ -135,7 +135,7 @@ struct Options {
     int call_duration_sec = 0;
     std::string audio{};                // "dummy" forces the fake audio device
     // These fields are the iOS direct.framework API the RobotPhone app sets.
-    std::string audio_codec{};          // empty = built-in default; opus; liquidcall
+    std::string audio_codec{};          // empty = built-in default; opus; cetacall
     int opus_bitrate_bps = 0;           // 0 = Opus default; else maxaveragebitrate
     int opus_ptime_ms = 20;             // 20, 40, or 60
     bool opus_dtx = false;
@@ -152,21 +152,21 @@ struct Options {
     std::string voice_swap_voices{};
     // Caller test hook: timed mid-call switches "<sec>:<voice>,..." (each one is an SDP re-offer).
     std::string voice_swap_script{};
-    std::string liquid_model_dir{};
-    std::string liquid_manifest{};
-    int liquid_ctx = 0;                 // 0 = manifest default
-    int liquid_new = 0;                 // 0 = manifest default
-    std::string liquid_decode{"ane"};   // ane, cpu, all
-    std::string liquid_encoder{"int8"};  // int8 or fp16 Core ML encoder package
-    std::string liquid_pack{"tight"};   // tight (17 bytes/frame, default) or u16 (28 bytes/frame)
-    int liquid_frames_per_packet = 1;   // 1-4 (80-320 ms per packet)
-    bool liquid_dtx = false;            // skip LiquidCall packets during silence
-    int srtp_tag32 = -1;                // AES_CM_128_HMAC_SHA1_32 (4-byte tag): -1 auto (on for liquidcall), 0, 1
-    int audio_rtcp_ms = -1;             // audio RTCP report interval: -1 auto (10000 liquidcall, else 5000)
-    int rtp_header_extensions = -1;     // -1 auto (off for liquidcall), 0 off, 1 on (audio)
+    std::string cetacall_model_dir{};
+    std::string cetacall_manifest{};
+    int cetacall_ctx = 0;                 // 0 = manifest default
+    int cetacall_new = 0;                 // 0 = manifest default
+    std::string cetacall_decode{"ane"};   // ane, cpu, all
+    std::string cetacall_encoder{"int8"};  // int8 or fp16 Core ML encoder package
+    std::string cetacall_pack{"tight"};   // tight (17 bytes/frame, default) or u16 (28 bytes/frame)
+    int cetacall_frames_per_packet = 1;   // 1-4 (80-320 ms per packet)
+    bool cetacall_dtx = false;            // skip CetaCall packets during silence
+    int srtp_tag32 = -1;                // AES_CM_128_HMAC_SHA1_32 (4-byte tag): -1 auto (on for cetacall), 0, 1
+    int audio_rtcp_ms = -1;             // audio RTCP report interval: -1 auto (10000 cetacall, else 5000)
+    int rtp_header_extensions = -1;     // -1 auto (off for cetacall), 0 off, 1 on (audio)
     // Receive jitter buffer (NetEq). jitter_max_ms caps the target delay and
     // the playout delay NetEq accelerates down to: -1 auto (80 ms for
-    // liquidcall, the low-latency mode; unlimited otherwise), 0 unlimited
+    // cetacall, the low-latency mode; unlimited otherwise), 0 unlimited
     // (stock NetEq), else 20..1000 ms. Below the cap NetEq still adapts.
     int jitter_max_ms = -1;
     int jitter_fast_accelerate = -1;    // -1 auto (on when jitter_max_ms caps), 0, 1

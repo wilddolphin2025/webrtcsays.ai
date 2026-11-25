@@ -49,16 +49,16 @@
 #include "modules/audio_device/include/test_audio_device.h"
 #endif
 #include "impair.h"
-#include "modules/audio_coding/codecs/liquidcall/liquid_offer.h"
-#if defined(WEBRTC_USE_LIQUIDCALL)
-#include "modules/audio_coding/codecs/liquidcall/liquid_factory.h"
+#include "modules/audio_coding/codecs/cetacall/cetacall_offer.h"
+#if defined(WEBRTC_USE_CETACALL)
+#include "modules/audio_coding/codecs/cetacall/cetacall_factory.h"
 #endif
 #include "video.h"
 #include "status.h"
 
 namespace {
 
-// Low-latency jitter buffer (kLiquidJitterMaxMs in option.h): caps NetEq's
+// Low-latency jitter buffer (kCetaCallJitterMaxMs in option.h): caps NetEq's
 // target delay and (see DecisionLogic::ExpectedPacketAvailable) the playout
 // delay it accelerates down to. Below the cap NetEq still adapts to jitter.
 class CappedNetEqFactory : public webrtc::NetEqFactory {
@@ -441,8 +441,8 @@ bool DirectApplication::CreatePeerConnection() {
     deps.socket_factory = pss();
     deps.network_manager = std::move(network_manager);
     {
-      const bool liquid_jb = opts_.audio_codec == "liquidcall";
-      const int jitter_max = opts_.jitter_max_ms < 0 ? (liquid_jb ? kLiquidJitterMaxMs : 0)
+      const bool cetacall_jb = opts_.audio_codec == "cetacall";
+      const int jitter_max = opts_.jitter_max_ms < 0 ? (cetacall_jb ? kCetaCallJitterMaxMs : 0)
                                                      : opts_.jitter_max_ms;
       const bool fast_accelerate = opts_.jitter_fast_accelerate < 0
                                        ? jitter_max > 0
@@ -466,68 +466,68 @@ bool DirectApplication::CreatePeerConnection() {
         webrtc::CreateBuiltinAudioEncoderFactory();
     webrtc::scoped_refptr<webrtc::AudioDecoderFactory> audio_decoder_factory =
         webrtc::CreateBuiltinAudioDecoderFactory();
-    if (opts_.audio_codec == "liquidcall") {
-#if defined(WEBRTC_USE_LIQUIDCALL)
-      webrtc::liquid::RuntimeConfig liquid;
-      std::string model_dir = opts_.liquid_model_dir;
+    if (opts_.audio_codec == "cetacall") {
+#if defined(WEBRTC_USE_CETACALL)
+      webrtc::cetacall::RuntimeConfig cetacall_cfg;
+      std::string model_dir = opts_.cetacall_model_dir;
       if (model_dir.empty()) {
         const char* candidates[] = {
-            "scripts/liquidcall/models",
-            "../scripts/liquidcall/models",
+            "scripts/cetacall/models",
+            "../scripts/cetacall/models",
         };
         model_dir = candidates[0];
         for (const char* candidate : candidates) {
-          if (webrtc::liquid::FileExists(webrtc::liquid::ManifestPath(candidate))) {
+          if (webrtc::cetacall::FileExists(webrtc::cetacall::ManifestPath(candidate))) {
             model_dir = candidate;
             break;
           }
         }
       }
-      liquid.paths.model_dir = model_dir;
-      liquid.paths.compute = opts_.liquid_decode.empty() ? "ane" : opts_.liquid_decode;
-      liquid.record_dir = opts_.record_dir;
-      liquid.inject_wav = opts_.inject_wav;
-      const std::string manifest = opts_.liquid_manifest.empty()
-                                       ? webrtc::liquid::ManifestPath(liquid.paths.model_dir)
-                                       : opts_.liquid_manifest;
+      cetacall.paths.model_dir = model_dir;
+      cetacall.paths.compute = opts_.cetacall_decode.empty() ? "ane" : opts_.cetacall_decode;
+      cetacall.record_dir = opts_.record_dir;
+      cetacall.inject_wav = opts_.inject_wav;
+      const std::string manifest = opts_.cetacall_manifest.empty()
+                                       ? webrtc::cetacall::ManifestPath(cetacall.paths.model_dir)
+                                       : opts_.cetacall_manifest;
       std::string manifest_error;
-      if (webrtc::liquid::FileExists(manifest)) {
-        if (!webrtc::liquid::LoadManifestFile(manifest, &liquid.paths, &liquid.chunk,
+      if (webrtc::cetacall::FileExists(manifest)) {
+        if (!webrtc::cetacall::LoadManifestFile(manifest, &cetacall.paths, &cetacall.chunk,
                                               &manifest_error)) {
-          fprintf(stderr, "LiquidCall manifest: %s\n", manifest_error.c_str());
+          fprintf(stderr, "CetaCall manifest: %s\n", manifest_error.c_str());
           return false;
         }
       } else {
         fprintf(stderr,
-                "LiquidCall manifest %s not found; assuming ctx=20 new=20 "
-                "(published decoder geometry) until the fork ships liquidcall.json\n",
+                "CetaCall manifest %s not found; assuming ctx=20 new=20 "
+                "(published decoder geometry) until the fork ships cetacall.json\n",
                 manifest.c_str());
       }
-      liquid.paths.encoder_model = webrtc::liquid::EncoderModelForPrecision(
-          liquid.paths.encoder_model, opts_.liquid_encoder);
-      if (opts_.liquid_ctx > 0) liquid.chunk.ctx_frames = opts_.liquid_ctx;
-      if (opts_.liquid_new > 0) liquid.chunk.new_frames = opts_.liquid_new;
-      liquid.pack = opts_.liquid_pack == "tight" ? webrtc::liquid::WirePack::kTight
-                                                 : webrtc::liquid::WirePack::kU16;
-      liquid.frames_per_packet = opts_.liquid_frames_per_packet;
-      liquid.dtx = opts_.liquid_dtx;
+      cetacall.paths.encoder_model = webrtc::cetacall::EncoderModelForPrecision(
+          cetacall.paths.encoder_model, opts_.cetacall_encoder);
+      if (opts_.cetacall_ctx > 0) cetacall.chunk.ctx_frames = opts_.cetacall_ctx;
+      if (opts_.cetacall_new > 0) cetacall.chunk.new_frames = opts_.cetacall_new;
+      cetacall.pack = opts_.cetacall_pack == "tight" ? webrtc::cetacall::WirePack::kTight
+                                                 : webrtc::cetacall::WirePack::kU16;
+      cetacall.frames_per_packet = opts_.cetacall_frames_per_packet;
+      cetacall.dtx = opts_.cetacall_dtx;
       // Expected SRTP tag for the startup on-wire estimate (SHA1_32 is
-      // offered for liquidcall unless --no-srtp-tag32).
-      liquid.srtp_tag_bytes = !opts_.encryption ? 0 : (opts_.srtp_tag32 != 0 ? 4 : 10);
-      liquid.paths.model_dir = model_dir;
-      std::string liquid_error;
-      if (!webrtc::ConfigureLiquidRuntime(liquid, &liquid_error)) {
-        fprintf(stderr, "%s\n", liquid_error.c_str());
+      // offered for cetacall unless --no-srtp-tag32).
+      cetacall.srtp_tag_bytes = !opts_.encryption ? 0 : (opts_.srtp_tag32 != 0 ? 4 : 10);
+      cetacall.paths.model_dir = model_dir;
+      std::string cetacall_error;
+      if (!webrtc::ConfigureCetaCallRuntime(cetacall, &cetacall_error)) {
+        fprintf(stderr, "%s\n", cetacall_error.c_str());
         return false;
       }
       // Keep Opus (and the rest of the builtin factories). CETACALL is added
       // in front so this client sends it and can still decode Opus.
-      audio_encoder_factory = webrtc::CreateLiquidAudioEncoderFactory(audio_encoder_factory);
-      audio_decoder_factory = webrtc::CreateLiquidAudioDecoderFactory(audio_decoder_factory);
+      audio_encoder_factory = webrtc::CreateCetaCallAudioEncoderFactory(audio_encoder_factory);
+      audio_decoder_factory = webrtc::CreateCetaCallAudioDecoderFactory(audio_decoder_factory);
 #else
       fprintf(stderr,
-              "LiquidCall is not in this build. On Apple Silicon run "
-              "./build.sh release liquidcall\n");
+              "CetaCall is not in this build. On Apple Silicon run "
+              "./build.sh release cetacall\n");
       return false;
 #endif
     }
@@ -597,7 +597,7 @@ bool DirectApplication::CreatePeerConnection() {
   }
 
   // One configuration for every signaling path (caller and callee, direct
-  // TCP and the room WebSocket). LiquidCall offers only
+  // TCP and the room WebSocket). CetaCall offers only
   // AES_CM_128_HMAC_SHA1_32. Leaving the WebRTC defaults (SHA1_80, then
   // AES-256-GCM, then AES-128-GCM) lets a Mac WebRTC peer match AES-256-GCM
   // or SHA1_80, while Pion's ClientHello (AES-128-GCM, SHA1_80, SHA1_32, no
@@ -605,7 +605,7 @@ bool DirectApplication::CreatePeerConnection() {
   // from the ServerHello. SHA1_80 is not a fallback: as DTLS server we would
   // pick it, because Pion lists it before SHA1_32.
   {
-    const bool liquid = opts_.audio_codec == "liquidcall";
+    const bool cetacall = opts_.audio_codec == "cetacall";
     const direct_srtp::Policy srtp =
         direct_srtp::PolicyFor(opts_.audio_codec, opts_.srtp_tag32, opts_.encryption);
     const std::vector<int> suites = direct_srtp::SuiteIds(srtp);
@@ -622,7 +622,7 @@ bool DirectApplication::CreatePeerConnection() {
         fprintf(stderr, "Transport: SRTP profile list is empty\n");
       }
     }
-    const int rtcp_ms = opts_.audio_rtcp_ms > 0 ? opts_.audio_rtcp_ms : (liquid ? 10000 : 5000);
+    const int rtcp_ms = opts_.audio_rtcp_ms > 0 ? opts_.audio_rtcp_ms : (cetacall ? 10000 : 5000);
     config.set_audio_rtcp_report_interval_ms(rtcp_ms);
     // Same Options and the same CreatePeerConnection for direct TCP and the
     // room WebSocket. parseOptions starts encryption at false; a wss URL
@@ -1089,37 +1089,37 @@ void DirectApplication::ConfigureOutgoingVideo() {
 
 void DirectApplication::ConfigureOutgoingAudio() {
   if (!peer_connection_ || !peer_connection_factory_) return;
-  const bool liquid = opts_.audio_codec == "liquidcall";
+  const bool cetacall = opts_.audio_codec == "cetacall";
   const bool opus = opts_.audio_codec == "opus" || opts_.opus_bitrate_bps > 0;
-  if (!liquid && !opus) return;
+  if (!cetacall && !opus) return;
   const auto caps =
       peer_connection_factory_->GetRtpSenderCapabilities(webrtc::MediaType::AUDIO).codecs;
-  // liquidcall: CETACALL/48000/1 (PT 96, sent) then opus/48000/2 (PT 111).
+  // cetacall: CETACALL/48000/1 (PT 96, sent) then opus/48000/2 (PT 111).
   // opus: Opus only, same as before. Default never reaches here.
   // pack, fpp, and usedtx are already on the factory's SdpAudioFormat, so they
   // are part of the capability. Adding them again is a different codec and
   // SetCodecPreferences returns INVALID_MODIFICATION. Opus keeps the builtin
   // fmtp minptime=10;useinbandfec=1, which is what the server answers with.
-  const auto want = webrtc::liquid::AudioCodecPreferenceNames(liquid ? "liquidcall" : "opus");
+  const auto want = webrtc::cetacall::AudioCodecPreferenceNames(cetacall ? "cetacall" : "opus");
   std::vector<webrtc::RtpCodecCapability> preferred;
   for (const auto& want_name : want) {
     for (const auto& codec : caps) {
-      if (webrtc::liquid::LowerCodecName(codec.name) == want_name) {
+      if (webrtc::cetacall::LowerCodecName(codec.name) == want_name) {
         preferred.push_back(codec);
         break;
       }
     }
   }
-  bool have_liquid = false;
+  bool have_cetacall = false;
   bool have_opus = false;
   for (const auto& codec : preferred) {
-    const std::string name = webrtc::liquid::LowerCodecName(codec.name);
-    if (name == "cetacall") have_liquid = true;  // SDP codec name
+    const std::string name = webrtc::cetacall::LowerCodecName(codec.name);
+    if (name == "cetacall") have_cetacall = true;  // SDP codec name
     if (name == "opus") have_opus = true;
   }
-  if (preferred.empty() || (liquid && (!have_liquid || !have_opus)) || (!liquid && !have_opus)) {
+  if (preferred.empty() || (cetacall && (!have_cetacall || !have_opus)) || (!cetacall && !have_opus)) {
     fprintf(stderr, "audio codec %s is not available in this build\n",
-            liquid ? "liquidcall+opus" : "opus");
+            cetacall ? "cetacall+opus" : "opus");
     RTC_LOG(LS_ERROR) << "Requested audio codec is not available";
     return;
   }
@@ -1132,7 +1132,7 @@ void DirectApplication::ConfigureOutgoingAudio() {
       fprintf(stderr, "audio SetCodecPreferences failed: %s\n", err.message());
     }
   }
-  if (liquid) {
+  if (cetacall) {
     fprintf(stderr, "audio codec: %s (send) + opus (receive)\n", preferred.front().name.c_str());
   } else {
     fprintf(stderr, "audio codec: %s%s\n", preferred.front().name.c_str(),

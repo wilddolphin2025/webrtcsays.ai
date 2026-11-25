@@ -12,8 +12,8 @@
 #   scripts/build_voiceswap_frameworks.sh --out=out/ios_dualcodec
 #   scripts/build_voiceswap_frameworks.sh --out=ios_dualcodec
 #
-# Gn args match `./build.sh ios release liquidcall`: device arm64, Opus on,
-# LiquidCall on, speech devices off, unsigned. Models are not fetched here.
+# Gn args match `./build.sh ios release cetacall`: device arm64, Opus on,
+# CetaCall on, speech devices off, unsigned. Models are not fetched here.
 
 set -euo pipefail
 
@@ -92,8 +92,8 @@ if ! command -v "${GN}" >/dev/null 2>&1 && [ ! -x "${GN}" ]; then
   exit 1
 fi
 
-# Same args as build.sh for `ios release liquidcall`.
-IOS_ARGS='target_environment="device" target_os="ios" target_cpu="arm64" ios_deployment_target="16.4.0" ios_enable_code_signing=false use_custom_libcxx=false treat_warnings_as_errors=false is_debug=false rtc_include_opus=true rtc_build_examples=true rtc_enable_symbol_export=true mac_deployment_target="15.0" mac_min_system_version="15.0" rtc_use_speech_audio_devices=false rtc_use_liquidcall=true'
+# Same args as build.sh for `ios release cetacall`.
+IOS_ARGS='target_environment="device" target_os="ios" target_cpu="arm64" ios_deployment_target="16.4.0" ios_enable_code_signing=false use_custom_libcxx=false treat_warnings_as_errors=false is_debug=false rtc_include_opus=true rtc_build_examples=true rtc_enable_symbol_export=true mac_deployment_target="15.0" mac_min_system_version="15.0" rtc_use_speech_audio_devices=false rtc_use_cetacall=true'
 
 echo "gn gen ${OUT}"
 "${GN}" gen "${OUT}" --args="${IOS_ARGS}"

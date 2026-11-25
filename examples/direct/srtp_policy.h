@@ -7,7 +7,7 @@
 // SSL_CTX_set_tlsext_use_srtp, so the ServerHello has no use_srtp extension.
 //
 // The same CreatePeerConnection runs for the caller and the callee, and for
-// direct TCP and the room WebSocket. LiquidCall's frozen interface is
+// direct TCP and the room WebSocket. CetaCall's frozen interface is
 // AES_CM_128_HMAC_SHA1_32 only. SHA1_80 is not offered with it: when we are
 // the DTLS server, the peer's ClientHello order wins, and Pion lists SHA1_80
 // ahead of SHA1_32. Offering 80 would select 80. Pion and our own clients
@@ -29,7 +29,7 @@ struct Policy {
   bool gcm = true;
 };
 
-// srtp_tag32: -1 auto (on for liquidcall), 0 off, 1 on.
+// srtp_tag32: -1 auto (on for cetacall), 0 off, 1 on.
 // encryption false is plain RTP: no DTLS-SRTP profiles.
 inline Policy PolicyFor(const std::string& audio_codec, int srtp_tag32, bool encryption) {
   Policy policy;
@@ -39,7 +39,7 @@ inline Policy PolicyFor(const std::string& audio_codec, int srtp_tag32, bool enc
     policy.gcm = false;
     return policy;
   }
-  const bool tag32 = srtp_tag32 < 0 ? audio_codec == "liquidcall" : srtp_tag32 != 0;
+  const bool tag32 = srtp_tag32 < 0 ? audio_codec == "cetacall" : srtp_tag32 != 0;
   if (tag32) {
     policy.sha1_32 = true;
     policy.sha1_80 = false;

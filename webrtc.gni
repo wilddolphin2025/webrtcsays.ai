@@ -195,9 +195,6 @@ declare_args() {
   # Set to false to disable
   rtc_use_speech_audio_devices = true
 
-  # Deprecated pre-rename name of rtc_use_liquidcall. Old out/*/args.gn
-  # files that still say rtc_use_liquidcodec=true keep working.
-  rtc_use_liquidcodec = false
 
   # When set to true, replace the audio output with a sinus tone at 440Hz.
   # The ADM will ask for audio data from WebRTC but instead of reading real
@@ -266,13 +263,13 @@ declare_args() {
 }
 
 declare_args() {
-  # LiquidCall (Core ML / Apple Neural Engine) inside directcall.
+  # CetaCall (Core ML / Apple Neural Engine) inside directcall.
   # macOS only. Default off so Linux and the arm64 Frame build are unchanged.
-  rtc_use_liquidcall = rtc_use_liquidcodec
+  rtc_use_cetacall = false
 }
 
-assert(!rtc_use_liquidcall || is_mac || is_ios,
-       "rtc_use_liquidcall is Apple-only and must stay off for Linux/Frame builds")
+assert(!rtc_use_cetacall || is_mac || is_ios,
+       "rtc_use_cetacall is Apple-only and must stay off for Linux/Frame builds")
 
 if (!build_with_mozilla) {
   import("//testing/test.gni")

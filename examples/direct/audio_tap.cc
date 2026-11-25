@@ -559,7 +559,7 @@ static std::string AddAudioLines(const std::string& sdp, const std::vector<std::
   size_t b = 0, e = 0;
   std::string pt;
   if (lines.empty() || !AudioSection(sdp, &b, &e, &pt)) return sdp;
-  if (pt.empty()) return sdp;   // not a LiquidCall call: nothing to negotiate
+  if (pt.empty()) return sdp;   // not a CetaCall call: nothing to negotiate
   const bool crlf = sdp.find("\r\n") != std::string::npos;
   std::string add;
   for (const auto& l : lines) {

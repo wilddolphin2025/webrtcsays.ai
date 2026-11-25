@@ -74,7 +74,7 @@ class MacVpioAudioDevice : public webrtc::AudioDeviceGeneric {
  public:
   MacVpioAudioDevice() : ring_(1 << 14) {
     prebuffer_ms_ = 20;
-    if (const char* v = std::getenv("LIQUIDCALL_VPIO_PREBUFFER_MS")) {
+    if (const char* v = std::getenv("CETACALL_VPIO_PREBUFFER_MS")) {
       const int ms = std::atoi(v);
       if (ms >= 0 && ms <= 200) prebuffer_ms_ = ms;
     }
@@ -331,7 +331,7 @@ class MacVpioAudioDevice : public webrtc::AudioDeviceGeneric {
     }
   }
 
-  // Decoding (NetEq + the LiquidCall Core ML decoder) runs here, not on the
+  // Decoding (NetEq + the CetaCall Core ML decoder) runs here, not on the
   // real-time I/O thread, so a slow decode drains the ring instead of
   // stalling the speaker.
   void FeedLoop() {

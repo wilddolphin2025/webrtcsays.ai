@@ -237,7 +237,7 @@ class DIRECT_API DirectApplication : public webrtc::PeerConnectionObserver {
   void EnsureVideoSendActive();
   // H.264 first (or forced), resolution and frame rate on the video sender.
   void ConfigureOutgoingVideo();
-  // Opus (optional bitrate) or LiquidCall, when the caller asked for one.
+  // Opus (optional bitrate) or CetaCall, when the caller asked for one.
   void ConfigureOutgoingAudio();
 
 #if defined(WEBRTC_IOS) && defined(__OBJC__)
@@ -247,7 +247,7 @@ class DIRECT_API DirectApplication : public webrtc::PeerConnectionObserver {
 #endif
 
   std::string remote_agent() { return remote_agent_; }
-  // Caller side voice negotiation (LiquidCall app polls these), from the callee's ANSWER SDP: the voices it has
+  // Caller side voice negotiation (CetaCall app polls these), from the callee's ANSWER SDP: the voices it has
   // (comma list incl. "me"; "" = older callee / no sidecar) and the one it confirmed ("" before any answer, "me").
   // voice_info_gen() bumps on every change.
   // Out of line so apps never depend on the member layout.

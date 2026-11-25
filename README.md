@@ -235,15 +235,15 @@ Adjust these fields as needed for your deployment and use case.
 
 ---
 
-## LiquidCall on Apple Silicon
+## CetaCall on Apple Silicon
 
-This is a quality-test path, not the default call. Opus stays the default. LiquidCall is compiled only when you pass `liquidcall` to `build.sh` on macOS. Linux and the arm64 Frame build do not include it.
+This is a quality-test path, not the default call. Opus stays the default. CetaCall is compiled only when you pass `cetacall` to `build.sh` on macOS. Linux and the arm64 Frame build do not include it.
 
-The Core ML packages are fetched from `wilddolphin2025/liquidcodec-ane`. The default ref is `cursor/liquidcodec-stream-51d0` (draft PR 1) until that branch merges. Override with `LIQUIDCALL_REPO` and `LIQUIDCALL_REF`. This branch does not convert either model. Weights stay out of git. They are Liquid AI's Liquid-Codec under the LFM Open License v1.0 (commercial use only below USD 10M annual revenue). See `scripts/liquidcall/NOTICE`.
+The Core ML packages are fetched from `wilddolphin2025/liquidcodec-ane`. The default ref is `cursor/liquidcodec-stream-51d0` (draft PR 1) until that branch merges. Override with `CETACALL_REPO` and `CETACALL_REF`. This branch does not convert either model. Weights stay out of git. They are Liquid AI's Liquid-Codec under the LFM Open License v1.0 (commercial use only below USD 10M annual revenue). See `scripts/cetacall/NOTICE`.
 
-`models/liquidcodec.json` from that branch is the manifest (upstream name; `fetch_models.sh` renames it to `liquidcall.json` and leaves a `liquidcodec.json` symlink). The decoder half is a stateless window: `ctx_frames` 20 and `new_frames` 1, 2, or 4, inputs `lat` and `valid`, output `hidden`, plus `lc_tail_f32.bin`. The encoder half is a one-frame step (`encoder_kind` `stateful_io`). Each call takes 2400 samples, the 80 ms frame plus 480 samples of real lookahead, and five state tensors (`hist`, `k_cache`, `v_cache`, `conv_state`, `pos`) that come back updated. The model applies the first-call left pad itself when those tensors are zero. The glue waits for the 480 real samples and does not reflect-pad them. A manifest without `encoder_kind` still uses the older stateless window (`ctx+new`, or `new` with no lookahead). `--liquid-ctx` and `--liquid-new` override the manifest and must match the decoder package.
+`models/cetacall.json` from that branch is the manifest (upstream name; `fetch_models.sh` renames it to `cetacall.json` and leaves a `cetacall.json` symlink). The decoder half is a stateless window: `ctx_frames` 20 and `new_frames` 1, 2, or 4, inputs `lat` and `valid`, output `hidden`, plus `lc_tail_f32.bin`. The encoder half is a one-frame step (`encoder_kind` `stateful_io`). Each call takes 2400 samples, the 80 ms frame plus 480 samples of real lookahead, and five state tensors (`hist`, `k_cache`, `v_cache`, `conv_state`, `pos`) that come back updated. The model applies the first-call left pad itself when those tensors are zero. The glue waits for the 480 real samples and does not reflect-pad them. A manifest without `encoder_kind` still uses the older stateless window (`ctx+new`, or `new` with no lookahead). `--cetacall-ctx` and `--cetacall-new` override the manifest and must match the decoder package.
 
-Calculated latency, not a measurement. For the streaming encoder, the first packet waits 80 ms plus the 20 ms lookahead, the receiver then waits `(new_frames - 1) * 80` ms, and the CPU STFT tail holds 20 ms. At `new_frames=1` that is **120 ms**. At `new_frames=4` it is 360 ms. The older stateless 20-frame window, with no lookahead, is still 3140 ms. Left context is lookback. NetEq's jitter buffer and the Core ML runtime are not in these numbers. `decoder_stats.json` records `prediction_ms_mean` only after a call on a Mac. Payload is 28 bytes per 80 ms frame (2800 bps on the wire). The information rate is about 1646 bps. SDP name is `LIQUIDCALL` at a 48 kHz clock, because NetEq does not accept 24 kHz; the codec itself is 24 kHz mono.
+Calculated latency, not a measurement. For the streaming encoder, the first packet waits 80 ms plus the 20 ms lookahead, the receiver then waits `(new_frames - 1) * 80` ms, and the CPU STFT tail holds 20 ms. At `new_frames=1` that is **120 ms**. At `new_frames=4` it is 360 ms. The older stateless 20-frame window, with no lookahead, is still 3140 ms. Left context is lookback. NetEq's jitter buffer and the Core ML runtime are not in these numbers. `decoder_stats.json` records `prediction_ms_mean` only after a call on a Mac. Payload is 28 bytes per 80 ms frame (2800 bps on the wire). The information rate is about 1646 bps. SDP name is `CETACALL` at a 48 kHz clock, because NetEq does not accept 24 kHz; the codec itself is 24 kHz mono.
 
 From a checkout such as `~/Public/webrtcsays-m156` or `~/Dev/webrtcsays.ai`:
 
@@ -254,85 +254,85 @@ git checkout liquidcodec-ane
 
 # One command from the gclient parent. It syncs, runs the pinned depot_tools gn,
 # builds directcall, fetches models (skipped when they are already compiled),
-# runs xcrun coremlcompiler on every .mlpackage, and rewrites liquidcall.json
+# runs xcrun coremlcompiler on every .mlpackage, and rewrites cetacall.json
 # to those .mlmodelc paths. It then prints the callee and caller lines.
-./build.sh release liquidcall
-# ./build.sh -b liquidcodec-ane release liquidcall
+./build.sh release cetacall
+# ./build.sh -b liquidcodec-ane release cetacall
 
 # Same call the build prints. Both sides inject the tone. It runs N seconds,
 # then fails the shell if a log shows Check failed, a bad code, or a session
 # restart, or if either direction sent fewer than 90% of duration/80ms packets.
 # It does not use GNU timeout. Default directcall AEC is on; this script passes
 # --aec=off so the injected clip is not altered. Use --aec=on for a mic loop.
-src/scripts/liquidcall/run_local_call.sh
+src/scripts/cetacall/run_local_call.sh
 
 # iOS frameworks for the RobotPhone app (a separate repo). Unsigned.
 # Writes <gclient>/out/ios-arm64/WebRTC.framework, direct.framework, and models/.
-# ./build.sh -b liquidcodec-ane ios release liquidcall
+# ./build.sh -b liquidcodec-ane ios release cetacall
 
 # Quality ladder. One command prepares clips, models, and the binary, then
-# writes scripts/liquidcall/out/quality/<timestamp>/quality.csv and quality.md.
+# writes scripts/cetacall/out/quality/<timestamp>/quality.csv and quality.md.
 # --stages 1 is the offline codec. --stages 2 is packing and runs on Linux.
 # --quick is the short matrix. Stage 5 injects loss and jitter in-process.
-src/scripts/liquidcall/quality_ladder.sh --quick
-# src/scripts/liquidcall/quality_ladder.sh --stages 1-6
+src/scripts/cetacall/quality_ladder.sh --quick
+# src/scripts/cetacall/quality_ladder.sh --stages 1-6
 
 # A hand-supplied clip still works. 24 kHz mono is the codec rate.
-# afconvert -f WAVE -d LEI16@24000 input.flac "$HOME/liquid-clip.wav"
-# src/scripts/liquidcall/run_local_call.sh --inject-wav "$HOME/liquid-clip.wav" --duration 20
+# afconvert -f WAVE -d LEI16@24000 input.flac "$HOME/cetacall-clip.wav"
+# src/scripts/cetacall/run_local_call.sh --inject-wav "$HOME/cetacall-clip.wav" --duration 20
 
 # A live mic uses AEC3, NS, and AGC unless you pass --aec=off. The script above
 # passes --aec=off. Headphones, so the mic does not hear the speaker.
 BIN=src/out/release/directcall
-MODELS=scripts/liquidcall/models
-mkdir -p "$HOME/liquidcall-record/callee" "$HOME/liquidcall-record/caller"
+MODELS=scripts/cetacall/models
+mkdir -p "$HOME/cetacall-record/callee" "$HOME/cetacall-record/caller"
 
-"$BIN" --mode=callee --user_name=alice --room_name=liquid \
+"$BIN" --mode=callee --user_name=alice --room_name=room \
   --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama \
-  --audio-codec=liquidcall \
-  --liquid-decode=ane \
-  --liquid-model-dir="$MODELS" \
-  --record-dir="$HOME/liquidcall-record/callee" \
+  --audio-codec=cetacall \
+  --cetacall-decode=ane \
+  --cetacall-model-dir="$MODELS" \
+  --record-dir="$HOME/cetacall-record/callee" \
   127.0.0.1:3456
 
-"$BIN" --mode=caller --user_name=bob --target_name=alice --room_name=liquid \
+"$BIN" --mode=caller --user_name=bob --target_name=alice --room_name=room \
   --no-encryption --no-websocket_signaling --no-video --no-whisper --no-llama \
-  --audio-codec=liquidcall \
-  --liquid-decode=ane \
-  --liquid-model-dir="$MODELS" \
-  --inject-wav="$HOME/liquid-clip.wav" \
-  --record-dir="$HOME/liquidcall-record/caller" \
+  --audio-codec=cetacall \
+  --cetacall-decode=ane \
+  --cetacall-model-dir="$MODELS" \
+  --inject-wav="$HOME/cetacall-clip.wav" \
+  --record-dir="$HOME/cetacall-record/caller" \
   --duration=20 \
   127.0.0.1:3456
 ```
 
-Two Macs on a LAN: run the callee the same way with that Mac's LAN address instead of `127.0.0.1`, and point the caller at the same `192.168.x.x:3456`. Both machines need the fetched models and a `liquidcall` build.
+Two Macs on a LAN: run the callee the same way with that Mac's LAN address instead of `127.0.0.1`, and point the caller at the same `192.168.x.x:3456`. Both machines need the fetched models and a `cetacall` build.
 
 Listen and compare:
 
-- `~/liquidcall-record/caller/codec_in_24k.wav` is the 24 kHz audio LiquidCall encoded.
-- `~/liquidcall-record/callee/codec_out_24k.wav` is the 24 kHz audio after the Core ML decoder and CPU tail, without the priming silence.
+- `~/cetacall-record/caller/codec_in_24k.wav` is the 24 kHz audio CetaCall encoded.
+- `~/cetacall-record/callee/codec_out_24k.wav` is the 24 kHz audio after the Core ML decoder and CPU tail, without the priming silence.
 - `caller/input_48k.wav` and `callee/output_48k.wav` are what WebRTC sent and played, including the wait before the first chunk.
 - `caller/encoder_stats.json` and `callee/decoder_stats.json` have payload bitrate, packet size, chunk size, the calculated latency, and `prediction_ms_mean` for the Core ML call.
 - `tap_stats.json` is the same payload accounting for an Opus run.
 
-Repeat the caller and callee with `--liquid-decode=cpu` to compare that prediction time with the ANE run. Nothing in this repo has measured either one.
+Repeat the caller and callee with `--cetacall-decode=cpu` to compare that prediction time with the ANE run. Nothing in this repo has measured either one.
 
 Opus A/B, same clip, same record dirs (use a different folder so the WAVs are not overwritten):
 
 ```bash
-# Comparable: Opus floor is 6000 bps. LiquidCall's information rate is about 1646 bps.
-"$BIN" --mode=callee --user_name=alice --room_name=liquid \
+# Comparable: Opus floor is 6000 bps. CetaCall's information rate is about 1646 bps.
+"$BIN" --mode=callee --user_name=alice --room_name=room \
   --no-encryption --no-websocket_signaling --no-video \
   --audio-codec=opus --opus-bitrate=6000 \
-  --record-dir="$HOME/liquidcall-record/opus6k-callee" \
+  --record-dir="$HOME/cetacall-record/opus6k-callee" \
   127.0.0.1:3456
 
-"$BIN" --mode=caller --user_name=bob --target_name=alice --room_name=liquid \
+"$BIN" --mode=caller --user_name=bob --target_name=alice --room_name=room \
   --no-encryption --no-websocket_signaling --no-video \
   --audio-codec=opus --opus-bitrate=6000 \
-  --inject-wav="$HOME/liquid-clip.wav" \
-  --record-dir="$HOME/liquidcall-record/opus6k-caller" \
+  --inject-wav="$HOME/cetacall-clip.wav" \
+  --record-dir="$HOME/cetacall-record/opus6k-caller" \
   --duration=20 \
   127.0.0.1:3456
 
@@ -340,19 +340,19 @@ Opus A/B, same clip, same record dirs (use a different folder so the WAVs are no
 # same commands with --opus-bitrate=32000 and record dirs opus32k-callee / opus32k-caller
 ```
 
-`--audio-codec` omitted is the existing Opus path with no extra flags. The manifest contract is `scripts/liquidcall/liquidcall.example.json`.
+`--audio-codec` omitted is the existing Opus path with no extra flags. The manifest contract is `scripts/cetacall/cetacall.example.json`.
 
 ### Latency: low-latency jitter buffer
 
-For `--audio-codec=liquidcall` the receive jitter buffer (NetEq) runs in a low-latency mode by default: `--jitter-max-ms=80` caps NetEq's target delay, and the same cap (plus NetEq's 20 ms window) bounds the playout delay NetEq accelerates down to, with fast accelerate on. Below the cap NetEq still adapts to measured jitter. `--jitter-max-ms=160` is a balanced setting, `--jitter-max-ms=0` is stock NetEq with no cap (the old behavior), and `--no-jitter-fast-accelerate` turns fast accelerate off. The startup line `Jitter buffer: ...` shows what is in effect. Opus calls keep stock NetEq unless the flag is given.
+For `--audio-codec=cetacall` the receive jitter buffer (NetEq) runs in a low-latency mode by default: `--jitter-max-ms=80` caps NetEq's target delay, and the same cap (plus NetEq's 20 ms window) bounds the playout delay NetEq accelerates down to, with fast accelerate on. Below the cap NetEq still adapts to measured jitter. `--jitter-max-ms=160` is a balanced setting, `--jitter-max-ms=0` is stock NetEq with no cap (the old behavior), and `--no-jitter-fast-accelerate` turns fast accelerate off. The startup line `Jitter buffer: ...` shows what is in effect. Opus calls keep stock NetEq unless the flag is given.
 
 The stats line reports `jitter_buffer_ms` for the last interval (it was the whole-call average, which lagged changes by tens of seconds), `jitter_buffer_avg_ms` for the call, and `jitter_buffer_target_ms`, NetEq's target. `mouth_to_ear_est_ms` uses the interval value. Once DTLS has picked the SRTP cipher, an `On-wire (negotiated): ...` line prints the per-packet bytes with the real tag (4 bytes for SHA1_32).
 
-The factory quality stage uses the same cap. `LIQUID_QUALITY_STALL_MS=150` makes it hold packets for 150 ms every 5 s and deliver them in a burst, like a Wi-Fi stall:
+The factory quality stage uses the same cap. `CETACALL_QUALITY_STALL_MS=150` makes it hold packets for 150 ms every 5 s and deliver them in a burst, like a Wi-Fi stall:
 
 ```bash
-LIQUID_QUALITY_STALL_MS=150 src/out/lowlat/directcall --quality=factory \
-  --inject-wav=speech.wav --record-dir=/tmp/q --liquid-model-dir=<models> --jitter-max-ms=80
+CETACALL_QUALITY_STALL_MS=150 src/out/lowlat/directcall --quality=factory \
+  --inject-wav=speech.wav --record-dir=/tmp/q --cetacall-model-dir=<models> --jitter-max-ms=80
 ```
 
 Measured in that simulation (speech, 18 s, Core ML ANE): with no stalls the mean packet wait is 30 ms at any setting. With 150 ms stalls every 5 s, stock NetEq waits 154 ms on average (target 120 ms) and the 80 ms cap waits 90 ms (target 80 ms) for 0.5 percentage points more concealment. With 300 ms stalls: 289 ms stock, 158 ms capped, concealment 1.5% vs 3.9%.
@@ -360,7 +360,7 @@ Measured in that simulation (speech, 18 s, Core ML ANE): with no stalls the mean
 Build the Mac binary into its own directory, so a callee running from `out/release` or another directory is not relinked under it:
 
 ```bash
-src/scripts/liquidcall/build_mac_directcall.sh lowlat   # -> src/out/lowlat/directcall
+src/scripts/cetacall/build_mac_directcall.sh lowlat   # -> src/out/lowlat/directcall
 ```
 
 ### Echo cancellation on macOS
@@ -369,17 +369,17 @@ src/scripts/liquidcall/build_mac_directcall.sh lowlat   # -> src/out/lowlat/dire
 
     echo aec=vpio send_dbfs=-52.1 recv_dbfs=-24.0 erl_db=na erle_db=na aec_delay_ms=-1 divergent=-1.000
 
-`send_dbfs` is what we transmit after cancellation and `recv_dbfs` what we play. While only the far end talks, `send_dbfs` should stay near the room's noise floor (about -50 dBFS or lower); a send level that rises and falls with `recv_dbfs` is echo leaking. With `--aec=aec3` the line also has AEC3's ERL, ERLE, delay, and divergent-filter fraction. Decoding for playout runs on its own thread with a 20 ms ring ahead of the VPIO callback (`LIQUIDCALL_VPIO_PREBUFFER_MS`), like the HAL device's ring.
+`send_dbfs` is what we transmit after cancellation and `recv_dbfs` what we play. While only the far end talks, `send_dbfs` should stay near the room's noise floor (about -50 dBFS or lower); a send level that rises and falls with `recv_dbfs` is echo leaking. With `--aec=aec3` the line also has AEC3's ERL, ERLE, delay, and divergent-filter fraction. Decoding for playout runs on its own thread with a 20 ms ring ahead of the VPIO callback (`CETACALL_VPIO_PREBUFFER_MS`), like the HAL device's ring.
 
 Two devices in the same room form an acoustic loop no canceller can see: the Mac's speaker reaches the iPhone's mic, and the iPhone's speaker reaches the Mac's mic. Each canceller only removes its own speaker. For a same-room test, use headphones on one side or the iPhone's earpiece.
 
-`directcall --quality=aec --inject-wav=<render.wav> --record-dir=<dir>` is an offline check of AEC3: the WAV plays through a simulated speaker-to-mic path (40 ms delay, 40 ms room tail, -6 dB; `AEC_TEST_DELAY_MS`, `AEC_TEST_GAIN_DB`, `AEC_TEST_JUMP_MS`) into APM, and it prints ERLE per second. Feeding it the factory stage's `quality_out.wav` with `LIQUID_QUALITY_STALL_MS=150` (80 ms cap, accelerate and expand active) gave the same steady ERLE as the unstretched speech, about 68 dB per second after convergence. A 30 ms jump in the device delay cost one to two seconds of leak (13.7 dB worst second). NetEq doesn't change that delay, because the canceller's reference is the audio after NetEq.
+`directcall --quality=aec --inject-wav=<render.wav> --record-dir=<dir>` is an offline check of AEC3: the WAV plays through a simulated speaker-to-mic path (40 ms delay, 40 ms room tail, -6 dB; `AEC_TEST_DELAY_MS`, `AEC_TEST_GAIN_DB`, `AEC_TEST_JUMP_MS`) into APM, and it prints ERLE per second. Feeding it the factory stage's `quality_out.wav` with `CETACALL_QUALITY_STALL_MS=150` (80 ms cap, accelerate and expand active) gave the same steady ERLE as the unstretched speech, about 68 dB per second after convergence. A 30 ms jump in the device delay cost one to two seconds of leak (13.7 dB worst second). NetEq doesn't change that delay, because the canceller's reference is the audio after NetEq.
 
 ### Bandwidth: tight packing and Opus
 
-Each code is in `[0, 2016)`, so it fits in 11 bits. Twelve codes are 132 bits. `--liquid-pack=tight` stores that in **17 bytes** and adds no payload header: the RTP sequence number and timestamp already identify the packet, and SDP `pack=tight` with `fpp` fixes how many frames are inside. The length is unique too (17, 33, or 66 bytes). `--liquid-pack=u16` keeps the current header plus 12 little-endian codes: 28, 52, or 100 bytes for 1, 2, or 4 frames. `--liquid-frames-per-packet` is 1, 2, or 4. A packet of several frames is parsed into 80 ms frames so NetEq's 120 ms limit still holds.
+Each code is in `[0, 2016)`, so it fits in 11 bits. Twelve codes are 132 bits. `--cetacall-pack=tight` stores that in **17 bytes** and adds no payload header: the RTP sequence number and timestamp already identify the packet, and SDP `pack=tight` with `fpp` fixes how many frames are inside. The length is unique too (17, 33, or 66 bytes). `--cetacall-pack=u16` keeps the current header plus 12 little-endian codes: 28, 52, or 100 bytes for 1, 2, or 4 frames. `--cetacall-frames-per-packet` is 1, 2, or 4. A packet of several frames is parsed into 80 ms frames so NetEq's 120 ms limit still holds.
 
-Calculated on-wire rate, IPv4 20 + UDP 8 + RTP 12, no header extensions. The SRTP column adds a 16-byte (GCM) tag; LiquidCall calls offer SHA1_32, a 4-byte tag, so a u16 one-frame call is 7.2 kbps on the wire. The quality calls use `--no-encryption`, so the plain column is the one getStats should approach.
+Calculated on-wire rate, IPv4 20 + UDP 8 + RTP 12, no header extensions. The SRTP column adds a 16-byte (GCM) tag; CetaCall calls offer SHA1_32, a 4-byte tag, so a u16 one-frame call is 7.2 kbps on the wire. The quality calls use `--no-encryption`, so the plain column is the one getStats should approach.
 
 | pack | frames/packet | payload | payload kbps | IPv4/UDP/RTP kbps | plus SRTP tag |
 |---|---:|---:|---:|---:|---:|
@@ -388,24 +388,24 @@ Calculated on-wire rate, IPv4 20 + UDP 8 + RTP 12, no header extensions. The SRT
 | tight | 2 | 33 | 1.650 | 3.650 | 4.450 |
 | tight | 4 | 66 | 1.650 | 2.650 | 3.050 |
 
-`scripts/liquidcall/bench_bandwidth.sh --theoretical` prints the full matrix, including Opus at 6, 8, 12, 16, 24, and 32 kbps, ptime 20/40/60, and DTX on or off. Opus sizes in that table are the nominal target. DTX is smaller only while the signal is quiet, which a real call measures and the table does not invent.
+`scripts/cetacall/bench_bandwidth.sh --theoretical` prints the full matrix, including Opus at 6, 8, 12, 16, 24, and 32 kbps, ptime 20/40/60, and DTX on or off. Opus sizes in that table are the nominal target. DTX is smaller only while the signal is quiet, which a real call measures and the table does not invent.
 
-On the Mac, after `./build.sh release liquidcall`. The bench uses that binary and `scripts/liquidcall/models`. With no `--samples` it generates a tone, so it does not need a separate download.
+On the Mac, after `./build.sh release cetacall`. The bench uses that binary and `scripts/cetacall/models`. With no `--samples` it generates a tone, so it does not need a separate download.
 
 ```bash
-src/scripts/liquidcall/bench_bandwidth.sh --theoretical
-src/scripts/liquidcall/bench_bandwidth.sh --quick
+src/scripts/cetacall/bench_bandwidth.sh --theoretical
+src/scripts/cetacall/bench_bandwidth.sh --quick
 
 # Speech clips, when you want WER rather than the generated tone:
-src/scripts/liquidcall/bench_bandwidth.sh \
-  --samples "$HOME/liquidcodec-ane/samples" \
+src/scripts/cetacall/bench_bandwidth.sh \
+  --samples "$HOME/cetacall-ane/samples" \
   --conversation "$HOME/speech/conversation.wav"
 
 # These print sudo commands and do not run them.
-scripts/liquidcall/bench_bandwidth.sh --pcap --impair --theoretical
+scripts/cetacall/bench_bandwidth.sh --pcap --impair --theoretical
 ```
 
-Each measured run writes `scripts/liquidcall/out/bandwidth/<config>/caller.log` (getStats `send_bytes`, `send_packets`, `send_header_bytes`) and a WAV under `callee/`. The analyzer writes `bandwidth.csv` and, when a score exists, `bandwidth.svg` (quality vs on-wire kbps) and `bandwidth_wer.svg`. Mouth-to-ear in the CSV is an estimate: calculated codec latency + jitter buffer + half the RTT + mean Core ML prediction time. It is not an acoustic measurement.
+Each measured run writes `scripts/cetacall/out/bandwidth/<config>/caller.log` (getStats `send_bytes`, `send_packets`, `send_header_bytes`) and a WAV under `callee/`. The analyzer writes `bandwidth.csv` and, when a score exists, `bandwidth.svg` (quality vs on-wire kbps) and `bandwidth_wer.svg`. Mouth-to-ear in the CSV is an estimate: calculated codec latency + jitter buffer + half the RTT + mean Core ML prediction time. It is not an acoustic measurement.
 
 Quality tools are optional and were not run here:
 
@@ -413,12 +413,12 @@ Quality tools are optional and were not run here:
 python3 -m pip install numpy soundfile pesq pystoi
 # ViSQOL speech mode, if the package builds: python3 -m pip install visqol
 # Whisper WER: python3 -m pip install openai-whisper
-#   LIQUID_BENCH_WHISPER=1 python3 scripts/liquidcall/bandwidth.py --analyze scripts/liquidcall/out/bandwidth
+#   CETACALL_BENCH_WHISPER=1 python3 scripts/cetacall/bandwidth.py --analyze scripts/cetacall/out/bandwidth
 # A .txt transcript with the same basename as the clip is the WER reference.
 # Without one, Whisper transcribes the original and the decode and compares those texts.
 ```
 
-ANE and CPU decode time per frame are `prediction_ms_mean` in `callee/decoder_stats.json`. The bench runs each LiquidCall packing twice, `--liquid-decode=ane` and `--liquid-decode=cpu`. Nothing in this checkout has executed those calls.
+ANE and CPU decode time per frame are `prediction_ms_mean` in `callee/decoder_stats.json`. The bench runs each CetaCall packing twice, `--cetacall-decode=ane` and `--cetacall-decode=cpu`. Nothing in this checkout has executed those calls.
 
 ## Troubleshooting
 - If you encounter missing dependencies, ensure all prerequisites are installed.

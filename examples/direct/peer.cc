@@ -394,13 +394,13 @@ DirectPeer::~DirectPeer() {
   Cleanup();
 }
 
-// LiquidCall packets carry 28 bytes of payload; the default audio RTP header
+// CetaCall packets carry 28 bytes of payload; the default audio RTP header
 // extensions (audio level, abs-send-time, transport-wide CC, ...) added 16
 // bytes to every packet, and transport-cc also triggers transport feedback
 // RTCP. Keep only MID (sent in the first packets of a call) unless asked.
 static void TrimAudioHeaderExtensions(webrtc::PeerConnectionInterface* pc, const Options& o) {
   if (!pc) return;
-  const bool keep = o.rtp_header_extensions < 0 ? o.audio_codec != "liquidcall"
+  const bool keep = o.rtp_header_extensions < 0 ? o.audio_codec != "cetacall"
                                                 : o.rtp_header_extensions != 0;
   if (keep) return;
   for (const auto& t : pc->GetTransceivers()) {
@@ -882,7 +882,7 @@ std::string CleanLangValue(const std::string& value) {
 std::string AddLangRequestToSdp(const std::string& sdp, const std::string& value) {
   const std::string v = CleanLangValue(value);
   if (v.empty()) return sdp;
-  std::string liquid_pt, opus_pt;
+  std::string cetacall_pt, opus_pt;
   std::vector<std::string> lines;
   size_t i = 0;
   while (i < sdp.size()) {
@@ -900,10 +900,10 @@ std::string AddLangRequestToSdp(const std::string& sdp, const std::string& value
     std::string codec = line.substr(sp + 1);
     for (auto& c : codec) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     const std::string pt = line.substr(9, sp - 9);
-    if (liquid_pt.empty() && codec.rfind("cetacall/", 0) == 0) liquid_pt = pt;
+    if (cetacall_pt.empty() && codec.rfind("cetacall/", 0) == 0) cetacall_pt = pt;
     if (opus_pt.empty() && codec.rfind("opus/", 0) == 0) opus_pt = pt;
   }
-  const std::string pt = liquid_pt.empty() ? opus_pt : liquid_pt;
+  const std::string pt = cetacall_pt.empty() ? opus_pt : cetacall_pt;
   if (pt.empty()) return sdp;
   const std::string rtpmap = "a=rtpmap:" + pt + " ";
   std::string out;

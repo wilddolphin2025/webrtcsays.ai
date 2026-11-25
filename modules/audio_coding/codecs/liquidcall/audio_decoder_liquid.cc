@@ -83,7 +83,7 @@ std::vector<AudioDecoder::ParseResult> AudioDecoderLiquid::ParsePayload(
 
 bool AudioDecoderLiquid::EnsureStarted() {
   if (backend_) return !failed_;
-  backend_ = liquid::CreateCoreMlBackend();
+  backend_ = liquid::CreateLiquidBackend();
   std::string error;
   if (!backend_ || !backend_->Start(config_.paths, config_.chunk, &error)) {
     failed_ = true;

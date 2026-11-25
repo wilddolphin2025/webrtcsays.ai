@@ -53,9 +53,9 @@ AudioEncoderLiquid::GetFrameLengthRange() const {
 
 bool AudioEncoderLiquid::EnsureStarted(std::string* error) {
   if (backend_) return !failed_;
-  backend_ = liquid::CreateCoreMlBackend();
+  backend_ = liquid::CreateLiquidBackend();
   if (!backend_) {
-    if (error) *error = "Core ML backend is not linked";
+    if (error) *error = "LiquidCall backend is not linked";
     failed_ = true;
     return false;
   }

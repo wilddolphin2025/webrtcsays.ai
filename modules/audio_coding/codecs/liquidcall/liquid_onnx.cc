@@ -10,6 +10,7 @@
 #include "modules/audio_coding/codecs/liquidcall/liquid_tail.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <chrono>
 #include <complex>
@@ -24,19 +25,25 @@ namespace webrtc {
 namespace liquid {
 namespace {
 
-int ThreadCount() {
-  const char* env = std::getenv("ORT_THREADS");
-  if (!env || !*env) return 2;
+int ThreadCount(const char* name, int fallback) {
+  const char* env = std::getenv(name);
+  if (!env || !*env) return fallback;
   const int n = std::atoi(env);
-  return n > 0 ? n : 2;
+  return n > 0 ? n : fallback;
 }
+
+// The decoder runs a 21-frame window for every 80 ms frame and costs about
+// seven encoder steps, so it gets more intra-op threads than the encoder.
+constexpr int kEncoderThreads = 2;
+constexpr int kDecoderThreads = 4;
 
 class OnnxBackend : public LiquidBackend {
  public:
   ~OnnxBackend() override { Release(); }
 
   bool Start(const ModelPaths& paths, const ChunkConfig& chunk, std::string* error) override {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::lock_guard<std::mutex> enc_lock(enc_mu_);
+    std::lock_guard<std::mutex> dec_lock(dec_mu_);
     Release();
     paths_ = paths;
     chunk_ = chunk;
@@ -55,7 +62,13 @@ class OnnxBackend : public LiquidBackend {
       return false;
     }
     if (!Ok(api_->CreateSessionOptions(&opts_), error, "CreateSessionOptions")) return false;
-    if (!Ok(api_->SetIntraOpNumThreads(opts_, ThreadCount()), error, "SetIntraOpNumThreads")) {
+    if (!Ok(api_->SetIntraOpNumThreads(opts_, ThreadCount("ORT_THREADS", kEncoderThreads)), error,
+            "SetIntraOpNumThreads")) {
+      return false;
+    }
+    if (!Ok(api_->CreateSessionOptions(&dec_opts_), error, "CreateSessionOptions (decoder)")) return false;
+    if (!Ok(api_->SetIntraOpNumThreads(dec_opts_, ThreadCount("ORT_DEC_THREADS", kDecoderThreads)), error,
+            "SetIntraOpNumThreads (decoder)")) {
       return false;
     }
     if (!Ok(api_->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &mem_), error,
@@ -67,7 +80,7 @@ class OnnxBackend : public LiquidBackend {
     if (!Ok(api_->CreateSession(env_, enc.c_str(), opts_, &enc_), error, "encoder session")) {
       return false;
     }
-    if (!Ok(api_->CreateSession(env_, dec.c_str(), opts_, &dec_), error, "decoder session")) {
+    if (!Ok(api_->CreateSession(env_, dec.c_str(), dec_opts_, &dec_), error, "decoder session")) {
       return false;
     }
     cache_ = paths.encoder_cache_frames > 0 ? paths.encoder_cache_frames : 1024;
@@ -86,7 +99,10 @@ class OnnxBackend : public LiquidBackend {
 
   bool EncodeWindow(const int16_t* pcm, const ChunkConfig& chunk, int32_t* codes_out,
                     WindowTiming* timing, std::string* error) override {
-    std::lock_guard<std::mutex> lock(mu_);
+    // Encode and decode run on separate threads and touch separate state.
+    // One shared lock let a slow decode stall the encoder, so the send path
+    // stopped as soon as remote audio arrived.
+    std::lock_guard<std::mutex> lock(enc_mu_);
     if (!api_ || !enc_ || !pcm || !codes_out) return false;
     const auto t0 = std::chrono::steady_clock::now();
     EnsureDft();
@@ -173,7 +189,7 @@ class OnnxBackend : public LiquidBackend {
 
   bool DecodeWindow(const int32_t* codes, const ChunkConfig& chunk, int16_t* pcm_out,
                     WindowTiming* timing, std::string* error) override {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::lock_guard<std::mutex> lock(dec_mu_);
     if (!api_ || !dec_ || !codes || !pcm_out) return false;
     const auto t0 = std::chrono::steady_clock::now();
     const int fr = chunk.WindowFrames();
@@ -248,7 +264,8 @@ class OnnxBackend : public LiquidBackend {
   }
 
   void Reset() override {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::lock_guard<std::mutex> enc_lock(enc_mu_);
+    std::lock_guard<std::mutex> dec_lock(dec_mu_);
     ZeroState();
     tail_.Reset();
     fifo_.clear();
@@ -368,18 +385,23 @@ class OnnxBackend : public LiquidBackend {
     if (enc_) api_->ReleaseSession(enc_);
     if (dec_) api_->ReleaseSession(dec_);
     if (opts_) api_->ReleaseSessionOptions(opts_);
+    if (dec_opts_) api_->ReleaseSessionOptions(dec_opts_);
     if (mem_) api_->ReleaseMemoryInfo(mem_);
     if (env_) api_->ReleaseEnv(env_);
     enc_ = dec_ = nullptr;
     opts_ = nullptr;
+    dec_opts_ = nullptr;
     mem_ = nullptr;
     env_ = nullptr;
   }
 
-  std::mutex mu_;
+  // Lock order where both are held (Start, Reset): enc_mu_ then dec_mu_.
+  std::mutex enc_mu_;
+  std::mutex dec_mu_;
   const OrtApi* api_ = nullptr;
   OrtEnv* env_ = nullptr;
   OrtSessionOptions* opts_ = nullptr;
+  OrtSessionOptions* dec_opts_ = nullptr;
   OrtMemoryInfo* mem_ = nullptr;
   OrtSession* enc_ = nullptr;
   OrtSession* dec_ = nullptr;
@@ -388,7 +410,7 @@ class OnnxBackend : public LiquidBackend {
   int cache_ = 1024;
   int lookback_ = 1120;
   int step_ = 2400;
-  int bad_codes_ = 0;
+  std::atomic<int> bad_codes_{0};
   std::vector<float> hist_, k_, v_, conv_, pos_;
   std::vector<double> dft_win_;
   LiquidTail tail_;

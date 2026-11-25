@@ -2,7 +2,7 @@
 #define MODULES_AUDIO_CODING_CODECS_LIQUIDCALL_LIQUID_OFFER_H_
 
 // Offer shape for --audio-codec=liquidcall. The frozen wire contract is
-// LIQUIDCALL/48000/1 payload type 96, Opus/48000/2 payload type 111, and
+// CETACALL/48000/1 payload type 96, Opus/48000/2 payload type 111, and
 // fmtp pack=tight|u16, fpp=1..4, usedtx=1 only when DTX is on.
 // Opus stays in the offer so this client can decode Opus sent back by the server.
 // Parameter order matches WebRTC's std::map fmtp writer (alphabetical).
@@ -29,18 +29,19 @@ inline std::string LowerCodecName(std::string name) {
 
 inline bool IsLiquidCallName(const std::string& name) {
   const std::string lower = LowerCodecName(name);
-  return lower == "liquidcall" || lower == "liquidcodec";
+  return lower == "cetacall";  // SDP name only; no older names (Nov 25)
 }
 
 // "" (default) is empty: do not call SetCodecPreferences, so the builtin
-// offer is unchanged. "opus" is Opus only. "liquidcall" is LIQUIDCALL then Opus.
+// offer is unchanged. "opus" is Opus only. "cetacall" (or the older option
+// spelling "liquidcall") is CETACALL then Opus. Names are matched to SDP codec names.
 inline std::vector<std::string> AudioCodecPreferenceNames(const std::string& audio_codec) {
-  if (audio_codec == "liquidcall") return {"liquidcall", "opus"};
+  if (audio_codec == "cetacall" || audio_codec == "liquidcall") return {"cetacall", "opus"};
   if (audio_codec == "opus") return {"opus"};
   return {};
 }
 
-// fmtp for LIQUIDCALL. usedtx is omitted unless DTX is on (the default is off).
+// fmtp for CETACALL. usedtx is omitted unless DTX is on (the default is off).
 inline std::map<std::string, std::string> LiquidFmtp(const std::string& pack, int fpp, bool dtx) {
   std::map<std::string, std::string> params;
   params["pack"] = pack == "u16" ? "u16" : "tight";
@@ -66,7 +67,7 @@ inline std::string LiquidCallOfferCodecLines(const std::string& pack, int fpp, b
   const std::string fmtp = FormatFmtp(LiquidFmtp(pack, fpp, dtx));
   std::string s;
   s += "m=audio 9 UDP/TLS/RTP/SAVPF 96 111" + nl;
-  s += "a=rtpmap:96 LIQUIDCALL/48000/1" + nl;
+  s += "a=rtpmap:96 CETACALL/48000/1" + nl;
   s += "a=fmtp:96 " + fmtp + nl;
   s += "a=rtpmap:111 opus/48000/2" + nl;
   s += "a=fmtp:111 minptime=10;useinbandfec=1" + nl;
@@ -82,7 +83,7 @@ inline std::string OpusOnlyOfferCodecLines(const std::string& nl = "\r\n") {
   return s;
 }
 
-// LIQUIDCALL first, then every inner codec that is not LiquidCall.
+// CETACALL first, then every inner codec that is not LiquidCall.
 // An inner Opus entry stays, so the decoder factory can still create it.
 template <typename T, typename NameOf>
 std::vector<T> PrependLiquidCall(std::vector<T> inner, T liquid, NameOf name_of) {

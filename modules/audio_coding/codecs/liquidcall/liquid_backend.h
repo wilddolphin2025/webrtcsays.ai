@@ -42,6 +42,12 @@ class LiquidBackend {
 };
 
 std::unique_ptr<LiquidBackend> CreateCoreMlBackend();
+// ONNX Runtime CPU execution provider. Built when WEBRTC_LIQUID_ONNX is set
+// (Android and the desktop offline test). The state tensors are the same ones
+// the Core ML step uses: hist, k_cache, v_cache, conv_state, pos.
+std::unique_ptr<LiquidBackend> CreateOnnxBackend();
+// Core ML on Apple, ONNX when WEBRTC_LIQUID_ONNX is set.
+std::unique_ptr<LiquidBackend> CreateLiquidBackend();
 
 }  // namespace liquid
 }  // namespace webrtc

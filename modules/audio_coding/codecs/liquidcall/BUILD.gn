@@ -1,5 +1,8 @@
-# LiquidCall is macOS-only. Linux and the arm64 Frame build do not compile
-# this target. rtc_use_liquidcall defaults off in webrtc.gni.
+# LiquidCall Core ML is macOS and iOS. rtc_use_liquidcall defaults off.
+# The Android path is liquid_onnx.cc (ONNX Runtime CPU), compiled by the
+# CetaCall Android CMake with WEBRTC_LIQUID_ONNX. It is not a gn source:
+# this tree does not fetch ONNX Runtime. liquid_backend_select.cc picks
+# Core ML here and ONNX when that flag is set.
 #
 # Labels are absolute. A relative ../../../ from this directory is //modules,
 # so import("../../../webrtc.gni") and deps like "../../../api" do not exist.
@@ -26,6 +29,7 @@ rtc_library("liquidcall") {
     "liquid_tail.cc",
     "liquid_tail.h",
     "liquid_backend.h",
+    "liquid_backend_select.cc",
   ]
   deps = [
     "//api:make_ref_counted",

@@ -9,7 +9,8 @@
   <title>WebRTCSays demo</title>
   <script>
     (function () {
-      if (location.hostname === "ls.wilddolphin.us") document.title = "CetaBridge demo";
+      var CETABRIDGE_HOSTS = { "cb.wilddolphin.us": 1, "ls.wilddolphin.us": 1 };
+      if (CETABRIDGE_HOSTS[location.hostname]) document.title = "CetaBridge demo";
     })();
   </script>
   <style>
@@ -51,7 +52,8 @@
       </div>
       <script>
         (function () {
-          if (location.hostname !== "ls.wilddolphin.us") return;
+          var CETABRIDGE_HOSTS = { "cb.wilddolphin.us": 1, "ls.wilddolphin.us": 1 };
+          if (!CETABRIDGE_HOSTS[location.hostname]) return;
           var wm = document.querySelector("header .wm");
           if (wm) wm.textContent = "CetaBridge";
         })();
@@ -90,9 +92,10 @@
     <p class="foot">WebRTCSays demo · rtc.wilddolphin.us</p>
     <script>
       (function () {
-        if (location.hostname !== "ls.wilddolphin.us") return;
+        var CETABRIDGE_HOSTS = { "cb.wilddolphin.us": 1, "ls.wilddolphin.us": 1 };
+        if (!CETABRIDGE_HOSTS[location.hostname]) return;
         var foot = document.querySelector("p.foot");
-        if (foot) foot.textContent = "CetaBridge demo · ls.wilddolphin.us";
+        if (foot) foot.textContent = "CetaBridge demo · cb.wilddolphin.us";
       })();
     </script>
   </main>

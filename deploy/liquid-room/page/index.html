@@ -65,7 +65,7 @@
       <p>Join the room, then call the same room from the CetaCall iPhone app. CetaBridge turns the iPhone's CetaCall audio, in the voice picked on the phone, into Opus for this browser.</p>
       <p id="endpoint" class="hint"></p>
       <div class="row">
-        <input id="nick" class="nick" type="text" maxlength="64" autocomplete="nickname" spellcheck="false" placeholder="Nickname (optional)" aria-label="Nickname (optional)">
+        <input id="nick" class="nick" type="text" maxlength="64" autocomplete="nickname" spellcheck="false" placeholder="Nickname" aria-label="Nickname">
         <button id="startBtn" class="btn primary" type="button">Join room</button>
         <button id="hangupBtn" class="btn" type="button">Leave</button>
         <form method="post" action="/demo/logout">
@@ -73,6 +73,7 @@
         </form>
         <span id="status" class="hint">idle</span>
       </div>
+      <p id="nickMsg" class="hint" role="status" hidden></p>
       <p id="stats" class="hint stats">no call</p>
       <audio id="remoteAudio" autoplay playsinline></audio>
     </section>
@@ -109,6 +110,7 @@
     let roster = null;
     let peerN = null;
     let selfNick = "";
+    let stickyStatus = "";
 
     const LOG_PREF = "cetabridge-room-show-log";
     const logEl = document.getElementById("log");
@@ -158,11 +160,53 @@
       return NICK_RE.test(stripped) ? stripped : "";
     }
 
+    const NICK_PREF = "cetabridge-nickname";
+
+    function randomNick() {
+      const n = Math.floor(Math.random() * 0x10000);
+      return "Web-" + n.toString(16).padStart(4, "0");
+    }
+
+    // A blank field never becomes a bare HELLO. A saved nickname is reused;
+    // otherwise one is generated, stored, and written into the input.
+    function ensureNick() {
+      const el = document.getElementById("nick");
+      const typed = sanitizeNick(el && el.value);
+      if (typed) return typed;
+      let saved = sanitizeNick(storageGet(NICK_PREF));
+      if (!saved) {
+        saved = randomNick();
+        storageSet(NICK_PREF, saved);
+      }
+      if (el) el.value = saved;
+      return saved;
+    }
+
     function helloLine() {
       const el = document.getElementById("nick");
-      selfNick = sanitizeNick(el && el.value);
-      return selfNick ? "HELLO:" + selfNick : "HELLO";
+      const typed = sanitizeNick(el && el.value);
+      selfNick = typed || ensureNick();
+      storageSet(NICK_PREF, selfNick);
+      return "HELLO:" + selfNick;
     }
+
+    function showNickMsg(text) {
+      const el = document.getElementById("nickMsg");
+      if (!el) return;
+      el.hidden = !text;
+      el.textContent = text || "";
+    }
+
+    function nicknameRefusal(msg) {
+      if (msg.startsWith("409")) return "Nickname already in use. Pick another.";
+      if (msg.startsWith("400 Nickname Required")) return "A nickname is required. Pick another and try again.";
+      if (msg.startsWith("400 Invalid Nickname")) return "That nickname is not valid. Use letters, numbers, dot, underscore, or hyphen.";
+      if (msg.startsWith("400")) return "The server rejected that request. Check the nickname and try again.";
+      return "";
+    }
+
+    ensureNick();
+    showNickMsg("");
 
     function parseNames(msg) {
       if (!msg.startsWith("NAMES ")) return null;
@@ -238,8 +282,9 @@
     }
 
     function setStatus(s) {
-      statusEl.textContent = s;
-      log("status=" + s);
+      const shown = stickyStatus || s;
+      statusEl.textContent = shown;
+      log("status=" + shown);
     }
 
     function signalingUrl() {
@@ -442,7 +487,14 @@
         return;
       }
       if (/^\d{3}\s/.test(msg) && !msg.startsWith("200 OK")) {
-        setStatus("reject:" + msg.slice(0, 40));
+        const friendly = nicknameRefusal(msg);
+        if (friendly) {
+          stickyStatus = friendly;
+          showNickMsg(friendly);
+          setStatus(friendly);
+        } else {
+          setStatus("reject:" + msg.slice(0, 40));
+        }
         hangup(false);
         return;
       }
@@ -497,6 +549,8 @@
 
     async function startCall() {
       if (ws) return;
+      stickyStatus = "";
+      showNickMsg("");
       showGuests(null);
       const wsUrl = signalingUrl();
       inviteSent = false;

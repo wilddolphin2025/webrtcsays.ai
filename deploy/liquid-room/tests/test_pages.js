@@ -126,7 +126,7 @@ function runRedirect(search) {
       navigator: { mediaDevices: { getUserMedia: async (c) => { gum.push(c); return { getTracks: () => [{ stop() {} }], getAudioTracks: () => [{ kind: "audio" }] }; } } },
       fetch: async () => ({ status: 503, ok: false, type: "basic" }),
       WebSocket: FakeWS, RTCPeerConnection: FakePC, MediaStream: class {},
-      setTimeout, clearTimeout, setInterval, clearInterval, console, JSON, Number, Date,
+      setTimeout, clearTimeout, setInterval, clearInterval, console, JSON, Number, Date, Math,
     };
     vm.runInNewContext(pageScript, ctx);
     return { els, el, sockets, pcs, gum, ctx, store };
@@ -144,7 +144,10 @@ function runRedirect(search) {
     const ws = p.sockets[0];
     assert.strictEqual(ws.url, "wss://rtc.wilddolphin.us/demo/room/ws/room101");
     ws.open();
-    assert.deepStrictEqual(ws.sent, ["HELLO"]);
+    assert(/^HELLO:Web-[0-9a-f]{4}$/.test(ws.sent[0]), ws.sent[0]);
+    assert.strictEqual(ws.sent.length, 1);
+    assert.strictEqual(p.el("nick").value, ws.sent[0].slice("HELLO:".length));
+    assert.strictEqual(p.store["cetabridge-nickname"], p.el("nick").value);
     await ws.recv("200 OK"); await settle();
     assert.strictEqual(ws.sent[1], 'INVITE:{"agent":"audio","room_name":"room101","video":false}');
     await ws.recv("200 OK"); await settle();
@@ -175,6 +178,7 @@ function runRedirect(search) {
     ws.open();
     await ws.recv("486 Busy Here"); await settle();
     assert(/^ended$/.test(p.el("status").textContent));
+    assert.strictEqual(p.el("nickMsg").hidden, true);
     assert.strictEqual(ws.sent.length, 1);
   });
 
@@ -264,10 +268,14 @@ function runRedirect(search) {
 
   await test("page: nickname is sanitized into HELLO and marked on the roster", async () => {
     const blank = makePage("/demo/room/room101");
+    const generated = blank.el("nick").value;
+    assert(/^Web-[0-9a-f]{4}$/.test(generated), generated);
+    assert.strictEqual(blank.store["cetabridge-nickname"], generated);
     blank.el("nick").value = "   ";
     blank.el("startBtn").listeners.click(); await settle();
     blank.sockets[0].open();
-    assert.deepStrictEqual(blank.sockets[0].sent, ["HELLO"]);
+    assert.deepStrictEqual(blank.sockets[0].sent, ["HELLO:" + generated]);
+    assert.strictEqual(blank.el("nick").value, generated);
 
     const messy = makePage("/demo/room/room101");
     messy.el("nick").value = "My Phone!";
@@ -286,16 +294,49 @@ function runRedirect(search) {
     assert.deepStrictEqual(guestNames(dup), ["iphone", "iphone"], "a repeated name is not guessed as us");
 
     const empty = makePage("/demo/room/room101");
+    const fallback = empty.el("nick").value;
     empty.el("nick").value = "@@@";
     empty.el("startBtn").listeners.click(); await settle();
     empty.sockets[0].open();
-    assert.strictEqual(empty.sockets[0].sent[0], "HELLO");
+    assert.strictEqual(empty.sockets[0].sent[0], "HELLO:" + fallback);
+    assert.strictEqual(empty.el("nick").value, fallback);
 
     const long = makePage("/demo/room/room101");
     long.el("nick").value = "a".repeat(80);
     long.el("startBtn").listeners.click(); await settle();
     long.sockets[0].open();
     assert.strictEqual(long.sockets[0].sent[0], "HELLO:" + "a".repeat(64));
+
+    const kept = makePage("/demo/room/room101", { storage: { "cetabridge-nickname": "Web-ab12" } });
+    assert.strictEqual(kept.el("nick").value, "Web-ab12");
+    kept.el("nick").value = "";
+    kept.el("startBtn").listeners.click(); await settle();
+    kept.sockets[0].open();
+    assert.strictEqual(kept.sockets[0].sent[0], "HELLO:Web-ab12");
+
+    const badStore = makePage("/demo/room/room101", { storage: { "cetabridge-nickname": "@@@" } });
+    assert(/^Web-[0-9a-f]{4}$/.test(badStore.el("nick").value), badStore.el("nick").value);
+    assert.notStrictEqual(badStore.el("nick").value, "@@@");
+  });
+
+  await test("page: nickname refusal is explained", async () => {
+    async function refused(line, pattern) {
+      const p = makePage("/demo/room/room101");
+      p.el("nick").value = "alice";
+      p.el("startBtn").listeners.click(); await settle();
+      const ws = p.sockets[0];
+      ws.open();
+      assert.strictEqual(ws.sent[0], "HELLO:alice");
+      await ws.recv(line); await settle();
+      assert.strictEqual(p.el("nickMsg").hidden, false);
+      assert(pattern.test(p.el("nickMsg").textContent), p.el("nickMsg").textContent);
+      assert(pattern.test(p.el("status").textContent), p.el("status").textContent);
+      assert.strictEqual(ws.sent.length, 1);
+    }
+    await refused("409 Nickname In Use", /already in use/i);
+    await refused("400 Invalid Nickname", /not valid/i);
+    await refused("400 Nickname Required", /required/i);
+    await refused("400 Bad Request", /rejected/i);
   });
 
   await test("page: CetaBridge wordmark and title", () => {

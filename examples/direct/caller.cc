@@ -414,9 +414,19 @@ void DirectCaller::SendHelloWithRetry() {
         return;
     }
 
-    const std::string hello = opts_.target_name.empty()
-                                  ? std::string(Msg::kHello)
-                                  : (std::string(Msg::kHelloPrefix) + opts_.target_name);
+    // Phase B CetaBridge rooms (/demo/room/) announce this device's display
+    // name with HELLO:<user_name>. Do not key off room_name: the iOS app
+    // always passes --room_name, including TCP Call Mac / Wait for call.
+    // Phase A (/demo/view/) and TCP still use unsanitized target_name.
+    const bool cetabridge_room = !opts_.signal_url.empty() &&
+        opts_.signal_url.find("/demo/room/") != std::string::npos;
+    std::string hello = Msg::kHello;
+    if (cetabridge_room) {
+        const std::string name = SanitizeRoomNickname(opts_.user_name);
+        if (!name.empty()) hello = std::string(Msg::kHelloPrefix) + name;
+    } else if (!opts_.target_name.empty()) {
+        hello = std::string(Msg::kHelloPrefix) + opts_.target_name;
+    }
     if (SendMessage(hello)) {
         fprintf(stderr, "Caller: HELLO attempt %d sent\n", hello_attempts_ + 1);
     } else {

@@ -1416,3 +1416,51 @@ DIRECT_API std::unique_ptr<webrtc::SessionDescriptionInterface> DirectCreateSess
   std::string remote_sdp = std::string(sdp);
   return webrtc::CreateSessionDescription(type, remote_sdp, error);
 }
+
+DIRECT_API std::string SanitizeRoomNickname(const std::string& raw) {
+  std::string out;
+  out.reserve(raw.size());
+  const size_t n = raw.size();
+  size_t i = 0;
+  auto push_dash = [&] {
+    if (out.empty() || out.back() != '-') out.push_back('-');
+  };
+  while (i < n) {
+    const unsigned char c = static_cast<unsigned char>(raw[i]);
+    if (c == '\'') {
+      ++i;
+      continue;
+    }
+    if (c == 0xE2 && i + 2 < n &&
+        static_cast<unsigned char>(raw[i + 1]) == 0x80 &&
+        (static_cast<unsigned char>(raw[i + 2]) == 0x99 ||
+         static_cast<unsigned char>(raw[i + 2]) == 0x98)) {
+      i += 3;
+      continue;
+    }
+    const bool allowed =
+        (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+        (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+    if (allowed) {
+      out.push_back(static_cast<char>(c));
+      ++i;
+      continue;
+    }
+    size_t len = 1;
+    if ((c & 0xE0) == 0xC0) len = 2;
+    else if ((c & 0xF0) == 0xE0) len = 3;
+    else if ((c & 0xF8) == 0xF0) len = 4;
+    if (i + len > n) len = n - i;
+    i += len;
+    push_dash();
+  }
+  auto trim = [](std::string s) {
+    size_t b = 0, e = s.size();
+    while (b < e && (s[b] == '-' || s[b] == '.')) ++b;
+    while (e > b && (s[e - 1] == '-' || s[e - 1] == '.')) --e;
+    return s.substr(b, e - b);
+  };
+  out = trim(std::move(out));
+  if (out.size() > 64) out.resize(64);
+  return trim(std::move(out));
+}

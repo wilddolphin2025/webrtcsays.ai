@@ -199,6 +199,10 @@ bool IsNumericHost(const std::string& host);
 bool ParseSignalUrl(const std::string& url, SignalEndpoint& out, std::string& error);
 bool IceUrlUsesHostname(const std::string& url, std::string& error);
 std::string UrlEncode(const std::string& in);
+// CetaBridge HELLO:<name>. Matches ^[A-Za-z0-9._-]{1,64}$. Empty means
+// send bare HELLO, never HELLO:. Keep in sync with the iOS and Android
+// copies (LCSanitizeRoomNickname, cetacall::SanitizeRoomNickname).
+DIRECT_API std::string SanitizeRoomNickname(const std::string& raw);
 // Reads --token-file or the env named by token_env. The returned secret must
 // not be written to logs.
 std::string LoadSignalToken(const Options& opts, std::string& error);

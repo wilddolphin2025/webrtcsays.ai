@@ -224,11 +224,16 @@ function runRedirect(search) {
     assert.strictEqual(p.el("guestWait").textContent, "Waiting for others");
     await ws.recv("PEERS   3  extra"); await settle();
     assert.strictEqual(p.el("guestSummary").textContent, "In room101: 3");
-    assert.deepStrictEqual(guestNames(p), ["You", "Guest 2", "Guest 3"]);
+    assert.deepStrictEqual(guestNames(p), ["You"], "PEERS alone does not invent guest labels");
     assert.strictEqual(p.el("guestWait").hidden, true);
     assert(/PEERS\s+3/.test(p.el("log").textContent), "PEERS is written to the hidden log");
+    await ws.recv("NAMES iphone,Pixel_8,Guest-1"); await settle();
+    assert.strictEqual(p.el("guestSummary").textContent, "In room101: 3");
+    assert.deepStrictEqual(guestNames(p), ["iphone", "Pixel_8", "Guest-1"]);
+    await ws.recv("NAMES alice, bad"); await settle();
+    assert.deepStrictEqual(guestNames(p), ["iphone", "Pixel_8", "Guest-1"], "a malformed roster is ignored");
     await ws.recv("NOBODY home"); await settle();
-    assert.deepStrictEqual(guestNames(p), ["You", "Guest 2", "Guest 3"]);
+    assert.deepStrictEqual(guestNames(p), ["iphone", "Pixel_8", "Guest-1"]);
     assert.strictEqual(ws.sent.length, 2);
     p.el("hangupBtn").listeners.click();
     assert.deepStrictEqual(guestNames(p), ["You"]);
@@ -249,11 +254,48 @@ function runRedirect(search) {
     const ws = again.sockets[0];
     ws.open();
     await ws.recv("PEERS 2"); await settle();
-    assert.deepStrictEqual(guestNames(again), ["You", "Guest 2"]);
+    await ws.recv("NAMES alice,bob"); await settle();
+    assert.deepStrictEqual(guestNames(again), ["alice", "bob"]);
     ws.onclose();
     await settle();
     assert.deepStrictEqual(guestNames(again), ["You"]);
     assert.strictEqual(again.el("guestSummary").hidden, true);
+  });
+
+  await test("page: nickname is sanitized into HELLO and marked on the roster", async () => {
+    const blank = makePage("/demo/room/room101");
+    blank.el("nick").value = "   ";
+    blank.el("startBtn").listeners.click(); await settle();
+    blank.sockets[0].open();
+    assert.deepStrictEqual(blank.sockets[0].sent, ["HELLO"]);
+
+    const messy = makePage("/demo/room/room101");
+    messy.el("nick").value = "My Phone!";
+    messy.el("startBtn").listeners.click(); await settle();
+    const mws = messy.sockets[0];
+    mws.open();
+    assert.strictEqual(mws.sent[0], "HELLO:MyPhone");
+    await mws.recv("NAMES MyPhone,iphone"); await settle();
+    assert.deepStrictEqual(guestNames(messy), ["MyPhone (you)", "iphone"]);
+
+    const dup = makePage("/demo/room/room101");
+    dup.el("nick").value = "iphone";
+    dup.el("startBtn").listeners.click(); await settle();
+    dup.sockets[0].open();
+    await dup.sockets[0].recv("NAMES iphone,iphone"); await settle();
+    assert.deepStrictEqual(guestNames(dup), ["iphone", "iphone"], "a repeated name is not guessed as us");
+
+    const empty = makePage("/demo/room/room101");
+    empty.el("nick").value = "@@@";
+    empty.el("startBtn").listeners.click(); await settle();
+    empty.sockets[0].open();
+    assert.strictEqual(empty.sockets[0].sent[0], "HELLO");
+
+    const long = makePage("/demo/room/room101");
+    long.el("nick").value = "a".repeat(80);
+    long.el("startBtn").listeners.click(); await settle();
+    long.sockets[0].open();
+    assert.strictEqual(long.sockets[0].sent[0], "HELLO:" + "a".repeat(64));
   });
 
   await test("page: CetaBridge wordmark and title", () => {

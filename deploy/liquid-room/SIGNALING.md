@@ -91,6 +91,33 @@ Messages never used by LiquidServer: `ADDRESS:`, `USERS:`, `REGISTER:`, `FACE:`,
 `VOICE:` is the TTS clip selector of the robot callee and MUST NOT be reused for voice swap; voice
 selection lives in SDP only.
 
+### 2.2 Room count and roster (CetaBridge)
+
+CetaBridge sends two notices in addition to the table above. Older clients ignore unknown lines.
+`PEERS <n>` is unchanged: `n` is the decimal number of members, including the recipient, one ASCII
+space, no trailing newline.
+
+`NAMES <name>,<name>,...` follows every `PEERS` line, on the same sockets. One token per current
+member, in join order, so the token count equals `n`. One ASCII space after `NAMES`, a single comma
+between tokens, no spaces, no trailing newline. Each token matches `^[A-Za-z0-9._-]{1,64}$`.
+
+A `HELLO:<name>` suffix that matches that pattern is stored and used as the token. An empty or
+invalid suffix is not stored; that seat is `Guest-N`. `N` is a positive decimal assigned once when
+the session joins, starting at 1 for the room, and it is not reused while the room exists. The same
+token may appear more than once. A display name is not a seat id: a second session with the same
+name does not replace the first. The server does not log the suffix or the roster tokens.
+
+Who receives them:
+
+- A `HELLO` that adds the session: every current member, after `200 OK` to the newcomer, then
+  `VOICES` to the newcomer only.
+- `WAITING` on `INVITE`: the inviting client only (`PEERS`, `NAMES`, then `VOICES`). Not a rebroadcast.
+- A member leaves: everyone still in the room (`PEERS`, then `NAMES`).
+
+A retry `HELLO` that does not change membership does not resend `PEERS`, `NAMES`, or `VOICES`.
+The browser page sends `HELLO:<name>` when the optional nickname field sanitizes to the pattern,
+and plain `HELLO` when it is blank. It renders `NAMES` and does not invent guest labels from `PEERS`.
+
 ### 2.1 Typical sequences
 
 Browser (page/index.html):

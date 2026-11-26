@@ -1460,7 +1460,13 @@ DIRECT_API std::string SanitizeRoomNickname(const std::string& raw) {
     while (e > b && (s[e - 1] == '-' || s[e - 1] == '.')) --e;
     return s.substr(b, e - b);
   };
-  out = trim(std::move(out));
+  std::string collapsed;
+  collapsed.reserve(out.size());
+  for (char ch : out) {
+    if (ch == '-' && !collapsed.empty() && collapsed.back() == '-') continue;
+    collapsed.push_back(ch);
+  }
+  out = trim(std::move(collapsed));
   if (out.size() > 64) out.resize(64);
   return trim(std::move(out));
 }

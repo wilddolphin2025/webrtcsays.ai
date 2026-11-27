@@ -136,6 +136,22 @@ bool DirectWanClient::Lookup(const std::string& nickname) {
   return true;
 }
 
+bool DirectWanClient::Search(const std::string& prefix) {
+  const std::string query = Trim(prefix);
+  if (query.empty()) return false;
+  SendFrame("SEARCH " + query);
+  return true;
+}
+
+bool DirectWanClient::SendChatFrame(const std::string& frame) {
+  if (frame.empty()) return false;
+  auto ws = ws_;
+  if (!ws || !ws->is_connected()) return false;
+  ++chat_outstanding_;
+  ws->send_message(frame);
+  return true;
+}
+
 bool DirectWanClient::Call(const std::string& nickname) {
   if (nickname.empty()) return false;
   {
@@ -375,6 +391,27 @@ void DirectWanClient::OnWsMessage(const std::string& raw) {
   const std::string frame = Trim(raw);
   if (frame.empty()) return;
 
+  // Chat v0.1 replies and errors. Keep them away from call signaling; a
+  // chat error must never close the /direct socket.
+  const bool chat_reply =
+      HasPrefix(frame, "CAPS OK") || frame == "IDENTITY OK" ||
+      HasPrefix(frame, "IDENTITY-RESP ") || HasPrefix(frame, "MSG ") ||
+      HasPrefix(frame, "ACK ") || HasPrefix(frame, "MSGS ") ||
+      HasPrefix(frame, "STATE ") || frame == "PUSH OK";
+  const bool chat_error =
+      HasPrefix(frame, "404 Unknown peer") ||
+      HasPrefix(frame, "409 IDENTITY CONFLICT") ||
+      HasPrefix(frame, "413 Message Too Long") ||
+      HasPrefix(frame, "503 Chat Unavailable") ||
+      HasPrefix(frame, "503 Inbox Full") ||
+      HasPrefix(frame, "480 Temporarily Unavailable");
+  const bool chat_bad_request = HasPrefix(frame, "400 Bad Request");
+  if (chat_reply || chat_error || (chat_bad_request && chat_outstanding_.load() > 0)) {
+    if (chat_outstanding_.load() > 0) --chat_outstanding_;
+    if (on_chat_frame) on_chat_frame(frame);
+    return;
+  }
+
   if (HasPrefix(frame, "OFFER ")) {
     Json::Value root;
     if (ParseJsonObject(frame.substr(6), &root) && root["sdp"].isString()) {
@@ -404,6 +441,22 @@ void DirectWanClient::OnWsMessage(const std::string& raw) {
       registered_ = true;
     }
     if (on_registered) on_registered();
+    return;
+  }
+  if (HasPrefix(frame, "RESULTS")) {
+    const std::string body = Trim(frame.substr(std::strlen("RESULTS")));
+    std::vector<std::string> names;
+    size_t start = 0;
+    while (start <= body.size()) {
+      const size_t comma = body.find(',', start);
+      std::string one = Trim(body.substr(start, comma == std::string::npos
+                                                   ? std::string::npos
+                                                   : comma - start));
+      if (!one.empty()) names.push_back(std::move(one));
+      if (comma == std::string::npos) break;
+      start = comma + 1;
+    }
+    if (on_results) on_results(names);
     return;
   }
   if (HasPrefix(frame, "ONLINE ")) {
@@ -514,6 +567,7 @@ void DirectWanClient::OnWsMessage(const std::string& raw) {
     return;
   }
   if (HasPrefix(frame, "480 Offline") || HasPrefix(frame, "486 ") ||
+      HasPrefix(frame, "400 Bad Request") || HasPrefix(frame, "429") ||
       HasPrefix(frame, "400 ")) {
     if (on_error) on_error(frame);
     return;

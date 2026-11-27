@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "direct.h"
 
@@ -29,6 +30,11 @@ class DIRECT_API DirectWanClient : public DirectPeer {
   /// Sends REGISTER <nickname> <device_token>. The device token is never logged.
   bool Register(const std::string& nickname, const std::string& device_token);
   bool Lookup(const std::string& nickname);
+  /// Global prefix search (CetaBridge SEARCH/RESULTS).
+  bool Search(const std::string& prefix);
+  /// Sends one chat frame (CAPS/IDENTITY/MSG/ACK/SYNC/PUSH) on the
+  /// registered /direct socket. Chat replies arrive in on_chat_frame.
+  bool SendChatFrame(const std::string& frame);
   bool Call(const std::string& nickname);
   bool Accept();
   bool Reject();
@@ -46,6 +52,8 @@ class DIRECT_API DirectWanClient : public DirectPeer {
   std::function<void()> on_registered;
   std::function<void(const std::string&)> on_online;
   std::function<void(const std::string&)> on_offline;
+  std::function<void(const std::vector<std::string>&)> on_results;
+  std::function<void(const std::string&)> on_chat_frame;
   std::function<void(const std::string& call_id, const std::string& callee)> on_ringing;
   std::function<void(const std::string& call_id, const std::string& caller)> on_incoming;
   std::function<void(const std::string& call_id, const std::string& callee)> on_accepted;
@@ -77,6 +85,7 @@ class DIRECT_API DirectWanClient : public DirectPeer {
   void SendJson(const char* verb, const std::string& sdp);
   void SendIceJson(const std::string& candidate, int mline_index);
   void SendFrame(const std::string& frame);
+  std::atomic<int> chat_outstanding_{0};
   void ResetCall();
   void CloseSocket();
 

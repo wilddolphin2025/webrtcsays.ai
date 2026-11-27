@@ -391,6 +391,19 @@ void DirectWanClient::OnWsMessage(const std::string& raw) {
   const std::string frame = Trim(raw);
   if (frame.empty()) return;
 
+  // The WebSocket client reports a dropped link (and a failed reconnect)
+  // through the same message callback. Tell the app so it can clear the stale
+  // client and re-register on the new interface instead of showing a dead
+  // "Registered" state after Wi-Fi -> LTE.
+  if (frame == "DISCONNECTED" || frame == "RECONNECT_FAILED") {
+    {
+      std::lock_guard<std::mutex> lock(state_mu_);
+      registered_ = false;
+    }
+    if (on_closed) on_closed(frame);
+    return;
+  }
+
   // Chat v0.1 replies and errors. Keep them away from call signaling; a
   // chat error must never close the /direct socket.
   const bool chat_reply =
@@ -406,7 +419,10 @@ void DirectWanClient::OnWsMessage(const std::string& raw) {
       HasPrefix(frame, "503 Inbox Full") ||
       HasPrefix(frame, "480 Temporarily Unavailable");
   const bool chat_bad_request = HasPrefix(frame, "400 Bad Request");
-  if (chat_reply || chat_error || (chat_bad_request && chat_outstanding_.load() > 0)) {
+  // A chat 400 (for example a bad SYNC cursor) must never tear down an active
+  // call. While a call is up, route 400 to the chat callback only.
+  if (chat_reply || chat_error ||
+      (chat_bad_request && (chat_outstanding_.load() > 0 || InCall()))) {
     if (chat_outstanding_.load() > 0) --chat_outstanding_;
     if (on_chat_frame) on_chat_frame(frame);
     return;

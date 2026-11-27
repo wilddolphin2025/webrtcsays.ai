@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -55,6 +56,10 @@ DirectWanClient::DirectWanClient(const Options& opts) : DirectPeer(opts) {}
 DirectWanClient::~DirectWanClient() {
   CloseSocket();
   ws_.reset();
+  if (ws_thread_) {
+    ws_thread_->Stop();
+    ws_thread_.reset();
+  }
   Cleanup();
 }
 
@@ -62,8 +67,16 @@ bool DirectWanClient::Connect(const std::string& host, int port,
                               const std::string& path,
                               const std::string& bearer_token) {
   CloseSocket();
+  if (!ws_thread_) {
+    ws_thread_ = webrtc::Thread::Create();
+    if (!ws_thread_ || !ws_thread_->Start()) {
+      ws_thread_.reset();
+      RTC_LOG(LS_ERROR) << "WAN: could not start the WebSocket thread";
+      return false;
+    }
+  }
   ws_ = std::make_shared<WebSocketClient>();
-  ws_->set_network_thread(network_thread());
+  ws_->set_network_thread(ws_thread_.get());
   ws_->set_allow_reconnect(true);
   ws_->set_reconnect_callback([this]() { OnReconnected(); });
   ws_->set_message_callback([this](const std::string& message) {
@@ -232,6 +245,7 @@ void DirectWanClient::SendIceJson(const std::string& candidate, int mline_index)
     id = call_id_;
   }
   if (id.empty()) return;
+  std::fprintf(stderr, "[wan] local ice %d %s\n", mline_index, candidate.c_str());
   Json::Value root;
   root["call_id"] = id;
   root["candidate"] = candidate;
@@ -273,12 +287,34 @@ bool DirectWanClient::SendMessage(const std::string& message) {
 
 void DirectWanClient::StartCallerOffer() {
   opts_.mode = "caller";
-  signaling_thread()->PostTask([this]() { this->Start(); });
+  auto start = [this]() {
+    // Never offer from a PeerConnection left over from the previous call:
+    // its ICE ufrag and failed candidate pairs are stale.
+    if (peer_connection_) ShutdownInternal();
+    signaling_thread()->PostTask([this]() { this->Start(); });
+  };
+  if (main_thread()) {
+    main_thread()->PostTask(start);
+  } else {
+    start();
+  }
 }
 
 void DirectWanClient::HandleOfferSdp(const std::string& sdp) {
   opts_.mode = "callee";
-  this->HandleMessage(nullptr, "OFFER:" + sdp, webrtc::SocketAddress());
+  auto apply = [this, sdp]() {
+    // A WAN offer starts a fresh call. Reusing the previous PeerConnection
+    // makes the answer keep a stale ICE ufrag, so Android rejects its STUN
+    // checks and ICE fails. Tear it down and start a new call generation.
+    if (peer_connection_) ShutdownInternal();
+    BeginCall();
+    this->HandleMessage(nullptr, "OFFER:" + sdp, webrtc::SocketAddress());
+  };
+  if (main_thread()) {
+    main_thread()->PostTask(apply);
+  } else {
+    apply();
+  }
 }
 
 void DirectWanClient::HandleAnswerSdp(const std::string& sdp) {
@@ -287,6 +323,7 @@ void DirectWanClient::HandleAnswerSdp(const std::string& sdp) {
 }
 
 void DirectWanClient::HandleIce(const std::string& candidate, int mline_index) {
+  std::fprintf(stderr, "[wan] remote ice %d %s\n", mline_index, candidate.c_str());
   this->HandleMessage(nullptr,
                       "ICE:" + std::to_string(mline_index) + ":" + candidate,
                       webrtc::SocketAddress());
@@ -294,6 +331,7 @@ void DirectWanClient::HandleIce(const std::string& candidate, int mline_index) {
 
 void DirectWanClient::OnConnectionChange(
     webrtc::PeerConnectionInterface::PeerConnectionState new_state) {
+  std::fprintf(stderr, "[wan] media state %d\n", static_cast<int>(new_state));
   DirectPeer::OnConnectionChange(new_state);
   if (new_state == webrtc::PeerConnectionInterface::PeerConnectionState::kConnected &&
       on_media_connected) {

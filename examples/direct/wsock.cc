@@ -18,6 +18,8 @@
 #include <openssl/x509.h>
 #include <openssl/x509_vfy.h>
 
+#include <poll.h>
+
 namespace {
 
 void LogWsEvent(const char* event, const std::string& text) {
@@ -858,6 +860,41 @@ void WebSocketClient::async_read() {
   bool no_more_data = false;
 
   do {
+    // The WebSocket runs on WebRTC's network thread. A blocking SSL_read
+    // there starves the tasks CreatePeerConnection posts to the same thread
+    // (audio device setup), which deadlocks the callee. Poll for data with a
+    // short timeout so the thread returns to its message loop between reads.
+    if (use_ssl_ && ssl_ && SSL_pending(ssl_) == 0) {
+      struct pollfd pfd;
+      pfd.fd = sockfd_;
+      pfd.events = POLLIN;
+      pfd.revents = 0;
+      const int ready = poll(&pfd, 1, 50);
+      if (ready == 0) {
+        no_more_data = true;
+        break;
+      }
+      if (ready < 0) {
+        if (errno == EINTR) {
+          no_more_data = true;
+          break;
+        }
+        APP_LOG(AS_ERROR) << "WebSocketClient::async_read: poll failed: " << strerror(errno);
+        running_ = false;
+        read_in_progress_ = false;
+        LogWsClose(1006, std::string("poll failed: ") + strerror(errno));
+        if (message_callback_) message_callback_("DISCONNECTED");
+        return;
+      }
+      if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        running_ = false;
+        read_in_progress_ = false;
+        LogWsClose(1006, "socket closed while polling");
+        if (message_callback_) message_callback_("DISCONNECTED");
+        return;
+      }
+    }
+
     int bytes_read = 0;
     if (use_ssl_) {
       if (!ssl_) {

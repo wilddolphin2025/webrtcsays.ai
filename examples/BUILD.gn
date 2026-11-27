@@ -1094,6 +1094,8 @@ if (!build_with_chromium) {
         "direct/wsock.cc",
         "direct/wsock.h",
         "direct/client.h",
+        "direct/wan.cc",
+        "direct/wan.h",
         "direct/pattern_video.cc",
         "direct/pattern_video.h",
         "direct/call_stats.cc",
@@ -1338,5 +1340,27 @@ if (!build_with_chromium) {
     }
 
     configs += []
+  }
+
+  if (!is_ios) {
+    rtc_executable("wanconsole") {
+      testonly = true
+      sources = [ "direct/wan_console.cc" ]
+      include_dirs = [
+        "../third_party/boringssl/src/include",
+        "../third_party/jsoncpp/source/include",
+      ]
+      cflags = []
+      if (is_mac) {
+        cflags += [ "-mmacosx-version-min=15.0.0" ]
+      }
+      if (is_debug) {
+        cflags += [ "-gdwarf-4", "-O0" ]
+      }
+      deps = [ ":directlib" ]
+      if (is_mac) {
+        ldflags = [ "-Wl,-rpath,@loader_path/" ]
+      }
+    }
   }
 }

@@ -968,6 +968,13 @@ bool BasicNetworkManager::IsIgnoredNetwork(const Network& network) const {
   }
 
 #if defined(WEBRTC_POSIX)
+  // VPN tunnels (Tailscale, iCloud Private Relay, corporate VPNs) advertise
+  // 100.x/10.x addresses that peers outside the tunnel cannot reach, and the
+  // tunnel can also capture the UDP that should stay on the LAN. Direct calls
+  // need the physical interface; ignore tunnel interfaces here.
+  if (strncmp(network.name().c_str(), "utun", 4) == 0) {
+    return true;
+  }
   // Filter out VMware/VirtualBox interfaces, typically named vmnet1,
   // vmnet8, or vboxnet0.
   if (strncmp(network.name().c_str(), "vmnet", 5) == 0 ||

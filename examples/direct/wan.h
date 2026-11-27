@@ -34,7 +34,7 @@ class DIRECT_API DirectWanClient : public DirectPeer {
   bool Reject();
   bool Hangup();
   /// Closes the /direct socket and stops reconnecting. The object stays alive.
-  void Disconnect();
+  void Disconnect() override;
 
   bool IsRegistered() const;
   bool IsCaller() const;
@@ -81,6 +81,9 @@ class DIRECT_API DirectWanClient : public DirectPeer {
   void CloseSocket();
 
   std::shared_ptr<WebSocketClient> ws_;
+  // The WebSocket read loop must not run on WebRTC's network thread: a
+  // blocking SSL_read there starves ICE/TURN socket processing.
+  std::unique_ptr<webrtc::Thread> ws_thread_;
   mutable std::mutex state_mu_;
   bool registered_ = false;
   bool caller_ = false;

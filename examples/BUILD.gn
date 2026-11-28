@@ -883,6 +883,7 @@ if (!build_with_chromium) {
       sources = [
         "direct/direct.h",
         "direct/option.h",
+        "direct/ble_token_audio.h",
         "direct/client.h",
         "direct/wan.h",
         "direct/wsock.h",
@@ -947,6 +948,8 @@ if (!build_with_chromium) {
         "direct/impair.h",
         "direct/quality.cc",
         "direct/quality.h",
+        "direct/ble_token_audio.cc",
+        "direct/ble_token_audio.h",
         "direct/signaling_log.cc",
         "direct/signaling_log.h",
         "direct/echo_stats.cc",
